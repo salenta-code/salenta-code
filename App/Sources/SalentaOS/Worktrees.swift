@@ -200,7 +200,10 @@ enum Worktrees {
     }
 
     static func aheadCount(repo: String, branch: String) -> Int {
-        Int(Git.run(["rev-list", "--count", "origin/\(branch)..\(branch)"], in: repo, timeout: 10).out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        // Gegen den eingestellten Upstream zählen (der Branch auf GitHub kann anders heißen); sonst origin/<branch>
+        let up = Git.run(["rev-list", "--count", "@{u}..HEAD"], in: repo, timeout: 10)
+        if up.code == 0 { return Int(up.out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0 }
+        return Int(Git.run(["rev-list", "--count", "origin/\(branch)..\(branch)"], in: repo, timeout: 10).out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
     /// Nachfragen und hochladen (läuft auf dem Hauptthread, Push im Hintergrund).
@@ -217,7 +220,7 @@ enum Worktrees {
             return
         }
         DispatchQueue.global(qos: .userInitiated).async {
-            let (ok, msg) = push(repo: repo, branch: branch)
+            let (ok, msg) = GitSync.upload(repo: repo)
             DispatchQueue.main.async { app.show(ok ? "✓ " + msg : msg) }
         }
     }

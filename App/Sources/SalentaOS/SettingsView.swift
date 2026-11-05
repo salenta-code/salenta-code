@@ -102,6 +102,11 @@ struct GeneralSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Coding") {
+                Toggle("Projekte automatisch aktuell halten (neue Commits von GitHub holen)", isOn: Binding(
+                    get: { GitSync.autoPull },
+                    set: { UserDefaults.standard.set($0, forKey: "projects.autoPull") }))
+                Text("Holt alle 5 Minuten den neuesten Stand – nur wenn es gefahrlos geht: keine offenen Änderungen und keine eigenen, noch nicht hochgeladenen Commits.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Coding-Aufträge in eigener Arbeitskopie (git worktree)", isOn: Binding(
                     get: { UserDefaults.standard.object(forKey: "coding.worktree") as? Bool ?? true },
                     set: { UserDefaults.standard.set($0, forKey: "coding.worktree") }))

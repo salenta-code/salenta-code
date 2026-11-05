@@ -259,9 +259,16 @@ struct ProjectStatus: Identifiable, Hashable {
     var sentry = false
     /// Worum es im Projekt geht: aus package.json („description“) oder dem ersten Absatz der README.
     var about = ""
+    /// Beim letzten Aktualisieren automatisch geholte Commits
+    var pulled = 0
     var loaded = false
 
-    struct PR: Hashable { let number: Int; let title: String; let url: String; let draft: Bool; let checks: String? }
+    struct PR: Hashable {
+        let number: Int; let title: String; let url: String; let draft: Bool; let checks: String?
+        var mergeable: String = ""      // MERGEABLE, CONFLICTING, UNKNOWN
+        /// Bereit zum Mergen: kein Entwurf, alle Prüfungen grün (oder keine), keine Konflikte.
+        var ready: Bool { !draft && checks != "failure" && checks != "pending" && mergeable == "MERGEABLE" }
+    }
 }
 
 final class ProjectBoard: ObservableObject {
@@ -269,7 +276,18 @@ final class ProjectBoard: ObservableObject {
     @Published var loading = false
     @AppStorage("projects.pinned") private var pinnedRaw = ""
 
+    @AppStorage("projects.hidden") private var hiddenRaw = ""
+    /// Ausgeblendete Projekte zeigen (gedimmt, mit „Einblenden“)
+    @Published var showHidden = false
+
     var pinned: Set<String> { Set(pinnedRaw.split(separator: "\n").map(String.init)) }
+    var hidden: Set<String> { Set(hiddenRaw.split(separator: "\n").map(String.init)) }
+    func toggleHidden(_ path: String) {
+        var h = hidden
+        if h.contains(path) { h.remove(path) } else { h.insert(path) }
+        hiddenRaw = h.sorted().joined(separator: "\n")
+        objectWillChange.send()
+    }
     func togglePin(_ path: String) {
         var p = pinned
         if p.contains(path) { p.remove(path) } else { p.insert(path) }
@@ -285,6 +303,9 @@ final class ProjectBoard: ObservableObject {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         func add(_ p: String) {
             guard !paths.contains(p), p != home, FileManager.default.fileExists(atPath: p) else { return }
+            // Arbeitskopien der Agents sind keine eigenen Projekte; ausgeblendete nur auf Wunsch
+            if Worktrees.isWorktree(p) || p.contains("/.claude/worktrees/") || p.contains("/.codex/worktrees/") { return }
+            if hidden.contains(p) && !showHidden { return }
             paths.append(p)
         }
         // Nur deine Projekte – zuletzt aktive zuerst, keine automatisch gefundenen Ordner mehr.
@@ -348,20 +369,44 @@ final class ProjectBoard: ObservableObject {
         var s = item
         let dir = item.path
         guard Git.root(of: dir) != nil else { s.branch = ""; s.lastCommit = L("kein Git-Repo"); s.loaded = true; return s }
-        s.branch = Git.run(["rev-parse", "--abbrev-ref", "HEAD"], in: dir, timeout: 10).out.trimmingCharacters(in: .whitespacesAndNewlines)
-        s.dirty = Git.run(["status", "--porcelain"], in: dir, timeout: 15).out.split(separator: "\n").count
-        let lr = Git.run(["rev-list", "--left-right", "--count", "@{u}...HEAD"], in: dir, timeout: 10)
-        if lr.code == 0 {
-            let n = lr.out.split(whereSeparator: { $0 == "\t" || $0 == " " || $0 == "\n" }).compactMap { Int($0) }
-            if n.count == 2 { s.behind = n[0]; s.ahead = n[1] }
+        let head = Git.run(["rev-parse", "--abbrev-ref", "HEAD"], in: dir, timeout: 10)
+        s.branch = head.code == 0 ? head.out.trimmingCharacters(in: .whitespacesAndNewlines)
+            : Git.run(["symbolic-ref", "--short", "HEAD"], in: dir, timeout: 5).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if head.code != 0 {
+            // Neues Repo ohne Commits: keine rohen Git-Fehler zeigen
+            s.lastCommit = L("noch keine Commits")
+            s.dirty = Git.run(["status", "--porcelain"], in: dir, timeout: 15).out.split(separator: "\n").count
+            s.about = Self.about(dir, pkg: "")
+            s.loaded = true
+            return s
         }
-        let log = Git.run(["log", "-1", "--format=%s\t%cr"], in: dir, timeout: 10).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        s.dirty = Git.run(["status", "--porcelain"], in: dir, timeout: 15).out.split(separator: "\n").count
+        // Immer den neuesten Stand von GitHub kennen – auch was andere Agents oder Rechner hochgeladen haben
+        let hasRemote = Git.run(["remote", "get-url", "origin"], in: dir, timeout: 5).code == 0
+        if hasRemote { Git.run(["fetch", "--quiet", "--prune", "origin"], in: dir, timeout: 40) }
+        func counts() {
+            let lr = Git.run(["rev-list", "--left-right", "--count", "@{u}...HEAD"], in: dir, timeout: 10)
+            if lr.code == 0 {
+                let n = lr.out.split(whereSeparator: { $0 == "\t" || $0 == " " || $0 == "\n" }).compactMap { Int($0) }
+                if n.count == 2 { s.behind = n[0]; s.ahead = n[1] }
+            }
+        }
+        counts()
+        // Automatisch aktuell halten: nur wenn es gefahrlos geht (nichts Eigenes, das kollidieren könnte)
+        if GitSync.autoPull, s.behind > 0, s.ahead == 0, s.dirty == 0,
+           Git.run(["pull", "--ff-only", "--quiet"], in: dir, timeout: 120).code == 0 {
+            s.pulled = s.behind
+            s.behind = 0
+            counts()
+        }
+        let logRun = Git.run(["log", "-1", "--format=%s\t%cr"], in: dir, timeout: 10)
+        let log = logRun.code == 0 ? logRun.out.trimmingCharacters(in: .whitespacesAndNewlines) : ""
         let parts = log.components(separatedBy: "\t")
         s.lastCommit = parts.first ?? ""
         s.lastCommitAge = parts.count > 1 ? parts[1] : ""
         let remote = Git.run(["remote", "get-url", "origin"], in: dir, timeout: 5).out
         if remote.contains("github.com"), Detection.which("gh") != nil {
-            let pr = Proc.zsh("gh pr list --limit 8 --json number,title,url,isDraft,statusCheckRollup", in: dir, timeout: 25)
+            let pr = Proc.zsh("gh pr list --limit 8 --json number,title,url,isDraft,statusCheckRollup,mergeable", in: dir, timeout: 25)
             if pr.code == 0, let st = pr.out.firstIndex(of: "["), let en = pr.out.lastIndex(of: "]"),
                let arr = try? JSONSerialization.jsonObject(with: Data(pr.out[st...en].utf8)) as? [[String: Any]] {
                 s.prs = arr.map { p in
@@ -369,7 +414,8 @@ final class ProjectBoard: ObservableObject {
                     let summary: String? = checks.isEmpty ? nil : checks.contains(where: { $0.uppercased() == "FAILURE" }) ? "failure"
                         : checks.allSatisfy({ $0.uppercased() == "SUCCESS" || $0.uppercased() == "SKIPPED" || $0.uppercased() == "NEUTRAL" }) ? "success" : "pending"
                     return ProjectStatus.PR(number: p["number"] as? Int ?? 0, title: p["title"] as? String ?? "",
-                                            url: p["url"] as? String ?? "", draft: p["isDraft"] as? Bool ?? false, checks: summary)
+                                            url: p["url"] as? String ?? "", draft: p["isDraft"] as? Bool ?? false, checks: summary,
+                                            mergeable: (p["mergeable"] as? String ?? "").uppercased())
                 }
             }
             let run = Proc.zsh("gh run list --limit 1 --branch \(Shell.quote(s.branch)) --json status,conclusion,url", in: dir, timeout: 25)
@@ -420,6 +466,13 @@ struct ProjectsView: View {
                     }
                     Spacer()
                     if board.loading { ProgressView().controlSize(.small) }
+                    if !board.hidden.isEmpty {
+                        Button { board.showHidden.toggle(); refresh() } label: {
+                            Label(board.showHidden ? L("Ausgeblendete verbergen") : String(format: L("Ausgeblendete zeigen (%d)"), board.hidden.count),
+                                  systemImage: board.showHidden ? "eye.slash" : "eye")
+                        }
+                        .help(L("Ausgeblendete Projekte anzeigen, um sie wieder einzublenden"))
+                    }
                     Button { globalRules = true } label: { Label("Regeln für alle", systemImage: "shield.lefthalf.filled") }
                     Button { adding = true } label: { Label("Projekt hinzufügen", systemImage: "plus") }
                         .buttonStyle(.borderedProminent)
@@ -444,7 +497,14 @@ struct ProjectsView: View {
         }
         .navigationTitle("Projekte")
         .toolbar { ToolbarItem { Button { refresh() } label: { Label("Aktualisieren", systemImage: "arrow.clockwise") }.help(L("Aktualisieren")) } }
-        .task { refresh() }
+        .task {
+            refresh()
+            // Alle 5 Minuten neu holen, solange die Seite offen ist
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(300))
+                if !Task.isCancelled { refresh() }
+            }
+        }
         .onChange(of: catalog.local.count) { _, _ in refresh() }
         .sheet(item: Binding(get: { rulesFor.map { IdentifiedPath(path: $0) } }, set: { rulesFor = $0?.path })) { p in
             RulesEditor(projectDir: p.path)
@@ -506,6 +566,17 @@ struct ProjectsView: View {
                 actions: [(L("Beheben lassen"), "wrench.and.screwdriver", { fix("Die CI auf \(p.branch) ist rot – finde heraus warum (gh run view --log-failed) und behebe es.") }),
                           (L("Auf GitHub ansehen"), "safari", { if let u = p.ciURL, let url = URL(string: u) { NSWorkspace.shared.open(url) } })]))
         }
+        for pr in p.prs where pr.ready {
+            out.append(Issue(color: .green, symbol: "checkmark.seal.fill",
+                text: String(format: L("Pull Request #%d „%@“ ist bereit: alle Prüfungen grün, keine Konflikte."), pr.number, pr.title),
+                actions: [(L("Mergen"), "arrow.triangle.merge", { merge(p, pr) }),
+                          (L("PR ansehen"), "safari", { if let u = URL(string: pr.url) { NSWorkspace.shared.open(u) } })]))
+        }
+        for pr in p.prs where pr.mergeable == "CONFLICTING" && !pr.draft {
+            out.append(Issue(color: .orange, symbol: "exclamationmark.triangle.fill",
+                text: String(format: L("Pull Request #%d „%@“ hat Konflikte mit dem aktuellen Stand."), pr.number, pr.title),
+                actions: [(L("Konflikte lösen lassen"), "wrench.and.screwdriver", { fix("Der Pull Request #\(pr.number) („\(pr.title)“) hat Merge-Konflikte. Hol dir den Branch (gh pr checkout \(pr.number)), bring ihn auf den neuesten Stand des Ziel-Branches, löse die Konflikte sorgfältig, prüfe Build und Tests und pushe den Branch.") })]))
+        }
         for pr in p.prs where pr.checks == "failure" {
             out.append(Issue(color: .red, symbol: "xmark.octagon.fill",
                 text: String(format: L("Pull Request #%d „%@“: die Prüfungen auf GitHub sind rot."), pr.number, pr.title),
@@ -531,20 +602,19 @@ struct ProjectsView: View {
                 actions: [(L("Committen lassen"), "checkmark.circle", { fix("Es gibt nicht committete Änderungen. Sieh sie dir an (git status, git diff), fasse sie sinnvoll zusammen und committe sie mit klaren Nachrichten. Nichts pushen.") }),
                           (L("Terminal"), "terminal", { _ = agents.start(.shell, in: p.path); app.page = .agents })]))
         }
-        if p.ahead > 0 {
+        if p.ahead > 0 && p.behind > 0 {
+            out.append(Issue(color: .orange, symbol: "arrow.triangle.2.circlepath",
+                text: String(format: L("%d Commit(s) nur auf deinem Mac und %d neue auf GitHub – erst zusammenführen, dann hochladen."), p.ahead, p.behind),
+                actions: [(L("Synchronisieren"), "arrow.triangle.2.circlepath", { upload(p) })]))
+        } else if p.ahead > 0 {
             out.append(Issue(color: .orange, symbol: "arrow.up.circle.fill",
                 text: String(format: L("%d Commit(s) sind nur auf deinem Mac, noch nicht auf GitHub."), p.ahead),
-                actions: [(L("Hochladen"), "arrow.up", { Worktrees.offerPush(repo: p.path, branch: p.branch, app: app); DispatchQueue.main.asyncAfter(deadline: .now() + 4) { refresh() } })]))
-        }
-        if p.behind > 0 {
+                actions: [(L("Hochladen"), "arrow.up", { upload(p) })]))
+        } else if p.behind > 0 {
             out.append(Issue(color: .secondary, symbol: "arrow.down.circle",
-                text: String(format: L("Auf GitHub gibt es %d neuere Commit(s)."), p.behind),
-                actions: [(L("Holen (Pull)"), "arrow.down", {
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        let r = Git.run(["pull", "--ff-only"], in: p.path, timeout: 120)
-                        DispatchQueue.main.async { app.show(r.code == 0 ? "✓ " + L("Aktualisiert") : L("Holen ging nicht automatisch – lokale Änderungen im Weg?")); refresh() }
-                    }
-                })]))
+                text: String(format: L("Auf GitHub gibt es %d neuere Commit(s)."), p.behind)
+                    + (p.dirty > 0 ? " " + L("Automatisch holen geht nicht, weil lokale Änderungen offen sind.") : ""),
+                actions: [(L("Holen (Pull)"), "arrow.down", { update(p) })]))
         }
         return out
     }
@@ -589,6 +659,12 @@ struct ProjectsView: View {
             HStack(spacing: Grid.s) {
                 Circle().fill(color).frame(width: 10, height: 10)
                 Text(p.name).font(.headline).lineLimit(1)
+                // Gleich heißende Projekte unterscheidbar machen: Ordner dahinter zeigen
+                if board.items.filter({ $0.name == p.name }).count > 1 {
+                    Text(((p.path as NSString).deletingLastPathComponent).replacingOccurrences(of: Paths.home.path, with: "~"))
+                        .font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.head)
+                        .help(p.path)
+                }
                 if board.pinned.contains(p.path) { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
                 Spacer()
                 Text(label).font(.caption).foregroundStyle(color == .secondary ? .secondary : color)
@@ -605,13 +681,20 @@ struct ProjectsView: View {
                 Label(p.branch.isEmpty ? "…" : p.branch, systemImage: "arrow.triangle.branch").font(.caption)
                 if p.dirty > 0 { Label("\(p.dirty)", systemImage: "pencil").font(.caption).foregroundStyle(.orange).help(L("geänderte Dateien")) }
                 if p.ahead > 0 {
-                    Button { Worktrees.offerPush(repo: p.path, branch: p.branch, app: app); DispatchQueue.main.asyncAfter(deadline: .now() + 4) { refresh() } } label: {
+                    Button { upload(p) } label: {
                         Label("\(p.ahead)", systemImage: "arrow.up.circle.fill").font(.caption)
                     }
                     .buttonStyle(.plain).foregroundStyle(.blue)
                     .help(L("Nicht auf GitHub – klicken zum Hochladen (Push)"))
                 }
-                if p.behind > 0 { Label("\(p.behind)", systemImage: "arrow.down").font(.caption).help(L("neue Commits auf dem Server")) }
+                if p.behind > 0 {
+                    Button { update(p) } label: { Label("\(p.behind)", systemImage: "arrow.down.circle").font(.caption) }
+                        .buttonStyle(.plain).help(L("Neue Commits auf GitHub – klicken zum Holen (Pull)"))
+                }
+                if p.pulled > 0 {
+                    Label("\(p.pulled)", systemImage: "arrow.down.circle.fill").font(.caption).foregroundStyle(.green)
+                        .help(String(format: L("%d neue Commits automatisch von GitHub geholt"), p.pulled))
+                }
                 if let ci = p.ci {
                     Button { if let u = p.ciURL, let url = URL(string: u) { NSWorkspace.shared.open(url) } } label: {
                         Label("CI", systemImage: ci == "success" ? "checkmark.circle.fill" : ci == "failure" ? "xmark.circle.fill" : "clock")
@@ -631,6 +714,12 @@ struct ProjectsView: View {
                                 if pr.draft { Text("Entwurf").font(.caption2).foregroundStyle(.tertiary) }
                             }.font(.caption)
                         }.buttonStyle(.plain)
+                        .overlay(alignment: .trailing) {
+                            if pr.ready {
+                                Button(L("Mergen")) { merge(p, pr) }.controlSize(.mini).buttonStyle(.borderedProminent).tint(.green)
+                                    .help(L("Alle Prüfungen grün – in den Ziel-Branch übernehmen (Squash) und den PR-Branch löschen"))
+                            }
+                        }
                     }
                     if p.prs.count > 2 { Text("+ \(p.prs.count - 2) " + L("weitere Pull Requests")).font(.caption2).foregroundStyle(.tertiary) }
                 }
@@ -675,30 +764,77 @@ struct ProjectsView: View {
                 } label: { Image(systemName: "play.display") }.help(L("Live-Vorschau der App"))
                 Button { _ = agents.start(.shell, in: p.path); app.page = .agents } label: { Image(systemName: "terminal") }.help(L("Terminal im Projekt"))
                 Button { NSWorkspace.shared.open(URL(fileURLWithPath: p.path)) } label: { Image(systemName: "folder") }.help(L("Im Finder"))
-                Button { catalog.remove(p.path) } label: { Image(systemName: "minus.circle") }.help(L("Aus der Liste nehmen (Ordner bleibt)"))
-                Button { rulesFor = p.path } label: { Image(systemName: "shield.lefthalf.filled") }.help(L("Regeln und Prüfbefehle"))
-                Button { memoryFor = p.path } label: { Image(systemName: "brain.head.profile") }.help(L("Projektwissen – was alle Agents über dieses Projekt gelernt haben"))
-                Button { app.page = .steward(Steward.shared.adopt(p.path)) } label: { Image(systemName: "safari") }
-                    .help(!Steward.shared.projects.contains(where: { p.path.hasPrefix($0.id) }) ? L("In Betreuung geben – ein Koordinator plant und pflegt das Projekt") : L("Projekt-Betreuer öffnen"))
-                if let v = p.vercel {
-                    Button { if let u = URL(string: "https://vercel.com/dashboard") { NSWorkspace.shared.open(u) } } label: { Text("▲").font(.caption) }
-                        .help("Vercel: \(v)")
-                }
-                if p.sentry {
-                    Button { if let u = URL(string: "https://sentry.io/issues/") { NSWorkspace.shared.open(u) } } label: { Image(systemName: "ant") }
-                        .help(L("Sentry-Fehler ansehen"))
-                }
+                // Seltener Gebrauchtes im Menü – so passt die Leiste in jede Kartenbreite
+                Menu {
+                    Button { rulesFor = p.path } label: { Label(L("Regeln und Prüfbefehle"), systemImage: "shield.lefthalf.filled") }
+                    Button { memoryFor = p.path } label: { Label(L("Projektwissen"), systemImage: "brain.head.profile") }
+                    Button { app.page = .steward(Steward.shared.adopt(p.path)) } label: {
+                        Label(Steward.shared.projects.contains(where: { p.path.hasPrefix($0.id) }) ? L("Projekt-Betreuer öffnen") : L("In Betreuung geben"), systemImage: "safari")
+                    }
+                    if p.vercel != nil {
+                        Button { if let u = URL(string: "https://vercel.com/dashboard") { NSWorkspace.shared.open(u) } } label: { Label("Vercel", systemImage: "triangle.fill") }
+                    }
+                    if p.sentry {
+                        Button { if let u = URL(string: "https://sentry.io/issues/") { NSWorkspace.shared.open(u) } } label: { Label(L("Sentry-Fehler ansehen"), systemImage: "ant") }
+                    }
+                    Divider()
+                    Button { catalog.remove(p.path) } label: { Label(L("Aus der Liste nehmen (Ordner bleibt)"), systemImage: "minus.circle") }
+                } label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .help(L("Mehr: Regeln, Projektwissen, Betreuer, Vercel, Sentry, aus der Liste nehmen"))
                 Spacer()
+                Button { board.toggleHidden(p.path); refresh() } label: { Image(systemName: board.hidden.contains(p.path) ? "eye" : "eye.slash") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help(board.hidden.contains(p.path) ? L("Wieder einblenden") : L("Ausblenden – das Projekt bleibt, wo es ist, und lässt sich oben wieder einblenden"))
                 Button { board.togglePin(p.path); refresh() } label: { Image(systemName: board.pinned.contains(p.path) ? "pin.slash" : "pin") }
                     .buttonStyle(.plain).foregroundStyle(.secondary).help(L("Anheften"))
             }
         }
         .padding(Grid.l)
-        // Alle Karten gleich hoch – egal wie viel los ist
-        .frame(height: 360, alignment: .top)
+        // Alle Karten gleich hoch und nie breiter als ihre Spalte – egal wie viel los ist
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 360, maxHeight: 360, alignment: .topLeading)
+        .clipped()
+        .opacity(board.hidden.contains(p.path) ? 0.55 : 1)
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 16).fill(.background.secondary))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(color.opacity(color == .secondary ? 0.15 : 0.45)))
+    }
+
+    // MARK: Hochladen, Holen, Mergen – mit klarer Rückmeldung statt stillem Nichts
+
+    private func upload(_ p: ProjectStatus) {
+        let a = NSAlert()
+        a.messageText = L("Auf GitHub hochladen?")
+        a.informativeText = String(format: L("%d Commit(s) aus „%@“ (%@) werden auf GitHub hochgeladen. Neue Änderungen von GitHub werden vorher automatisch eingearbeitet."),
+                                   p.ahead, p.name, p.branch)
+        a.addButton(withTitle: L("Hochladen")); a.addButton(withTitle: L("Abbrechen"))
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        app.show(L("Lädt hoch …"))
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (ok, msg) = GitSync.upload(repo: p.path)
+            DispatchQueue.main.async { app.show(ok ? "✓ " + msg : msg); refresh() }
+        }
+    }
+
+    private func update(_ p: ProjectStatus) {
+        app.show(L("Holt den neuen Stand …"))
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (ok, msg) = GitSync.update(repo: p.path)
+            DispatchQueue.main.async { app.show(ok ? "✓ " + msg : msg); refresh() }
+        }
+    }
+
+    private func merge(_ p: ProjectStatus, _ pr: ProjectStatus.PR) {
+        let a = NSAlert()
+        a.messageText = String(format: L("Pull Request #%d mergen?"), pr.number)
+        a.informativeText = "„\(pr.title)“\n\n" + L("Alle Prüfungen sind grün. Die Änderungen kommen als ein Commit (Squash) in den Ziel-Branch, der PR-Branch wird gelöscht. Danach holt Salenta Code den neuen Stand.")
+        a.addButton(withTitle: L("Mergen")); a.addButton(withTitle: L("Abbrechen"))
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        app.show(L("Merged …"))
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (ok, msg) = GitSync.mergePR(repo: p.path, number: pr.number)
+            DispatchQueue.main.async { app.show(ok ? "✓ " + msg : msg); refresh() }
+        }
     }
 
     /// „Gerade“: was im Projekt gerade passiert – laufender oder offener Auftrag, sonst der letzte Commit.
@@ -723,5 +859,73 @@ struct ProjectsView: View {
                 if !p.lastCommitAge.isEmpty { Text("· " + p.lastCommitAge).foregroundStyle(.tertiary).lineLimit(1).layoutPriority(1) }
             }.font(.caption)
         }
+    }
+}
+
+
+/// Git-Abgleich mit GitHub: hochladen, holen, mergen – jeweils mit verständlicher Meldung.
+enum GitSync {
+    /// Projekte automatisch auf den neuesten Stand bringen (nur wenn gefahrlos möglich)
+    static var autoPull: Bool { UserDefaults.standard.object(forKey: "projects.autoPull") as? Bool ?? true }
+
+    private static func hasUpstream(_ repo: String) -> Bool {
+        Git.run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], in: repo, timeout: 5).code == 0
+    }
+
+    /// Hochladen: neue Änderungen von GitHub vorher einarbeiten (rebase), dann pushen. Kein Branch-Raten mehr.
+    static func upload(repo: String) -> (Bool, String) {
+        guard Git.run(["remote", "get-url", "origin"], in: repo, timeout: 5).code == 0 else {
+            return (false, L("Dieses Projekt hat kein GitHub-Repo (kein „origin“)."))
+        }
+        let branch = Git.run(["rev-parse", "--abbrev-ref", "HEAD"], in: repo, timeout: 5).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if branch == "HEAD" { return (false, L("Kein Branch ausgecheckt (detached HEAD) – bitte zuerst einen Branch wählen.")) }
+        if hasUpstream(repo) {
+            Git.run(["fetch", "--quiet", "origin"], in: repo, timeout: 60)
+            let behind = Int(Git.run(["rev-list", "--count", "HEAD..@{u}"], in: repo, timeout: 10).out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            if behind > 0 {
+                let r = Git.run(["pull", "--rebase", "--autostash", "--quiet"], in: repo, timeout: 180)
+                if r.code != 0 {
+                    Git.run(["rebase", "--abort"], in: repo, timeout: 30)
+                    return (false, L("Konflikt mit den neuen Änderungen auf GitHub – nichts hochgeladen. Lass einen Agent die Konflikte lösen."))
+                }
+            }
+            let push = Git.run(["push", "--quiet"], in: repo, timeout: 180)
+            if push.code == 0 { return (true, String(format: L("Auf GitHub hochgeladen (%@)"), branch)) }
+            return (false, explain(push.out))
+        }
+        let push = Git.run(["push", "--quiet", "-u", "origin", "HEAD"], in: repo, timeout: 180)
+        if push.code == 0 { return (true, String(format: L("Branch „%@“ neu auf GitHub angelegt und hochgeladen"), branch)) }
+        return (false, explain(push.out))
+    }
+
+    /// Holen: erst gefahrlos vorspulen, sonst eigene Commits obendrauf setzen (rebase) – lokale Änderungen bleiben erhalten.
+    static func update(repo: String) -> (Bool, String) {
+        Git.run(["fetch", "--quiet", "--prune", "origin"], in: repo, timeout: 60)
+        if Git.run(["pull", "--ff-only", "--autostash", "--quiet"], in: repo, timeout: 180).code == 0 { return (true, L("Auf dem neuesten Stand")) }
+        let r = Git.run(["pull", "--rebase", "--autostash", "--quiet"], in: repo, timeout: 180)
+        if r.code == 0 { return (true, L("Neuer Stand geholt – deine Commits liegen jetzt obendrauf")) }
+        Git.run(["rebase", "--abort"], in: repo, timeout: 30)
+        return (false, L("Holen ging nicht automatisch: Konflikt mit deinen lokalen Änderungen. Nichts verändert."))
+    }
+
+    /// PR mergen (Squash, Branch löschen) und danach den lokalen Stand holen.
+    static func mergePR(repo: String, number: Int) -> (Bool, String) {
+        let r = Proc.zsh("gh pr merge \(number) --squash --delete-branch", in: repo, timeout: 120)
+        guard r.code == 0 else {
+            let o = r.out.lowercased()
+            if o.contains("not mergeable") || o.contains("conflict") { return (false, L("GitHub lässt den Merge nicht zu: Konflikte oder fehlende Prüfungen.")) }
+            if o.contains("review") { return (false, L("Für diesen Branch ist ein Review vorgeschrieben – bitte auf GitHub freigeben.")) }
+            return (false, String(r.out.suffix(300)))
+        }
+        _ = update(repo: repo)
+        return (true, String(format: L("Pull Request #%d gemergt – neuer Stand ist geholt"), number))
+    }
+
+    private static func explain(_ out: String) -> String {
+        let o = out.lowercased()
+        if o.contains("protected") { return L("Branch ist auf GitHub geschützt – bitte als Pull Request übernehmen.") }
+        if o.contains("permission") || o.contains("403") || o.contains("denied") { return L("Keine Schreibrechte für dieses Repo auf GitHub (Anmeldung prüfen: gh auth status).") }
+        if o.contains("rejected") { return L("GitHub hat neuere Änderungen – bitte erst holen (Pull).") }
+        return String(out.suffix(300))
     }
 }
