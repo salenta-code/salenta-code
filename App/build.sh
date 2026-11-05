@@ -61,7 +61,14 @@ if [[ $release -eq 1 ]]; then
     for prod in SalentaOS SalentaWidgets; do
       a="$(find "$scratch/arm64" -path "*/$config/$prod" -type f -perm -u+x | head -1)"
       x="$(find "$scratch/x86_64" -path "*/$config/$prod" -type f -perm -u+x | head -1)"
-      [[ -n "$a" && -n "$x" ]] && lipo -create "$a" "$x" -output "$scratch/$config/$prod" || { [[ $prod == SalentaOS ]] && code=1; }
+      rm -f "$scratch/$config/$prod"
+      if [[ -n "$a" && -n "$x" ]] && [[ "$(lipo -archs "$a" 2>/dev/null)" == *arm64* && "$(lipo -archs "$x" 2>/dev/null)" == *x86_64* ]]; then
+        lipo -create "$a" "$x" -output "$scratch/$config/$prod" 2>>"$log" || { echo "  ✗ lipo $prod: $(tail -1 "$log")"; [[ $prod == SalentaOS ]] && code=1; }
+      else
+        # Klarer Hinweis statt stillem Abbruch: welche Datei fehlt oder hat die falsche Architektur
+        echo "  ✗ $prod: arm64=${a:-fehlt} [$(lipo -archs "$a" 2>/dev/null)] · x86_64=${x:-fehlt} [$(lipo -archs "$x" 2>/dev/null)]"
+        [[ $prod == SalentaOS ]] && code=1
+      fi
     done
     for b in "$scratch/arm64"/*/$config/*.bundle(N); do cp -R "$b" "$scratch/$config/"; done
     echo "  · vereint: $(lipo -archs "$scratch/$config/SalentaOS" 2>/dev/null)"
