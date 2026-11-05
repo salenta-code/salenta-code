@@ -302,13 +302,17 @@ struct DigestCard: View {
         let shown = showAll ? d.proposals : Array(d.proposals.prefix(4))
         let agentKey = agentOverride ?? mostCommonAgent(d.proposals) ?? d.proposals[0].agent
         let kind = AgentKind(rawValue: agentKey) ?? .claude
-        let model = agentOverride == nil ? (d.proposals.first { $0.agent == agentKey }?.model ?? "") : ModelCatalog.selected(for: kind)
+        let suggested: String = d.proposals.first(where: { $0.agent == agentKey })?.model ?? ""
+        let model: String = agentOverride == nil ? suggested : ModelCatalog.selected(for: kind)
+        let project: String = (Digest.workDir(rec) as NSString).lastPathComponent
+        let intro: String = String(format: L("Der Agent schlägt %d nächste Schritte für %@ vor. Du musst nichts davon machen – starte einzelne oder alle auf einmal."), d.proposals.count, project)
+        let withText: String = L("mit") + " " + kind.title + (model.isEmpty ? "" : " · " + model)
         return VStack(alignment: .leading, spacing: Grid.s) {
             HStack(alignment: .top, spacing: Grid.s) {
                 if let step = stepShown { StepBadge(number: step) }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Wie geht's weiter? (optional)").font(.headline)
-                    Text(String(format: L("Der Agent schlägt %d nächste Schritte für %@ vor. Du musst nichts davon machen – starte einzelne oder alle auf einmal."), d.proposals.count, (Digest.workDir(rec) as NSString).lastPathComponent))
+                    Text(intro)
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -322,7 +326,7 @@ struct DigestCard: View {
                     Spacer()
                     Button(L("Starten")) { separately([p]) }
                         .controlSize(.small)
-                        .help(L("Als eigenen Auftrag starten mit") + " " + (AgentKind(rawValue: p.agent)?.title ?? "Claude Code") + (p.model.isEmpty ? "" : " · " + p.model))
+                        .help(startHelp(p))
                 }
             }
             if d.proposals.count > 4 {
@@ -334,7 +338,7 @@ struct DigestCard: View {
                     Label(L("Alle Vorschläge umsetzen"), systemImage: "hammer.fill")
                 }
                 .buttonStyle(.borderedProminent)
-                Text(L("mit") + " " + kind.title + (model.isEmpty ? "" : " · " + model)).font(.caption).foregroundStyle(.secondary)
+                Text(withText).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Menu {
                     Button(L("Erst einen Plan machen lassen (ändert noch nichts)")) { plan(d.proposals, agent: agentKey, model: model) }
@@ -354,6 +358,12 @@ struct DigestCard: View {
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor.opacity(0.2)))
         .frame(maxWidth: 780)
         .padding(.horizontal, Grid.l)
+    }
+
+    private func startHelp(_ p: DigestProposal) -> String {
+        let agent: String = AgentKind(rawValue: p.agent)?.title ?? "Claude Code"
+        let model: String = p.model.isEmpty ? "" : " · " + p.model
+        return L("Als eigenen Auftrag starten mit") + " " + agent + model
     }
 
     private func mostCommonAgent(_ ps: [DigestProposal]) -> String? {

@@ -507,21 +507,30 @@ struct PreviewSheet: View {
     private var freshnessBar: some View {
         let f = server.freshness[id]
         let behind = f?.behind ?? 0
-        let agentBusy = agents.sessions.first { $0.id.uuidString == id }?.running == true
+        let agentBusy: Bool = agents.sessions.first(where: { $0.id.uuidString == id })?.running == true
+        var stand: String = ""
+        if let f, !f.sha.isEmpty {
+            stand = "· " + L("Stand") + " \(f.sha) (\(f.branch))"
+            if f.dirty { stand += " · " + L("mit ungesicherten Änderungen") }
+        }
+        var aheadText: String = ""
+        if let t = f?.target, let b = f?.behind {
+            aheadText = b == 0 ? "· " + L("aktuell mit") + " \(t)" : "· \(b) " + (b == 1 ? L("Commit hinter") : L("Commits hinter")) + " \(t)"
+        }
+        let updateHelp: String = agentBusy ? L("Der Agent arbeitet gerade in dieser Kopie – warte, bis er fertig ist.")
+                                           : L("Holt den neuesten Stand, übernimmt ihn in diese Kopie und startet die Vorschau neu")
         return HStack(spacing: Grid.s) {
             Image(systemName: behind > 0 ? "clock.badge.exclamationmark" : "desktopcomputer")
                 .foregroundStyle(behind > 0 ? .orange : .secondary)
             Text(L("Lokale Vorschau – nicht die Live-Seite")).font(.caption.weight(.semibold))
-            if let f, !f.sha.isEmpty {
-                Text("· " + L("Stand") + " \(f.sha) (\(f.branch))" + (f.dirty ? " · " + L("mit ungesicherten Änderungen") : ""))
-                    .font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+            if !stand.isEmpty {
+                Text(stand).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
             }
             if f?.checking == true {
                 ProgressView().controlSize(.mini)
                 Text(L("prüft auf neuen Stand …")).font(.caption).foregroundStyle(.secondary)
-            } else if let t = f?.target, let b = f?.behind {
-                Text(b == 0 ? "· " + L("aktuell mit") + " \(t)" : "· \(b) " + (b == 1 ? L("Commit hinter") : L("Commits hinter")) + " \(t)")
-                    .font(.caption.weight(b > 0 ? .semibold : .regular)).foregroundStyle(b > 0 ? .orange : .secondary)
+            } else if !aheadText.isEmpty {
+                Text(aheadText).font(.caption.weight(behind > 0 ? .semibold : .regular)).foregroundStyle(behind > 0 ? .orange : .secondary)
             }
             Spacer()
             if let msg = updateMessage { Text(msg).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
@@ -533,8 +542,7 @@ struct PreviewSheet: View {
                 }
                 .buttonStyle(.borderedProminent).controlSize(.small)
                 .disabled(server.updating.contains(id) || agentBusy)
-                .help(agentBusy ? L("Der Agent arbeitet gerade in dieser Kopie – warte, bis er fertig ist.")
-                                : L("Holt den neuesten Stand, übernimmt ihn in diese Kopie und startet die Vorschau neu"))
+                .help(updateHelp)
             }
             if f != nil {
                 Button { server.checkFreshness(id) } label: { Image(systemName: "arrow.triangle.2.circlepath") }

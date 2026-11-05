@@ -149,7 +149,10 @@ final class LocalFirst: ObservableObject {
         variantLock.lock(); let busy = variants[model] != nil || preparing.contains(model); if !busy { preparing.insert(model) }; variantLock.unlock()
         guard !busy else { return }
         DispatchQueue.global(qos: .utility).async {
-            let name = (model.split(separator: ":").first.map(String.init) ?? model) + "-sc:" + (model.split(separator: ":").dropFirst().first.map(String.init) ?? "latest")
+            let parts: [String] = model.split(separator: ":").map(String.init)
+            let base: String = parts.first ?? model
+            let tag: String = parts.count > 1 ? parts[1] : "latest"
+            let name: String = base + "-sc:" + tag
             _ = Proc.zsh("curl -s -m 2 http://localhost:11434/api/version >/dev/null || ((open -ga Ollama 2>/dev/null || (nohup ollama serve >/dev/null 2>&1 &)); sleep 4)",
                          in: NSTemporaryDirectory(), timeout: 20)
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("sc-modelfile-\(UUID().uuidString.prefix(6))")

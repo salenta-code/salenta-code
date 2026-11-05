@@ -473,9 +473,11 @@ struct ProjectsView: View {
     }
 
     private func mails(_ p: ProjectStatus) -> [MailItem] {
-        let words = Set([p.name.lowercased()] + (Company.allCases.first { c in
-            ([c.title, c.rawValue] + c.tags + c.keywords).contains { $0.count >= 3 && p.name.lowercased().contains($0.lowercased()) }
-        }.map { ([$0.title, $0.rawValue] + $0.tags + $0.keywords).map { $0.lowercased() } } ?? [])).filter { $0.count >= 4 }
+        let name: String = p.name.lowercased()
+        func terms(_ c: Company) -> [String] { ([c.title, c.rawValue] + c.tags + c.keywords).map { $0.lowercased() } }
+        let match: Company? = Company.allCases.first { c in terms(c).contains { $0.count >= 3 && name.contains($0) } }
+        let all: [String] = [name] + (match.map(terms) ?? [])
+        let words: Set<String> = Set(all.filter { $0.count >= 4 })
         return mail.items.filter { m in
             let t = (m.subject + " " + m.sender).lowercased()
             return words.contains { t.contains($0) }
