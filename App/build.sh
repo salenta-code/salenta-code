@@ -59,8 +59,15 @@ if [[ $release -eq 1 ]]; then
   if [[ $code -eq 0 ]]; then
     mkdir -p "$scratch/$config"
     for prod in SalentaOS SalentaWidgets; do
-      a="$(find "$scratch/arm64" -path "*/$config/$prod" -type f -perm -u+x | head -1)"
-      x="$(find "$scratch/x86_64" -path "*/$config/$prod" -type f -perm -u+x | head -1)"
+      # Swift selbst nach dem Ausgabeordner fragen – der heißt je nach Swift-Version „release“ oder „Products/Release“
+      ad="$(swift build -c $config --package-path "$here" --scratch-path "$scratch/arm64" --triple arm64-apple-macosx14.0 --show-bin-path 2>/dev/null | tail -1)"
+      xd="$(swift build -c $config --package-path "$here" --scratch-path "$scratch/x86_64" --triple x86_64-apple-macosx14.0 --show-bin-path 2>/dev/null | tail -1)"
+      a=""; x=""
+      [[ -n "$ad" && -f "$ad/$prod" ]] && a="$ad/$prod"
+      [[ -n "$xd" && -f "$xd/$prod" ]] && x="$xd/$prod"
+      # Rückfallweg: suchen (Groß-/Kleinschreibung egal, Symlinks folgen)
+      [[ -z "$a" ]] && a="$(find -L "$scratch/arm64" -ipath "*/$config/$prod" -type f -perm -u+x 2>/dev/null | head -1)"
+      [[ -z "$x" ]] && x="$(find -L "$scratch/x86_64" -ipath "*/$config/$prod" -type f -perm -u+x 2>/dev/null | head -1)"
       rm -f "$scratch/$config/$prod"
       if [[ -n "$a" && -n "$x" ]] && [[ "$(lipo -archs "$a" 2>/dev/null)" == *arm64* && "$(lipo -archs "$x" 2>/dev/null)" == *x86_64* ]]; then
         lipo -create "$a" "$x" -output "$scratch/$config/$prod" 2>>"$log" || { echo "  ✗ lipo $prod: $(tail -1 "$log")"; [[ $prod == SalentaOS ]] && code=1; }
@@ -70,7 +77,8 @@ if [[ $release -eq 1 ]]; then
         [[ $prod == SalentaOS ]] && code=1
       fi
     done
-    for b in "$scratch/arm64"/*/$config/*.bundle(N); do cp -R "$b" "$scratch/$config/"; done
+    abin="$(swift build -c $config --package-path "$here" --scratch-path "$scratch/arm64" --triple arm64-apple-macosx14.0 --show-bin-path 2>/dev/null | tail -1)"
+    for b in "$abin"/*.bundle(N) "$scratch/arm64"/*/$config/*.bundle(N); do cp -R "$b" "$scratch/$config/"; done
     echo "  · vereint: $(lipo -archs "$scratch/$config/SalentaOS" 2>/dev/null)"
   fi
 else

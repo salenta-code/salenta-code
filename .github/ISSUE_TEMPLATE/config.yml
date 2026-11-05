@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & ideas
+    url: https://github.com/salenta-code/salenta-code/discussions
+    about: Ask questions and share ideas in Discussions.
+  - name: Security problem
+    url: https://github.com/salenta-code/salenta-code/blob/main/SECURITY.md
+    about: Please report security problems privately.
