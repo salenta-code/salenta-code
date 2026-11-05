@@ -40,7 +40,7 @@ fi
 # Impressum und Datenschutz müssen die Anbieter-Anschrift zeigen (gesetzlich vorgeschrieben):
 # Wörter, die in website/impressum.json stehen, sind nur auf diesen drei Seiten erlaubt – überall sonst nicht.
 legal='^website/(impressum\.html|datenschutz\.html|impressum\.json)$'
-for w in "${words[@]}"; do
+for w in ${words[@]+"${words[@]}"}; do
   scope="$files"
   if [[ -f website/impressum.json ]] && grep -qiF -- "$w" website/impressum.json; then scope=$(echo "$files" | grep -vE "$legal"); fi
   hits=$(echo "$scope" | tr '\n' '\0' | xargs -0 grep -nIiF -- "$w" 2>/dev/null | cut -c1-160)
@@ -54,7 +54,7 @@ if [[ $# -ge 1 && -d "$1" ]]; then
   echo "$blob" | grep -qE "$secrets" && { echo "✗ Schlüssel in der App"; fail=1; }
   user=$(id -un)
   echo "$blob" | grep -qF "/Users/$user" && { echo "✗ Pfad /Users/$user ist in die App eingebaut"; echo "$blob" | grep -F "/Users/$user" | head -3; fail=1; }
-  for w in "${words[@]}"; do echo "$blob" | grep -qiF -- "$w" && { echo "✗ „$w“ steckt in der App"; fail=1; }; done
+  for w in ${words[@]+"${words[@]}"}; do echo "$blob" | grep -qiF -- "$w" && { echo "✗ „$w“ steckt in der App"; fail=1; }; done
   [[ -d "$app/Contents/Resources/data" ]] && { echo "✗ data/ ist in die App gepackt"; fail=1; }
 fi
 
