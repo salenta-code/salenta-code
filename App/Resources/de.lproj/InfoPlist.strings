@@ -1,0 +1,6 @@
+"NSCalendarsFullAccessUsageDescription" = "Salenta Code zeigt deine Termine und lässt Agents Termine anlegen.";
+"NSCalendarsUsageDescription" = "Salenta Code zeigt deine Termine und lässt Agents Termine anlegen.";
+"NSAppleEventsUsageDescription" = "Salenta Code liest und sendet Mails über Apple Mail und holt Browser-Tabs nach vorn.";
+"NSSpeechRecognitionUsageDescription" = "Damit du mit dem Assistenten sprechen kannst.";
+"NSCameraUsageDescription" = "Für Videoanrufe in eingebetteten Web-Apps.";
+"NSMicrophoneUsageDescription" = "Für Spracheingabe und Anrufe in eingebetteten Web-Apps.";

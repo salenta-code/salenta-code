@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Salenta Code</title>
+<meta name="description" content="The free, open-source Mac workspace for AI coding agents: Claude Code, Codex, Cursor, Gemini CLI, Junie and local models – with one-click pull requests, mail, calendar and tasks.">
+<meta property="og:title" content="Salenta Code">
+<meta property="og:description" content="The free, open-source Mac workspace for AI coding agents: Claude Code, Codex, Cursor, Gemini CLI, Junie and local models – with one-click pull requests, mail, calendar and tasks.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://code.salenta.ai/">
+<meta property="og:image" content="https://code.salenta.ai/og.png">
+<meta name="theme-color" content="#09090b">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preload" href="fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#" aria-label="Salenta Code"><svg class="mark" viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="lbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2A2A30"/><stop offset="1" stop-color="#0A0A0C"/></linearGradient></defs><rect width="512" height="512" rx="114" fill="url(#lbg)"/><rect x="4" y="4" width="504" height="504" rx="110" fill="none" stroke="#fff" stroke-opacity=".14" stroke-width="8"/><path d="M118 256 H208 L236 168 L276 344 L316 136 L348 256 H394" fill="none" stroke="#fff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/><circle cx="394" cy="256" r="22" fill="#fff"/></svg><span class="name">Salenta Code</span></a>
+    <nav class="nav" id="nav" aria-label="Sections">
+      <a href="#coding"><span data-l="en">Coding</span><span data-l="de">Coden</span></a>
+      <a href="#ship">Pull Requests</a>
+      <a href="#local"><span data-l="en">Local</span><span data-l="de">Lokal</span></a>
+      <a href="#workspace"><span data-l="en">Workspace</span><span data-l="de">Arbeitsplatz</span></a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/salenta-code/salenta-code">GitHub</a>
+    </nav>
+    <span class="grow"></span>
+    <div class="lang" role="group" aria-label="Language / Sprache"><button type="button" id="lang-en" data-set="en" aria-pressed="true">EN</button><button type="button" id="lang-de" data-set="de" aria-pressed="false">DE</button></div>
+    <a class="btn white sm dl-top" href="https://github.com/salenta-code/salenta-code/releases/latest/download/Salenta-Code.dmg"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8M4.5 7L8 10.5 11.5 7M3 13.5h10" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="lbl"><span data-l="en">Download</span><span data-l="de">Laden</span></span></a>
+    <button type="button" class="menu-btn" aria-controls="nav" aria-expanded="false" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  </div>
+</header>
+<main>
+<section class="hero">
+  <div class="spot" aria-hidden="true"></div>
+  <div class="wrap hero-in">
+    <svg class="icon-hero" viewBox="0 0 512 512" role="img" aria-label="Salenta Code">
+      <defs>
+        <linearGradient id="hbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2A2A30"/><stop offset="1" stop-color="#0A0A0C"/></linearGradient>
+        <radialGradient id="hsh" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(176 140) rotate(55) scale(280 220)"><stop offset="0" stop-color="#fff" stop-opacity=".14"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+        <filter id="hgl" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="9"/></filter>
+      </defs>
+      <rect width="512" height="512" rx="114" fill="url(#hbg)"/>
+      <rect width="512" height="512" rx="114" fill="url(#hsh)"/>
+      <rect x="1.5" y="1.5" width="509" height="509" rx="112.5" fill="none" stroke="#fff" stroke-opacity=".08" stroke-width="3"/>
+      <path class="pulse-draw" pathLength="100" d="M118 256 H208 L236 168 L276 344 L316 136 L348 256 H394" fill="none" stroke="#fff" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+      <path class="pulse-glow" pathLength="100" d="M118 256 H208 L236 168 L276 344 L316 136 L348 256 H394" fill="none" stroke="#fff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" filter="url(#hgl)"/>
+      <circle class="end-dot" cx="394" cy="256" r="18" fill="#fff"/>
+    </svg>
+    <a class="badge" href="#workspace"><span class="pill">v<span class="ver">0.2.0</span></span><span data-l="en">A whole workspace, not another chat window</span><span data-l="de">Ein ganzer Arbeitsplatz, kein weiteres Chatfenster</span> →</a>
+    <h1><span data-l="en"><span class="w">Every</span> <span class="w" style="animation-delay:.08s">coding</span> <span class="w" style="animation-delay:.16s">agent.</span> <span class="w dim" style="animation-delay:.24s">One</span> <span class="w dim" style="animation-delay:.32s">Mac</span> <span class="w dim" style="animation-delay:.4s">app.</span></span><span data-l="de"><span class="w">Alle</span> <span class="w" style="animation-delay:.08s">Coding-Agents.</span> <span class="w dim" style="animation-delay:.16s">Eine</span> <span class="w dim" style="animation-delay:.24s">Mac-App.</span></span></h1>
+    <p class="lede"><span data-l="en">Claude Code, Codex, Cursor, Gemini, Junie and local models in one calm workspace. Write what should happen. Salenta Code picks the agent, works in a safe copy, checks like your CI and opens the pull request – plus mail, calendar, tasks and notes right next to it.</span><span data-l="de">Claude Code, Codex, Cursor, Gemini, Junie und lokale Modelle in einem ruhigen Arbeitsplatz. Schreib, was passieren soll. Salenta Code wählt den Agent, arbeitet in einer sicheren Kopie, prüft wie deine CI und öffnet den Pull Request – und daneben Mail, Kalender, Aufgaben und Notizen.</span></p>
+    <div class="cta">
+      <a class="btn white" href="https://github.com/salenta-code/salenta-code/releases/latest/download/Salenta-Code.dmg">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.4 12.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3.1-2-3.7-2-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.3-.9-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.6 1.3-.1 1.8-.8 3.3-.8 1.6 0 2 .8 3.4.8 1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9 0 0-2.8-1.1-2.8-4zM13.9 5c.7-.8 1.2-2 1-3.2-1 .1-2.2.7-3 1.5-.6.7-1.2 1.9-1 3.1 1.1.1 2.3-.6 3-1.4z"/></svg>
+        <span data-l="en">Download for Mac</span><span data-l="de">Für den Mac laden</span>
+      </a>
+      <a class="btn line" href="https://github.com/salenta-code/salenta-code">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 .2a8 8 0 0 0-2.5 15.6c.4.1.5-.2.5-.4v-1.4c-2.2.5-2.7-1-2.7-1-.4-.9-.9-1.2-.9-1.2-.7-.5.1-.5.1-.5.8.1 1.2.8 1.2.8.7 1.2 1.9.9 2.4.7.1-.5.3-.9.5-1.1-1.8-.2-3.6-.9-3.6-4 0-.9.3-1.6.8-2.1-.1-.2-.4-1 .1-2.1 0 0 .7-.2 2.2.8a7.5 7.5 0 0 1 4 0c1.5-1 2.2-.8 2.2-.8.4 1.1.2 1.9.1 2.1.5.6.8 1.3.8 2.1 0 3.1-1.9 3.7-3.6 3.9.3.3.5.8.5 1.5v2.2c0 .2.1.5.6.4A8 8 0 0 0 8 .2z"/></svg>
+        <span data-l="en">Star on GitHub</span><span data-l="de">Auf GitHub ansehen</span>
+      </a>
+    </div>
+    <div class="meta">
+      <span>Universal · Apple Silicon &amp; Intel</span><span>macOS 14+</span><span><span data-l="en">Notarized by Apple</span><span data-l="de">Von Apple notarisiert</span></span><span><span data-l="en">Free · Apache-2.0</span><span data-l="de">Kostenlos · Apache-2.0</span></span>
+    </div>
+  </div>
+
+  <div class="wrap stage">
+    <div class="win" id="demo" role="img" aria-label="Salenta Code: a task running through its work phases and ending in a pull request">
+      <div class="wbar"><i></i><i></i><i></i><span class="ttl">Salenta Code</span></div>
+      <div class="wbody">
+        <aside class="sb" aria-hidden="true">
+          <div class="it"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Mission Control</span><span class="r">3</span></div>
+          <div class="it"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span><span data-l="en">Projects</span><span data-l="de">Projekte</span></span></div>
+          <h6><span data-l="en">Tasks</span><span data-l="de">Aufträge</span></h6>
+          <div class="it on"><span class="s run"></span><span><span data-l="en">Dark mode switch</span><span data-l="de">Dark-Mode-Schalter</span></span></div>
+          <div class="it sub">↳ <span data-l="en">Helper · review</span><span data-l="de">Helfer · Review</span></div>
+          <div class="it sub">↳ Mod · Changelog</div>
+          <div class="it"><span class="s wait"></span><span><span data-l="en">Migrate to sessions</span><span data-l="de">Auf Sessions umstellen</span></span><span class="r">!</span></div>
+          <div class="it"><span class="s run"></span><span><span data-l="en">Fix the login test</span><span data-l="de">Login-Test reparieren</span></span></div>
+          <div class="it"><span class="s ok"></span><span><span data-l="en">Rename cart helpers</span><span data-l="de">Warenkorb-Helfer umbenennen</span></span></div>
+          <h6><span data-l="en">Today</span><span data-l="de">Heute</span></h6>
+          <div class="it"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg><span>Mail</span><span class="r">4</span></div>
+          <div class="it"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg><span><span data-l="en">Calendar</span><span data-l="de">Kalender</span></span><span class="r">2</span></div>
+          <h6>Agents</h6>
+          <div class="it"><span>Claude Code</span><span class="r">41%</span></div>
+          <div class="it"><span>Codex</span><span class="r">12%</span></div>
+          <div class="it"><span>Ollama · <span data-l="en">local</span><span data-l="de">lokal</span></span><span class="r">∞</span></div>
+        </aside>
+        <div class="mn-wrap">
+          <div class="mn">
+            <div class="composer">
+              <div class="txt"><span data-l="en">Add a dark mode switch to the settings page and remember the choice.</span><span data-l="de">Bau auf der Einstellungsseite einen Dark-Mode-Schalter ein und merk dir die Wahl.</span></div>
+              <div class="chips"><span class="chip agent">Claude Code · Sonnet</span><span class="chip">my-shop</span><span class="chip">frontend-design</span><span class="chip">context7</span><span class="chip">playwright</span></div>
+            </div>
+            <div class="phases">
+              <div class="ph done"><span class="ic"><svg viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.5l4.5-5" fill="none" stroke="#0b0b0d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span><span data-l="en">Understand &amp; plan</span><span data-l="de">Verstehen &amp; planen</span></span><span class="tl">4s</span></div>
+              <div class="ph done"><span class="ic"><svg viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.5l4.5-5" fill="none" stroke="#0b0b0d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span><span data-l="en">Implement</span><span data-l="de">Umsetzen</span></span><span class="tl">38s</span></div>
+              <div class="ph done"><span class="ic"><svg viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.5l4.5-5" fill="none" stroke="#0b0b0d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span><span data-l="en">Clean up</span><span data-l="de">Aufräumen</span></span><span class="tl">6s</span></div>
+              <div class="ph done"><span class="ic"><svg viewBox="0 0 12 12"><path d="M2.5 6.2 5 8.5l4.5-5" fill="none" stroke="#0b0b0d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span><span data-l="en">Check like the CI</span><span data-l="de">Prüfen wie die CI</span> · <code>npm run lint</code> <code>npm test</code></span><span class="tl">21s</span></div>
+            </div>
+            <div class="diff">
+              <div class="fh"><span>src/settings/Appearance.tsx</span><span><b class="p">+6</b> <b class="m">−1</b></span></div>
+              <span class="ln ctx">  export function Appearance() {</span>
+              <span class="ln d">-   return &lt;Section title="Appearance" /&gt;</span>
+              <span class="ln a">+   const [dark, setDark] = useStoredState("theme.dark", false)</span>
+              <span class="ln a">+   return (</span>
+              <span class="ln a">+     &lt;Section title="Appearance"&gt;</span>
+              <span class="ln a">+       &lt;Switch label="Dark mode" checked={dark} onChange={setDark} /&gt;</span>
+              <span class="ln a">+     &lt;/Section&gt;)</span>
+              <span class="ln ctx">  }</span>
+            </div>
+            <div class="actions">
+              <span class="chk green">✓ <span class="cnt">4 / 4</span> <span class="lbl"><span data-l="en">checks green</span><span data-l="de">Prüfungen grün</span></span></span>
+              <span class="fake"><span data-l="en">Discard</span><span data-l="de">Verwerfen</span></span>
+              <span class="fake"><span data-l="en">Take over</span><span data-l="de">Übernehmen</span></span>
+              <span class="fake pri"><span data-l="en">Pull request…</span><span data-l="de">Pull Request …</span></span>
+            </div>
+          </div>
+          <div class="toast" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#32d74b" stroke-width="2" stroke-linecap="round"><path d="m3 8.5 3 3 7-7"/></svg><span><span data-l="en"><b>Pull request #42</b> opened as draft</span><span data-l="de"><b>Pull Request #42</b> als Entwurf geöffnet</span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="agents">
+  <p><span data-l="en">Works with the agents you already pay for</span><span data-l="de">Läuft mit den Agents, die du schon bezahlst</span></p>
+  <div class="marquee" aria-label="Supported agents">
+    <ul><li class="ag"><img src="logos/claude.svg" alt="" onerror="this.remove()"><span class="mono">CC</span>Claude Code <small>Anthropic</small></li><li class="ag"><img src="logos/codex.svg" alt="" onerror="this.remove()"><span class="mono">Cx</span>Codex <small>OpenAI</small></li><li class="ag"><img src="logos/cursor.svg" alt="" onerror="this.remove()"><span class="mono">Cu</span>Cursor <small>CLI</small></li><li class="ag"><img src="logos/gemini.svg" alt="" onerror="this.remove()"><span class="mono">Ge</span>Gemini CLI <small>Google</small></li><li class="ag"><img src="logos/junie.svg" alt="" onerror="this.remove()"><span class="mono">Ju</span>Junie <small>JetBrains</small></li><li class="ag"><img src="logos/ollama.svg" alt="" onerror="this.remove()"><span class="mono">Ol</span>Ollama <small><span data-l="en">local</span><span data-l="de">lokal</span></small></li><li class="ag"><img src="logos/github.svg" alt="" onerror="this.remove()"><span class="mono">GH</span>GitHub <small>PR · CI</small></li><li class="ag"><img src="logos/mcp.svg" alt="" onerror="this.remove()"><span class="mono">MCP</span>MCP <small><span data-l="en">servers</span><span data-l="de">Server</span></small></li><li class="ag"><img src="logos/obsidian.svg" alt="" onerror="this.remove()"><span class="mono">Ob</span>Obsidian <small><span data-l="en">notes</span><span data-l="de">Notizen</span></small></li></ul>
+    <ul aria-hidden="true"><li class="ag"><img src="logos/claude.svg" alt="" onerror="this.remove()"><span class="mono">CC</span>Claude Code <small>Anthropic</small></li><li class="ag"><img src="logos/codex.svg" alt="" onerror="this.remove()"><span class="mono">Cx</span>Codex <small>OpenAI</small></li><li class="ag"><img src="logos/cursor.svg" alt="" onerror="this.remove()"><span class="mono">Cu</span>Cursor <small>CLI</small></li><li class="ag"><img src="logos/gemini.svg" alt="" onerror="this.remove()"><span class="mono">Ge</span>Gemini CLI <small>Google</small></li><li class="ag"><img src="logos/junie.svg" alt="" onerror="this.remove()"><span class="mono">Ju</span>Junie <small>JetBrains</small></li><li class="ag"><img src="logos/ollama.svg" alt="" onerror="this.remove()"><span class="mono">Ol</span>Ollama <small><span data-l="en">local</span><span data-l="de">lokal</span></small></li><li class="ag"><img src="logos/github.svg" alt="" onerror="this.remove()"><span class="mono">GH</span>GitHub <small>PR · CI</small></li><li class="ag"><img src="logos/mcp.svg" alt="" onerror="this.remove()"><span class="mono">MCP</span>MCP <small><span data-l="en">servers</span><span data-l="de">Server</span></small></li><li class="ag"><img src="logos/obsidian.svg" alt="" onerror="this.remove()"><span class="mono">Ob</span>Obsidian <small><span data-l="en">notes</span><span data-l="de">Notizen</span></small></li></ul>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="stats rv">
+    <div><div class="n" data-to="6">6</div><div class="t"><span data-l="en">coding agents, routed automatically</span><span data-l="de">Coding-Agents, automatisch verteilt</span></div></div>
+    <div><div class="n" data-to="7">7</div><div class="t"><span data-l="en">work phases until the PR is green</span><span data-l="de">Arbeitsphasen bis der PR grün ist</span></div></div>
+    <div><div class="n" data-to="60">60</div><div class="t"><span data-l="en">self-tests before every update</span><span data-l="de">Selbsttests vor jedem Update</span></div></div>
+    <div><div class="n" data-to="0" data-suf=" €">0 €</div><div class="t"><span data-l="en">Free and open source</span><span data-l="de">Kostenlos und Open Source</span></div></div>
+  </div>
+</div>
+
+<!-- CODING -->
+<section class="blk wrap" id="coding">
+  <div class="eyebrow"><span data-l="en">Coding</span><span data-l="de">Coden</span></div>
+  <h2><span data-l="en">Run five agents at once. <span class="dim">Stay in control of all of them.</span></span><span data-l="de">Fünf Agents gleichzeitig. <span class="dim">Und du behältst den Überblick.</span></span></h2>
+  <div class="bento">
+    <div class="card w4 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></div>
+      <h3>Mission Control</h3>
+      <p><span data-l="en">Every running agent live on one screen: what it's doing, how full its context is, which tools are active. Helpers and mods sit indented under the task that started them.</span><span data-l="de">Jeder laufende Agent live auf einem Bildschirm: was er tut, wie voll sein Kontext ist, welche Werkzeuge aktiv sind. Helfer und Mods hängen eingerückt unter dem Auftrag, der sie gestartet hat.</span></p>
+      <div class="viz lanes" aria-hidden="true">
+        <div class="lane"><span>Claude Code</span><span class="bar"><i></i></span><span class="pc">ctx</span></div>
+        <div class="lane"><span>Codex</span><span class="bar"><i></i></span><span class="pc">ctx</span></div>
+        <div class="lane"><span>Ollama</span><span class="bar"><i></i></span><span class="pc">ctx</span></div>
+        <div class="lane"><span>Junie</span><span class="bar"><i></i></span><span class="pc">ctx</span></div>
+      </div>
+    </div>
+    <div class="card w2 rv" id="route">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg></div>
+      <h3><span data-l="en">Automatic routing</span><span data-l="de">Automatische Verteilung</span></h3>
+      <p><span data-l="en">The right agent and model for each job. At its limit? The next one takes over.</span><span data-l="de">Der passende Agent und das Modell für jede Aufgabe. Am Limit? Der nächste übernimmt.</span></p>
+      <div class="viz route" aria-hidden="true">
+        <div class="in"><b><span data-l="en">Build a checkout page</span><span data-l="de">Checkout-Seite bauen</span></b><small><span data-l="en">build → Claude Code</span><span data-l="de">bauen → Claude Code</span></small></div>
+        <div class="arr"></div>
+        <div class="out"><span class="sel">Claude Code</span><span>Junie</span><span>Codex</span><span>Ollama</span></div>
+      </div>
+    </div>
+    <div class="card w2 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7M18 10.5c0 4-6 3-11 5.5"/></svg></div>
+      <h3><span data-l="en">A safe copy for every task</span><span data-l="de">Eine sichere Kopie pro Auftrag</span></h3>
+      <p><span data-l="en">Each task works in its own git worktree. <code>.env</code> and <code>node_modules</code> come along, your project stays untouched until you take over.</span><span data-l="de">Jeder Auftrag arbeitet in einem eigenen Git-Worktree. <code>.env</code> und <code>node_modules</code> kommen mit, dein Projekt bleibt unberührt, bis du übernimmst.</span></p>
+    </div>
+    <div class="card w2 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg></div>
+      <h3><span data-l="en">Approvals for risky steps</span><span data-l="de">Freigaben für riskante Schritte</span></h3>
+      <p><span data-l="en">Editing and testing run freely. Push, delete, deploy and databases wait for you.</span><span data-l="de">Ändern und Testen laufen frei. Push, Löschen, Deploy und Datenbanken warten auf dich.</span></p>
+      <div class="viz approve" aria-hidden="true">
+        <div class="q"><span class="s wait"></span><span><span data-l="en">Agent wants to run</span><span data-l="de">Agent möchte ausführen</span></span> <code>git push</code></div>
+        <div class="b"><span><span data-l="en">Deny</span><span data-l="de">Ablehnen</span></span><span class="ok"><span data-l="en">Allow</span><span data-l="de">Erlauben</span></span></div>
+      </div>
+    </div>
+    <div class="card w2 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg></div>
+      <h3><span data-l="en">Rewind, plan, fan out</span><span data-l="de">Zurückspulen, planen, verteilen</span></h3>
+      <p><span data-l="en">Jump back to before any message. Let the agent plan first, then build. Or send the same task to several agents in parallel and keep the best result.</span><span data-l="de">Spring vor jede Nachricht zurück. Lass den Agent erst planen, dann bauen. Oder schick denselben Auftrag parallel an mehrere Agents und behalte das beste Ergebnis.</span></p>
+    </div>
+    <div class="card w3 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div>
+      <h3><span data-l="en">Projects that explain themselves</span><span data-l="de">Projekte, die sich selbst erklären</span></h3>
+      <p><span data-l="en">Branch, open changes, CI status, live preview, terminal and project rules per project. Every red or orange state says in one sentence what's wrong – and has a button that fixes it.</span><span data-l="de">Branch, offene Änderungen, CI-Status, Live-Vorschau, Terminal und Regeln pro Projekt. Jeder rote oder orange Zustand sagt in einem Satz, was los ist – und hat einen Knopf, der es behebt.</span></p>
+      <div class="viz" style="display:grid;gap:6px" aria-hidden="true">
+        <div class="row-ui"><span class="s run"></span><span class="tx">my-shop · main</span><span class="tag">↑ 2</span><span class="tag">CI ✓</span></div>
+        <div class="row-ui"><span class="s wait"></span><span class="tx"><span data-l="en">docs-site · CI red: lint fails in 1 file</span><span data-l="de">docs-site · CI rot: Lint scheitert in 1 Datei</span></span><span class="tag go"><span data-l="en">Fix</span><span data-l="de">Beheben</span></span></div>
+      </div>
+    </div>
+    <div class="card w3 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4.5-6 8-6s7 2 8 6"/></svg></div>
+      <h3><span data-l="en">Project steward</span><span data-l="de">Projektbetreuer</span></h3>
+      <p><span data-l="en">Hand a project over. A coordinator plans tasks, starts helpers, watches CI and only asks when it really needs you. You set how much it may do on its own.</span><span data-l="de">Übergib ein Projekt. Ein Koordinator plant Aufgaben, startet Helfer, beobachtet die CI und fragt nur, wenn er dich wirklich braucht. Du legst fest, wie viel er allein darf.</span></p>
+      <div class="viz" style="display:grid;gap:6px" aria-hidden="true">
+        <div class="row-ui"><span class="av">1</span><span class="tx"><span data-l="en">Plan: 3 tasks for the release</span><span data-l="de">Plan: 3 Aufgaben bis zum Release</span></span><span class="tag"><span data-l="en">planned</span><span data-l="de">geplant</span></span></div>
+        <div class="row-ui"><span class="av">2</span><span class="tx"><span data-l="en">Helper fixes flaky test</span><span data-l="de">Helfer repariert wackligen Test</span></span><span class="tag"><span data-l="en">running</span><span data-l="de">läuft</span></span></div>
+        <div class="row-ui"><span class="av">3</span><span class="tx"><span data-l="en">Needs you: choose payment provider</span><span data-l="de">Braucht dich: Zahlungsanbieter wählen</span></span><span class="tag go"><span data-l="en">Answer</span><span data-l="de">Antworten</span></span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SHIP -->
+<section class="blk wrap" id="ship">
+  <div class="eyebrow"><span data-l="en">Ship</span><span data-l="de">Ausliefern</span></div>
+  <h2><span data-l="en">One button. <span class="dim">Commit, push, pull request.</span></span><span data-l="de">Ein Knopf. <span class="dim">Commit, Push, Pull Request.</span></span></h2>
+  <div class="split">
+    <ul class="ticks rv">
+      <li><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/></svg><span><span data-l="en"><b>Title, description and changelog are already written</b> from your task and the real diff. Edit anything before it goes out.</span><span data-l="de"><b>Titel, Beschreibung und Changelog sind schon geschrieben</b> – aus deinem Auftrag und dem echten Diff. Alles lässt sich vorher ändern.</span></span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg><span><span data-l="en"><b>Review the diff inline</b>, file by file, in the same sheet.</span><span data-l="de"><b>Diff direkt prüfen</b>, Datei für Datei, im selben Fenster.</span></span></li>
+      <li><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="5" rx="1.5"/><rect x="4" y="11" width="16" height="5" rx="1.5"/><path d="M8 19h8"/></svg><span><span data-l="en"><b>Draft, stacked or amended.</b> Base a PR on another task's branch. Push more to the open PR while the agent keeps going.</span><span data-l="de"><b>Entwurf, gestapelt oder ergänzt.</b> Ein PR baut auf dem Branch eines anderen Auftrags auf. Neue Änderungen landen im offenen PR, während der Agent weiterarbeitet.</span></span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="m9 12 2 2 4-4"/></svg><span><span data-l="en"><b>Your GitHub sign-in</b> through <code>gh</code>. Never a force push.</span><span data-l="de"><b>Deine GitHub-Anmeldung</b> über <code>gh</code>. Nie ein Force-Push.</span></span></li>
+    </ul>
+    <div class="sheet rv" aria-hidden="true">
+      <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V9a3 3 0 0 0-3-3h-4"/><path d="m13 4-2 2 2 2"/></svg>Pull Request</div>
+      <div class="row"><span class="lab"><span data-l="en">Title</span><span data-l="de">Titel</span></span><span class="val" id="pr-title">feat(settings): dark mode switch with saved preference</span></div>
+      <div class="row"><span class="lab"><span data-l="en">Description</span><span data-l="de">Beschreibung</span></span><span class="val"><span data-l="en">Adds a dark mode switch to Settings › Appearance and saves the choice.</span><span data-l="de">Fügt in Einstellungen › Darstellung einen Dark-Mode-Schalter hinzu und speichert die Wahl.</span><small><span data-l="en">Tested: npm run lint · npm test · page checked in the browser</span><span data-l="de">Geprüft: npm run lint · npm test · Seite im Browser geprüft</span></small></span></div>
+      <div class="row"><span class="lab">Base</span><span class="val">main<small><span data-l="en">or task/fix-login-test (stacked)</span><span data-l="de">oder task/fix-login-test (gestapelt)</span></small></span></div>
+      <div class="row"><span class="lab"><span data-l="en">Changes</span><span data-l="de">Änderungen</span></span><div class="files"><div><span>src/settings/Appearance.tsx</span><span><span class="p">+6</span> <span class="m">−1</span></span></div><div><span>src/hooks/useStoredState.ts</span><span><span class="p">+18</span></span></div><div><span>CHANGELOG.md</span><span><span class="p">+3</span></span></div></div></div>
+      <div class="row"><span class="lab"><span data-l="en">Options</span><span data-l="de">Optionen</span></span><div class="opts"><span class="tog on"><i></i><span data-l="en">Draft</span><span data-l="de">Entwurf</span></span><span class="tog on"><i></i>Changelog</span><span class="tog"><i></i><span data-l="en">Close task</span><span data-l="de">Auftrag schließen</span></span></div></div>
+      <div class="foot"><span class="fake"><span data-l="en">Cancel</span><span data-l="de">Abbrechen</span></span><span class="fake pri"><span data-l="en">Create pull request</span><span data-l="de">Pull Request erstellen</span></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- FLOW -->
+<section class="blk wrap" id="flow">
+  <div class="eyebrow"><span data-l="en">How a task runs</span><span data-l="de">So läuft ein Auftrag</span></div>
+  <h2><span data-l="en">Green on GitHub <span class="dim">the first time.</span></span><span data-l="de">Grün auf GitHub <span class="dim">beim ersten Push.</span></span></h2>
+  <p class="sub"><span data-l="en">Every coding task follows the same seven phases. In each one the agent gets exactly the extensions and skills you've installed that help there – and runs the same checks as your GitHub workflows.</span><span data-l="de">Jeder Code-Auftrag folgt denselben sieben Phasen. In jeder bekommt der Agent genau die installierten Erweiterungen und Skills, die dort helfen – und führt dieselben Prüfungen aus wie deine GitHub-Workflows.</span></p>
+  <div class="timeline">
+    <svg class="line" viewBox="0 0 1000 60" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 30 H360 L380 30 L395 6 L415 54 L435 0 L450 30 H1000"/>
+      <path class="lit" pathLength="1" d="M0 30 H360 L380 30 L395 6 L415 54 L435 0 L450 30 H1000"/>
+    </svg>
+    <ol class="steps">
+      <li class="rv"><b><span data-l="en">Understand &amp; plan</span><span data-l="de">Verstehen &amp; planen</span></b><span><span data-l="en">Reads CLAUDE.md and the code, writes a short plan.</span><span data-l="de">Liest CLAUDE.md und den Code, schreibt einen kurzen Plan.</span></span><div class="tools"><em>superpowers</em><em>feature-dev</em></div></li>
+      <li class="rv"><b><span data-l="en">Implement</span><span data-l="de">Umsetzen</span></b><span><span data-l="en">Current docs instead of guesses, your project's style.</span><span data-l="de">Aktuelle Doku statt Vermutungen, Stil deines Projekts.</span></span><div class="tools"><em>context7</em><em>frontend-design</em></div></li>
+      <li class="rv"><b><span data-l="en">Clean up</span><span data-l="de">Aufräumen</span></b><span><span data-l="en">No debug output, no dead code, no duplicates.</span><span data-l="de">Keine Debug-Ausgaben, kein toter Code, keine Doppelungen.</span></span><div class="tools"><em>code-simplifier</em></div></li>
+      <li class="rv"><b><span data-l="en">Check like the CI</span><span data-l="de">Prüfen wie die CI</span></b><span><span data-l="en">Lint, types, tests and build taken from your workflows.</span><span data-l="de">Lint, Typen, Tests und Build aus deinen Workflows.</span></span><div class="tools"><em>playwright</em><em>.github/workflows</em></div></li>
+      <li class="rv"><b><span data-l="en">Security</span><span data-l="de">Sicherheit</span></b><span><span data-l="en">For login, payments, keys and deploys.</span><span data-l="de">Bei Login, Zahlungen, Schlüsseln und Deploys.</span></span><div class="tools"><em>security-review</em></div></li>
+      <li class="rv"><b><span data-l="en">Self-review</span><span data-l="de">Selbst-Review</span></b><span><span data-l="en">Reads its own diff like a strict colleague.</span><span data-l="de">Liest den eigenen Diff wie ein strenger Kollege.</span></span><div class="tools"><em>code-review</em></div></li>
+      <li class="rv"><b><span data-l="en">Finish</span><span data-l="de">Abschließen</span></b><span><span data-l="en">Clear commits and a short report.</span><span data-l="de">Klare Commits und ein kurzer Bericht.</span></span><div class="tools"><em>feat:</em><em>fix:</em></div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- EXTEND -->
+<section class="blk wrap" id="extend">
+  <div class="eyebrow"><span data-l="en">Extend</span><span data-l="de">Erweitern</span></div>
+  <h2><span data-l="en">Plugins, skills, MCP and your own automations.</span><span data-l="de">Plugins, Skills, MCP und eigene Automationen.</span></h2>
+  <div class="bento">
+    <div class="card w2 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg></div>
+      <h3><span data-l="en">Extensions</span><span data-l="de">Erweiterungen</span></h3>
+      <p><span data-l="en">A vetted catalog of plugins, skills and MCP servers. Install with one click; new ones are suggested daily and used in exactly the phase where they help.</span><span data-l="de">Ein geprüfter Katalog aus Plugins, Skills und MCP-Servern. Ein Klick installiert; täglich kommen Vorschläge, und jede Erweiterung wird genau in der Phase genutzt, in der sie hilft.</span></p>
+    </div>
+    <div class="card w2 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M9 7H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h4M15 7h4a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-4M8 12h8"/></svg></div>
+      <h3><span data-l="en">All your MCP servers</span><span data-l="de">Alle deine MCP-Server</span></h3>
+      <p><span data-l="en">Salenta Code finds the MCP servers you set up in Claude Code, Codex, Cursor, Claude Desktop and Junie, shows their status by purpose and repairs them. Secrets are read at runtime and never stored.</span><span data-l="de">Salenta Code findet die MCP-Server aus Claude Code, Codex, Cursor, Claude Desktop und Junie, zeigt ihren Status nach Zweck sortiert und repariert sie. Geheimnisse werden nur zur Laufzeit gelesen, nie gespeichert.</span></p>
+    </div>
+    <div class="card w2 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></div>
+      <h3>Mods</h3>
+      <p><span data-l="en">Small automations on events. Start from the gallery or build your own.</span><span data-l="de">Kleine Automationen auf Ereignisse. Aus der Galerie starten oder selbst bauen.</span></p>
+      <div class="viz flowmini" aria-hidden="true"><span class="cev"><span data-l="en">CI turns red</span><span data-l="de">CI wird rot</span></span><i></i><span class="ac"><span data-l="en">Agent finds the bug</span><span data-l="de">Agent sucht den Fehler</span></span></div>
+      <div class="viz flowmini" style="margin-top:8px" aria-hidden="true"><span class="cev"><span data-l="en">Taken over</span><span data-l="de">Übernommen</span></span><i></i><span class="ac"><span data-l="en">Security check</span><span data-l="de">Sicherheits-Check</span></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- LOCAL -->
+<section class="blk wrap" id="local">
+  <div class="eyebrow"><span data-l="en">Local &amp; offline</span><span data-l="de">Lokal &amp; offline</span></div>
+  <h2><span data-l="en">Small jobs stay on your Mac. <span class="dim">Free and private.</span></span><span data-l="de">Kleine Aufgaben bleiben auf deinem Mac. <span class="dim">Kostenlos und privat.</span></span></h2>
+  <div class="split rev">
+    <ul class="ticks rv">
+      <li><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span><span data-l="en"><b>Models that fit your Mac's memory</b>, recommended and downloaded with one click through Ollama.</span><span data-l="de"><b>Modelle passend zum Speicher deines Macs</b>, empfohlen und mit einem Klick über Ollama geladen.</span></span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M4 12h16M14 6l6 6-6 6"/></svg><span><span data-l="en"><b>Typos, renames, comments and texts run locally</b> – only when the task is small and safe and the model hasn't failed at it in that project. Otherwise Claude takes over automatically.</span><span data-l="de"><b>Tippfehler, Umbenennen, Kommentare und Texte laufen lokal</b> – nur wenn der Auftrag klein und sicher ist und das Modell im Projekt nicht daran gescheitert ist. Sonst übernimmt Claude automatisch.</span></span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M2 2l20 20M8.5 16.5a5 5 0 0 1 7 0M5 13a10 10 0 0 1 5.2-2.8M12 20h.01"/></svg><span><span data-l="en"><b>Offline mode:</b> tasks, helpers, mods, reviews and summaries use only the local model. No text leaves your Mac for an AI.</span><span data-l="de"><b>Offline-Modus:</b> Aufträge, Helfer, Mods, Reviews und Zusammenfassungen nutzen nur das lokale Modell. Kein Text verlässt deinen Mac in Richtung einer KI.</span></span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M12 7v5l3 3"/></svg><span><span data-l="en"><b>Internet gone?</b> Running work continues on the local model.</span><span data-l="de"><b>Internet weg?</b> Laufende Arbeit geht mit dem lokalen Modell weiter.</span></span></li>
+    </ul>
+    <div class="term rv" id="term" aria-hidden="true">
+<div class="ln"><span class="k">task </span> <span data-l="en">fix typo in README headline</span><span data-l="de">Tippfehler in README-Überschrift</span></div>
+<div class="ln"><span class="k">route</span> complexity=small · localOK=true</div>
+<div class="ln"><span class="k">agent</span> <span class="y">ollama · qwen3-coder</span></div>
+<div class="ln"><span class="k">done </span> <span class="g">✓ 1 file · 2.4 s · 0 €</span></div>
+<div class="ln"> </div>
+<div class="ln"><span class="k">task </span> <span data-l="en">migrate auth to sessions</span><span data-l="de">Auth auf Sessions umstellen</span></div>
+<div class="ln"><span class="k">route</span> complexity=large · localOK=false</div>
+<div class="ln"><span class="k">agent</span> <span class="o">claude code · opus</span></div>
+<div class="ln"> </div>
+<div class="ln"><span class="k">month</span> <span class="g"><span data-l="en">38% of tasks ran locally</span><span data-l="de">38 % der Aufträge liefen lokal</span></span></div>
+    </div>
+  </div>
+  <div class="bento">
+    <div class="card w3 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div>
+      <h3><span data-l="en">Usage and limits</span><span data-l="de">Verbrauch und Limits</span></h3>
+      <p><span data-l="en">How close each agent is to its 5-hour and weekly limit, tokens per model and day, and which agent actually succeeds. When it gets tight, new tasks move on their own.</span><span data-l="de">Wie nah jeder Agent am 5-Stunden- und Wochenlimit ist, Tokens pro Modell und Tag und welcher Agent wirklich erfolgreich ist. Wird es knapp, wandern neue Aufträge von selbst.</span></p>
+      <div class="viz meter" aria-hidden="true">
+        <div class="m"><div><span>Claude · <span data-l="en">5 hours</span><span data-l="de">5 Stunden</span></span><span>68%</span></div><div class="track"><i class="warn" style="--v:68%"></i></div></div>
+        <div class="m"><div><span>Claude · <span data-l="en">week</span><span data-l="de">Woche</span></span><span>41%</span></div><div class="track"><i style="--v:41%"></i></div></div>
+        <div class="m"><div><span>Codex · <span data-l="en">week</span><span data-l="de">Woche</span></span><span>12%</span></div><div class="track"><i style="--v:12%"></i></div></div>
+      </div>
+    </div>
+    <div class="card w3 rv">
+      <div class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 15l3-3 3 2 4-5"/></svg></div>
+      <h3><span data-l="en">Weekly recap</span><span data-l="de">Wochenrückblick</span></h3>
+      <p><span data-l="en">Tasks done, agent hours, success rate and what your model choice saved – as a card you can share, with the post text already written.</span><span data-l="de">Erledigte Aufträge, Agent-Stunden, Erfolgsquote und was die Modellwahl gespart hat – als teilbare Karte, mit fertigem Post-Text.</span></p>
+      <div class="viz wid" aria-hidden="true">
+        <div><b data-to="47">47</b><span data-l="en">tasks</span><span data-l="de">Aufträge</span></div>
+        <div><b data-to="31" data-suf=" h">31 h</b><span data-l="en">agent time</span><span data-l="de">Agent-Zeit</span></div>
+        <div><b data-to="94" data-suf="%">94%</b><span data-l="en">success</span><span data-l="de">Erfolg</span></div>
+        <div><b data-to="38" data-suf="%">38%</b><span data-l="en">ran locally</span><span data-l="de">lief lokal</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- WORKSPACE -->
+<section class="blk wrap" id="workspace">
+  <div class="eyebrow"><span data-l="en">Your whole day</span><span data-l="de">Dein ganzer Tag</span></div>
+  <h2><span data-l="en">Not just code. <span class="dim">Your mail, calendar, tasks and notes – next to your agents.</span></span><span data-l="de">Nicht nur Code. <span class="dim">Mail, Kalender, Aufgaben und Notizen – direkt neben deinen Agents.</span></span></h2>
+  <div class="tabs" role="tablist" aria-label="Workspace">
+    <button type="button" role="tab" id="tab-cockpit" aria-controls="tp-cockpit"><svg viewBox="0 0 24 24"><path d="M3 12 12 3l9 9M5 10v10h14V10"/></svg>Cockpit<span class="prog"></span></button>
+    <button type="button" role="tab" id="tab-mail" aria-controls="tp-mail"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>Mail<span class="prog"></span></button>
+    <button type="button" role="tab" id="tab-cal" aria-controls="tp-cal"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg><span data-l="en">Calendar</span><span data-l="de">Kalender</span><span class="prog"></span></button>
+    <button type="button" role="tab" id="tab-tasks" aria-controls="tp-tasks"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg><span data-l="en">Tasks</span><span data-l="de">Aufgaben</span><span class="prog"></span></button>
+    <button type="button" role="tab" id="tab-know" aria-controls="tp-know"><svg viewBox="0 0 24 24"><path d="M4 4h12l4 4v12H4z"/><path d="M8 12h8M8 16h5"/></svg><span data-l="en">Knowledge</span><span data-l="de">Wissen</span><span class="prog"></span></button>
+  </div>
+  <div class="panel-frame rv">
+    <div class="tp" id="tp-cockpit" role="tabpanel" aria-labelledby="tab-cockpit">
+      <div class="panel-txt"><h3>Cockpit</h3><p><span data-l="en">Your start page: what's due today, what's running, what came in.</span><span data-l="de">Deine Startseite: was heute dran ist, was läuft, was reinkam.</span></p><ul><li><span data-l="en">Coding on the left: what needs you, CI, projects</span><span data-l="de">Links Coden: was dich braucht, CI, Projekte</span></li><li><span data-l="en">Your day on the right: events, mail, to-dos</span><span data-l="de">Rechts dein Tag: Termine, Mails, To-dos</span></li><li><span data-l="en">One click into any of it</span><span data-l="de">Ein Klick in alles hinein</span></li></ul></div>
+      <div class="panel-ui" aria-hidden="true"><div class="cockpit"><div><small><span data-l="en">Needs you</span><span data-l="de">Braucht dich</span></small><b>2</b></div><div><small><span data-l="en">Running</span><span data-l="de">Laufen</span></small><b>3</b></div><div><small><span data-l="en">Events today</span><span data-l="de">Termine heute</span></small><b>4</b></div><div><small><span data-l="en">Unread</span><span data-l="de">Ungelesen</span></small><b>12</b></div></div><div class="row-ui"><span class="s wait"></span><span class="tx"><span data-l="en">Approval: git push in my-shop</span><span data-l="de">Freigabe: git push in my-shop</span></span><span class="tag go"><span data-l="en">Allow</span><span data-l="de">Erlauben</span></span></div><div class="row-ui"><span class="s run"></span><span class="tx"><span data-l="en">Dark mode switch · phase 4 of 7</span><span data-l="de">Dark-Mode-Schalter · Phase 4 von 7</span></span></div><div class="row-ui"><span class="s ok"></span><span class="tx"><span data-l="en">10:30 Design review</span><span data-l="de">10:30 Design-Review</span></span></div></div>
+    </div>
+    <div class="tp" id="tp-mail" role="tabpanel" aria-labelledby="tab-mail">
+      <div class="panel-txt"><h3>Mail</h3><p><span data-l="en">All accounts from Apple Mail in one inbox.</span><span data-l="de">Alle Konten aus Apple Mail in einem Posteingang.</span></p><ul><li><span data-l="en">Read, reply, archive</span><span data-l="de">Lesen, antworten, archivieren</span></li><li><span data-l="en">Hand a mail to an agent: “turn this bug report into a fix”</span><span data-l="de">Eine Mail an einen Agent geben: „Mach aus diesem Fehlerbericht einen Fix“</span></li><li><span data-l="en">No extra account, no sync service</span><span data-l="de">Kein Extra-Konto, kein Sync-Dienst</span></li></ul></div>
+      <div class="panel-ui" aria-hidden="true"><div class="row-ui"><span class="av">AK</span><span class="grow"><b><span data-l="en">Bug: checkout total wrong</span><span data-l="de">Fehler: Checkout-Summe falsch</span></b><br><small><span data-l="en">Total shows 0,00 € after coupon…</span><span data-l="de">Summe zeigt 0,00 € nach Gutschein …</span></small></span><span class="tag go"><span data-l="en">To agent</span><span data-l="de">An Agent</span></span></div><div class="row-ui"><span class="av">GH</span><span class="grow"><b><span data-l="en">PR #41 approved</span><span data-l="de">PR #41 freigegeben</span></b><br><small><span data-l="en">Ready to merge</span><span data-l="de">Bereit zum Mergen</span></small></span><span class="tag">GitHub</span></div><div class="row-ui"><span class="av">LS</span><span class="grow"><b><span data-l="en">Next sprint</span><span data-l="de">Nächster Sprint</span></b><br><small><span data-l="en">Can we move the review to Thursday?</span><span data-l="de">Können wir das Review auf Donnerstag legen?</span></small></span><span class="tag"><span data-l="en">Reply</span><span data-l="de">Antworten</span></span></div></div>
+    </div>
+    <div class="tp" id="tp-cal" role="tabpanel" aria-labelledby="tab-cal">
+      <div class="panel-txt"><h3><span data-l="en">Calendar</span><span data-l="de">Kalender</span></h3><p><span data-l="en">Every calendar on your Mac – iCloud, Google, Exchange.</span><span data-l="de">Alle Kalender auf deinem Mac – iCloud, Google, Exchange.</span></p><ul><li><span data-l="en">Create, move and edit events</span><span data-l="de">Termine anlegen, verschieben, bearbeiten</span></li><li><span data-l="en">Agents see your day and plan around it</span><span data-l="de">Agents sehen deinen Tag und planen drumherum</span></li></ul></div>
+      <div class="panel-ui" aria-hidden="true"><div class="cal"><span class="h">09:00</span><div class="slot"><div class="cev"><span data-l="en">Stand-up</span><span data-l="de">Stand-up</span></div></div><span class="h">10:00</span><div class="slot"><div class="cev t"><span data-l="en">10:30 Design review</span><span data-l="de">10:30 Design-Review</span></div></div><span class="h">11:00</span><div class="slot"></div><span class="h">12:00</span><div class="slot"><div class="cev g"><span data-l="en">Lunch</span><span data-l="de">Mittag</span></div></div><span class="h">13:00</span><div class="slot"></div><span class="h">14:00</span><div class="slot"><div class="cev"><span data-l="en">Customer call</span><span data-l="de">Kundentermin</span></div></div></div></div>
+    </div>
+    <div class="tp" id="tp-tasks" role="tabpanel" aria-labelledby="tab-tasks">
+      <div class="panel-txt"><h3><span data-l="en">Tasks</span><span data-l="de">Aufgaben</span></h3><p><span data-l="en">Your to-dos, synced with Apple Reminders if you like.</span><span data-l="de">Deine To-dos, auf Wunsch mit Apple Erinnerungen synchron.</span></p><ul><li><span data-l="en">Agents read and complete them too</span><span data-l="de">Agents lesen und erledigen sie auch</span></li><li><span data-l="en">Turn a to-do into a task with one click</span><span data-l="de">Aus einem To-do mit einem Klick einen Auftrag machen</span></li></ul></div>
+      <div class="panel-ui" aria-hidden="true"><div class="row-ui"><span class="s ok"></span><span class="tx" style="text-decoration:line-through;color:var(--ink-3)"><span data-l="en">Update dependencies</span><span data-l="de">Abhängigkeiten aktualisieren</span></span><span class="tag">Agent</span></div><div class="row-ui"><span class="s run"></span><span class="tx"><span data-l="en">Write release notes 0.3</span><span data-l="de">Release Notes 0.3 schreiben</span></span><span class="tag"><span data-l="en">running</span><span data-l="de">läuft</span></span></div><div class="row-ui"><span class="s"></span><span class="tx"><span data-l="en">Answer support mails</span><span data-l="de">Support-Mails beantworten</span></span><span class="tag go"><span data-l="en">To agent</span><span data-l="de">An Agent</span></span></div><div class="row-ui"><span class="s"></span><span class="tx"><span data-l="en">Book flights</span><span data-l="de">Flüge buchen</span></span><span class="tag"><span data-l="en">Today</span><span data-l="de">Heute</span></span></div></div>
+    </div>
+    <div class="tp" id="tp-know" role="tabpanel" aria-labelledby="tab-know">
+      <div class="panel-txt"><h3><span data-l="en">Knowledge</span><span data-l="de">Wissen</span></h3><p><span data-l="en">Your Obsidian vault inside the app.</span><span data-l="de">Dein Obsidian-Vault in der App.</span></p><ul><li><span data-l="en">Folders, tags, search, editing</span><span data-l="de">Ordner, Tags, Suche, Bearbeiten</span></li><li><span data-l="en">Agents read it as context and write to your journal</span><span data-l="de">Agents lesen es als Kontext und schreiben ins Journal</span></li><li><span data-l="en">Project knowledge: what agents learned, pinned for all of them</span><span data-l="de">Projektwissen: was Agents gelernt haben, angeheftet für alle</span></li></ul></div>
+      <div class="panel-ui" aria-hidden="true"><div class="note"><h4><span data-l="en">Architecture – my-shop</span><span data-l="de">Architektur – my-shop</span></h4><span data-l="en">Payments go through <span class="wl">&#91;&#91;Stripe&#93;&#93;</span>, sessions live in <span class="wl">&#91;&#91;Postgres&#93;&#93;</span>. Never call the API from the client.</span><span data-l="de">Zahlungen laufen über <span class="wl">&#91;&#91;Stripe&#93;&#93;</span>, Sessions liegen in <span class="wl">&#91;&#91;Postgres&#93;&#93;</span>. Nie die API direkt aus dem Client aufrufen.</span><br><small style="color:var(--ink-3)">#<span data-l="en">architecture</span><span data-l="de">architektur</span> · <span data-l="en">pinned for agents</span><span data-l="de">für Agents angeheftet</span></small></div><div class="row-ui"><span class="tx"><span data-l="en">Journal · today: agent finished dark mode, PR #42</span><span data-l="de">Journal · heute: Agent hat Dark Mode fertig, PR #42</span></span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- MAC -->
+<section class="blk wrap" id="mac">
+  <div class="eyebrow"><span data-l="en">Made for the Mac</span><span data-l="de">Gemacht für den Mac</span></div>
+  <h2><span data-l="en">Native, fast, <span class="dim">and always one shortcut away.</span></span><span data-l="de">Nativ, schnell <span class="dim">und immer nur ein Kürzel entfernt.</span></span></h2>
+  <div class="macgrid">
+    <div class="rv"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="4" rx="1"/><path d="M15 5h3"/></svg><h4><span data-l="en">Menu bar</span><span data-l="de">Menüleiste</span></h4><p><span data-l="en">Running agents, waiting approvals and quick switches.</span><span data-l="de">Laufende Agents, wartende Freigaben und schnelle Schalter.</span></p></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="18" height="8" rx="2"/></svg><h4><span data-l="en">Desktop widgets</span><span data-l="de">Schreibtisch-Widgets</span></h4><p><span data-l="en">Live cards on your desktop, on every Space.</span><span data-l="de">Live-Karten auf dem Schreibtisch, auf allen Spaces.</span></p></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><h4><span data-l="en">Command palette</span><span data-l="de">Befehlspalette</span></h4><p><kbd>⌘K</kbd> <span data-l="en">find and start anything.</span><span data-l="de">alles finden und starten.</span></p></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg><h4><span data-l="en">From anywhere</span><span data-l="de">Von überall</span></h4><p><kbd>⌃⌥ Space</kbd> <span data-l="en">brings Salenta Code to the front.</span><span data-l="de">holt Salenta Code nach vorn.</span></p></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><h4><span data-l="en">Voice everywhere</span><span data-l="de">Sprache überall</span></h4><p><span data-l="en">A microphone in every text field, or <kbd>⌥⌘D</kbd>.</span><span data-l="de">Ein Mikrofon in jedem Textfeld, oder <kbd>⌥⌘D</kbd>.</span></p><div class="wave" aria-hidden="true" style="height:28px;margin-top:10px"><i></i><i style="animation-delay:.1s"></i><i style="animation-delay:.2s"></i><i style="animation-delay:.3s"></i><i style="animation-delay:.15s"></i><i style="animation-delay:.25s"></i><i style="animation-delay:.05s"></i><i style="animation-delay:.35s"></i><i style="animation-delay:.2s"></i><i style="animation-delay:.1s"></i></div></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3"/></svg><h4><span data-l="en">Stays awake</span><span data-l="de">Bleibt wach</span></h4><p><span data-l="en">Keeps working with the lid closed, with battery and heat protection.</span><span data-l="de">Arbeitet auch zugeklappt weiter, mit Schutz für Akku und Hitze.</span></p></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg><h4><span data-l="en">Night shift</span><span data-l="de">Nachtschicht</span></h4><p><span data-l="en">Queue tasks in the evening, read the briefing in the morning.</span><span data-l="de">Abends Aufträge einreihen, morgens das Briefing lesen.</span></p></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M12 8v4M12 16h.01"/></svg><h4><span data-l="en">Safe mode</span><span data-l="de">Sicherer Modus</span></h4><p><span data-l="en">After two crashes it starts safely and writes a performance report.</span><span data-l="de">Nach zwei Abstürzen startet es sicher und schreibt einen Leistungsbericht.</span></p></div>
+  </div>
+</section>
+
+<div class="trust">
+  <div class="wrap">
+    <div class="rv"><svg viewBox="0 0 24 24"><path d="M3 15a4 4 0 0 0 4 4h10a5 5 0 1 0-1-9.9A7 7 0 0 0 3 15z"/><path d="M3 3l18 18"/></svg><h3><span data-l="en">No Salenta cloud</span><span data-l="de">Keine Salenta-Cloud</span></h3><p><span data-l="en">Your data stays on your Mac. There's no account and no server of ours in between.</span><span data-l="de">Deine Daten bleiben auf deinem Mac. Kein Konto, kein Server von uns dazwischen.</span></p></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3M14 9l2 2"/></svg><h3><span data-l="en">Keys in the Keychain</span><span data-l="de">Schlüssel im Schlüsselbund</span></h3><p><span data-l="en">API keys live only in the macOS Keychain – never in files, repos or notes.</span><span data-l="de">API-Schlüssel liegen nur im macOS-Schlüsselbund – nie in Dateien, Repos oder Notizen.</span></p></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4.5-6 8-6s7 2 8 6"/></svg><h3><span data-l="en">Your own accounts</span><span data-l="de">Deine eigenen Zugänge</span></h3><p><span data-l="en">You sign in with your own subscriptions. We don't resell model access.</span><span data-l="de">Du meldest dich mit deinen eigenen Abos an. Wir verkaufen keinen Modellzugang weiter.</span></p></div>
+    <div class="rv"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg><h3><span data-l="en">Updates you can trust</span><span data-l="de">Updates mit Prüfung</span></h3><p><span data-l="en">Checksum, developer signature and a self-test before every update. One click back to the previous version.</span><span data-l="de">Prüfsumme, Entwickler-Signatur und Selbsttest vor jedem Update. Ein Klick zurück zur vorigen Version.</span></p></div>
+  </div>
+</div>
+
+<!-- COMPARE -->
+<section class="blk wrap" id="compare">
+  <div class="eyebrow"><span data-l="en">Why not just the terminal?</span><span data-l="de">Warum nicht einfach das Terminal?</span></div>
+  <h2><span data-l="en">Same agents. <span class="dim">Much less juggling.</span></span><span data-l="de">Dieselben Agents. <span class="dim">Viel weniger Jonglieren.</span></span></h2>
+  <div class="cmp-wrap rv">
+    <table class="cmp">
+      <thead><tr><th></th><th>Salenta Code</th><th><span data-l="en">An agent CLI in a terminal</span><span data-l="de">Ein Agent-CLI im Terminal</span></th></tr></thead>
+      <tbody>
+        <tr><td><span data-l="en">Several agents, picked automatically</span><span data-l="de">Mehrere Agents, automatisch gewählt</span></td><td class="y">✓</td><td class="n"><span data-l="en">one at a time, chosen by you</span><span data-l="de">einer pro Fenster, von dir gewählt</span></td></tr>
+        <tr><td><span data-l="en">Separate working copy per task</span><span data-l="de">Eigene Arbeitskopie pro Auftrag</span></td><td class="y"><span data-l="en">✓ with .env and node_modules</span><span data-l="de">✓ mit .env und node_modules</span></td><td class="n"><span data-l="en">set up by hand</span><span data-l="de">von Hand einrichten</span></td></tr>
+        <tr><td><span data-l="en">Commit, push and PR with written description</span><span data-l="de">Commit, Push und PR mit fertiger Beschreibung</span></td><td class="y"><span data-l="en">✓ one click</span><span data-l="de">✓ ein Klick</span></td><td class="n"><span data-l="en">several commands</span><span data-l="de">mehrere Befehle</span></td></tr>
+        <tr><td><span data-l="en">Checks taken from your GitHub workflows</span><span data-l="de">Prüfungen aus deinen GitHub-Workflows</span></td><td class="y">✓</td><td class="n"><span data-l="en">if you ask for it</span><span data-l="de">wenn du daran denkst</span></td></tr>
+        <tr><td><span data-l="en">Local models for small tasks, offline mode</span><span data-l="de">Lokale Modelle für Kleines, Offline-Modus</span></td><td class="y">✓</td><td class="n"><span data-l="en">separate tools</span><span data-l="de">eigene Werkzeuge</span></td></tr>
+        <tr><td><span data-l="en">Limits and usage across all agents</span><span data-l="de">Limits und Verbrauch über alle Agents</span></td><td class="y">✓</td><td class="n">–</td></tr>
+        <tr><td><span data-l="en">Mail, calendar, tasks, notes in the same window</span><span data-l="de">Mail, Kalender, Aufgaben, Notizen im selben Fenster</span></td><td class="y">✓</td><td class="n">–</td></tr>
+        <tr><td><span data-l="en">Price</span><span data-l="de">Preis</span></td><td class="y"><span data-l="en">free, open source</span><span data-l="de">kostenlos, Open Source</span></td><td class="n"><span data-l="en">free, open source</span><span data-l="de">kostenlos, Open Source</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="blk wrap" id="faq">
+  <div class="eyebrow">FAQ</div>
+  <h2><span data-l="en">Questions</span><span data-l="de">Fragen</span></h2>
+  <div class="faq">
+    <details><summary><span data-l="en">Is it really free?</span><span data-l="de">Ist es wirklich kostenlos?</span></summary><p><span data-l="en">Yes. Salenta Code is open source under the Apache 2.0 license. You only pay for the agent subscriptions you already use; local models cost nothing.</span><span data-l="de">Ja. Salenta Code ist Open Source unter der Apache-2.0-Lizenz. Du zahlst nur die Agent-Abos, die du ohnehin nutzt; lokale Modelle kosten nichts.</span></p></details>
+    <details><summary><span data-l="en">Which Macs are supported?</span><span data-l="de">Welche Macs werden unterstützt?</span></summary><p><span data-l="en">Any Mac with macOS 14 Sonoma or newer. The download is one universal app that runs natively on Apple Silicon (M1 and later) and on Intel.</span><span data-l="de">Jeder Mac mit macOS 14 Sonoma oder neuer. Der Download ist eine Universal-App und läuft nativ auf Apple Silicon (ab M1) und auf Intel.</span></p></details>
+    <details><summary><span data-l="en">How do I install it?</span><span data-l="de">Wie installiere ich es?</span></summary><p><span data-l="en">Open <code>Salenta-Code.dmg</code> and drag the app into Applications. On first launch, setup checks for Git, the GitHub CLI, Node and your agents and installs what's missing if you want.</span><span data-l="de">Öffne <code>Salenta-Code.dmg</code> und zieh die App in den Programme-Ordner. Beim ersten Start prüft die Einrichtung Git, GitHub CLI, Node und deine Agents und installiert auf Wunsch, was fehlt.</span></p></details>
+    <details><summary><span data-l="en">Which agents do I need?</span><span data-l="de">Welche Agents brauche ich?</span></summary><p><span data-l="en">At least one: Claude Code, Codex, Cursor, Gemini CLI, Junie or a local model through Ollama. The more you have, the more options routing has.</span><span data-l="de">Mindestens einen: Claude Code, Codex, Cursor, Gemini CLI, Junie oder ein lokales Modell über Ollama. Je mehr du hast, desto mehr Möglichkeiten hat die Verteilung.</span></p></details>
+    <details><summary><span data-l="en">Does my code go to Salenta?</span><span data-l="de">Geht mein Code an Salenta?</span></summary><p><span data-l="en">No. Salenta Code runs on your Mac and has no server of its own. Your code goes only to the agents you choose – or nowhere, in offline mode.</span><span data-l="de">Nein. Salenta Code läuft auf deinem Mac und hat keinen eigenen Server. Dein Code geht nur an die Agents, die du wählst – im Offline-Modus nirgendwohin.</span></p></details>
+    <details><summary><span data-l="en">How do updates work?</span><span data-l="de">Wie funktionieren Updates?</span></summary><p><span data-l="en">The app checks GitHub releases itself and installs a new version only when no agent is running and the new build passes its self-test. The previous version is kept.</span><span data-l="de">Die App prüft die GitHub-Releases selbst und installiert eine neue Version nur, wenn kein Agent läuft und der neue Build seinen Selbsttest besteht. Die vorige Version bleibt erhalten.</span></p></details>
+    <details><summary><span data-l="en">Windows or Linux?</span><span data-l="de">Windows oder Linux?</span></summary><p><span data-l="en">Not right now. Salenta Code is a native Mac app built with SwiftUI.</span><span data-l="de">Im Moment nicht. Salenta Code ist eine native Mac-App mit SwiftUI.</span></p></details>
+    <details><summary><span data-l="en">Which languages?</span><span data-l="de">Welche Sprachen?</span></summary><p><span data-l="en">English and German. The app follows your Mac's language, or you set it under Settings › General › Language.</span><span data-l="de">Englisch und Deutsch. Die App folgt der Sprache deines Macs, oder du stellst sie unter Einstellungen › Allgemein › Sprache ein.</span></p></details>
+  </div>
+</section>
+
+<section class="final">
+  <svg class="ekg" viewBox="0 0 1000 160" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M0 80 H420 L440 80 L460 30 L490 140 L520 10 L545 80 H1000"/>
+    <path class="run" pathLength="1" d="M0 80 H420 L440 80 L460 30 L490 140 L520 10 L545 80 H1000"/>
+  </svg>
+  <div class="wrap">
+    <h2><span data-l="en">Give your agents a proper desk.</span><span data-l="de">Gib deinen Agents einen richtigen Schreibtisch.</span></h2>
+    <div class="cta">
+      <a class="btn white" href="https://github.com/salenta-code/salenta-code/releases/latest/download/Salenta-Code.dmg">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.4 12.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3.1-2-3.7-2-1.6-.2-3.1.9-3.9.9-.8 0-2-.9-3.3-.9-1.7 0-3.3 1-4.2 2.5-1.8 3.1-.5 7.7 1.3 10.2.9 1.2 1.9 2.6 3.2 2.6 1.3-.1 1.8-.8 3.3-.8 1.6 0 2 .8 3.4.8 1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9 0 0-2.8-1.1-2.8-4zM13.9 5c.7-.8 1.2-2 1-3.2-1 .1-2.2.7-3 1.5-.6.7-1.2 1.9-1 3.1 1.1.1 2.3-.6 3-1.4z"/></svg>
+        <span data-l="en">Download for Mac</span><span data-l="de">Für den Mac laden</span>
+      </a>
+      <a class="btn line" href="https://github.com/salenta-code/salenta-code">GitHub</a>
+    </div>
+    <div class="meta"><span>Universal · Apple Silicon &amp; Intel · macOS 14+</span><span>v<span class="ver">0.2.0</span></span></div>
+  </div>
+</section>
+
+</main>
+<footer>
+  <div class="wrap">
+    <div><a class="brand" href="#"><svg class="mark" viewBox="0 0 512 512" aria-hidden="true"><defs><linearGradient id="lbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2A2A30"/><stop offset="1" stop-color="#0A0A0C"/></linearGradient></defs><rect width="512" height="512" rx="114" fill="url(#lbg)"/><rect x="4" y="4" width="504" height="504" rx="110" fill="none" stroke="#fff" stroke-opacity=".14" stroke-width="8"/><path d="M118 256 H208 L236 168 L276 344 L316 136 L348 256 H394" fill="none" stroke="#fff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/><circle cx="394" cy="256" r="22" fill="#fff"/></svg><span class="name">Salenta Code</span></a><p class="small"><span data-l="en">The free, open-source Mac workspace for AI coding agents.</span><span data-l="de">Der kostenlose Open-Source-Arbeitsplatz für KI-Coding-Agents auf dem Mac.</span></p></div>
+    <div><h5>Produkt</h5><ul><li><a href="#coding"><span data-l="en">Coding</span><span data-l="de">Coden</span></a></li><li><a href="#ship">Pull Requests</a></li><li><a href="#local"><span data-l="en">Local &amp; offline</span><span data-l="de">Lokal &amp; offline</span></a></li><li><a href="#workspace"><span data-l="en">Workspace</span><span data-l="de">Arbeitsplatz</span></a></li></ul></div>
+    <div><h5><span data-l="en">Resources</span><span data-l="de">Ressourcen</span></h5><ul><li><a href="https://github.com/salenta-code/salenta-code/releases/latest/download/Salenta-Code.dmg"><span data-l="en">Download (.dmg)</span><span data-l="de">Download (.dmg)</span></a></li><li><a href="https://github.com/salenta-code/salenta-code/releases"><span data-l="en">Releases</span><span data-l="de">Versionen</span></a></li><li><a href="https://github.com/salenta-code/salenta-code"><span data-l="en">Source code</span><span data-l="de">Quellcode</span></a></li><li><a href="https://github.com/salenta-code/salenta-code/issues"><span data-l="en">Report a bug</span><span data-l="de">Fehler melden</span></a></li></ul></div>
+    <div><h5><span data-l="en">Legal</span><span data-l="de">Rechtliches</span></h5><ul><li><a href="impressum.html">Impressum</a></li><li><a href="datenschutz.html"><span data-l="en">Privacy</span><span data-l="de">Datenschutz</span></a></li><li><a href="https://github.com/salenta-code/salenta-code/blob/main/LICENSE"><span data-l="en">License (Apache-2.0)</span><span data-l="de">Lizenz (Apache-2.0)</span></a></li></ul></div>
+    <div class="base"><span>© 2026 Salenta Code</span><span><span data-l="en">Not affiliated with Anthropic, OpenAI, Google, JetBrains, Cursor or Ollama. Names are trademarks of their owners.</span><span data-l="de">Keine Verbindung zu Anthropic, OpenAI, Google, JetBrains, Cursor oder Ollama. Namen sind Marken ihrer Inhaber.</span></span></div>
+  </div>
+</footer>
+<script src="assets/site.js" defer></script>
+</body>
+</html>

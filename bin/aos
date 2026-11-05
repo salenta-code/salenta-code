@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""aos – Aufgaben im Salenta Code von der Kommandozeile (für dich und für Agents).
+
+  aos list [status] [--company arbeit] offene Aufgaben (status: inbox|heute|woche|warten|erledigt|alle)
+  aos add "Text #arbeit ! morgen"      neue Aufgabe (Tags wie im Cockpit, Bereiche aus data/areas.json)
+  aos done <id> ["Zusammenfassung"]     erledigt setzen, optional Notiz anhängen
+  aos move <id> <status>                Status ändern
+  aos note <id> "Text"                  Notiz anhängen
+  aos show <id>                         Details als JSON
+
+Die App lädt data/tasks.json automatisch neu, sobald sich die Datei ändert.
+"""
+import datetime as dt
+import json
+import os
+import random
+import sys
+import tempfile
+
+ROOT = os.environ.get("AOS_HOME") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+FILE = os.path.join(os.path.abspath(ROOT), "data", "tasks.json")
+
+def _areas():
+    """Bereiche aus data/areas.json (pflegt die App unter Einstellungen › Bereiche)."""
+    path = os.path.join(os.path.abspath(ROOT), "data", "areas.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            items = json.load(f)
+        out = {a["id"]: [t.lower() for t in [a["id"], a.get("title", "")] + a.get("tags", []) if t] for a in items if a.get("id")}
+        if out:
+            out.setdefault("privat", ["privat", "personal", "home"])
+            return out
+    except Exception:
+        pass
+    return {"privat": ["privat", "personal", "home"], "arbeit": ["arbeit", "work", "job"]}
+
+
+COMPANIES = _areas()
+STATUSES = ["inbox", "heute", "woche", "warten", "erledigt"]
+AGENTS = ["claude", "codex", "junie", "shell"]
+WEEKDAYS = {"mo": 0, "montag": 0, "di": 1, "dienstag": 1, "mi": 2, "mittwoch": 2, "do": 3, "donnerstag": 3,
+            "fr": 4, "freitag": 4, "sa": 5, "samstag": 5, "so": 6, "sonntag": 6}
+
+
+def load():
+    if not os.path.exists(FILE):
+        return {"version": 1, "tasks": []}
+    with open(FILE, encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, list):
+        data = {"version": 1, "tasks": data}
+    return data
+
+
+def save(data):
+    os.makedirs(os.path.dirname(FILE), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(FILE), suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp, FILE)
+
+
+def now_stamp():
+    return dt.datetime.now().astimezone().replace(microsecond=0).isoformat()
+
+
+def new_id():
+    return "t-" + "".join(random.choice("abcdefghijkmnpqrstuvwxyz23456789") for _ in range(6))
+
+
+def company_for(tag):
+    tag = tag.lower()
+    for key, tags in COMPANIES.items():
+        if tag == key or tag in tags:
+            return key
+    return None
+
+
+def parse(text):
+    today = dt.date.today()
+    task = {"id": new_id(), "title": "", "notes": "", "company": "privat", "status": "inbox", "priority": 1,
+            "createdAt": now_stamp(), "source": os.environ.get("AOS_SOURCE", "cli")}
+    words, due = [], None
+    for w in text.split():
+        lw = w.lower()
+        if lw.startswith("#") and company_for(lw[1:]):
+            task["company"] = company_for(lw[1:]); continue
+        if lw in ("!", "!!", "!hoch", "!wichtig"):
+            task["priority"] = 2; continue
+        if lw in ("!niedrig", "!später"):
+            task["priority"] = 0; continue
+        if lw.startswith("@") and lw[1:] in AGENTS:
+            task["agent"] = lw[1:]; continue
+        if lw == "heute":
+            due = today; continue
+        if lw == "morgen":
+            due = today + dt.timedelta(days=1); continue
+        if lw == "übermorgen":
+            due = today + dt.timedelta(days=2); continue
+        if lw in WEEKDAYS:
+            diff = (WEEKDAYS[lw] - today.weekday()) % 7 or 7
+            due = today + dt.timedelta(days=diff); continue
+        parts = [p for p in lw.split(".") if p]
+        if len(parts) in (2, 3) and all(p.isdigit() for p in parts):
+            try:
+                year = int(parts[2]) if len(parts) == 3 else today.year
+                year = 2000 + year if year < 100 else year
+                d = dt.date(year, int(parts[1]), int(parts[0]))
+                if len(parts) == 2 and d < today:
+                    d = d.replace(year=year + 1)
+                due = d; continue
+            except ValueError:
+                pass
+        words.append(w)
+    task["title"] = " ".join(words).strip() or text.strip()
+    if due:
+        task["due"] = due.isoformat()
+        days = (due - today).days
+        task["status"] = "heute" if days <= 0 else ("woche" if days <= 6 else "inbox")
+    if task.get("agent") and task["status"] == "inbox":
+        task["status"] = "heute"
+    return task
+
+
+def find(data, tid):
+    for t in data["tasks"]:
+        if t.get("id") == tid:
+            return t
+    sys.exit(f"Aufgabe {tid} nicht gefunden")
+
+
+def set_status(t, status):
+    t["status"] = status
+    if status == "erledigt":
+        t["doneAt"] = now_stamp()
+    else:
+        t.pop("doneAt", None)
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
+        print(__doc__.strip()); return
+    cmd, args = argv[1], argv[2:]
+    data = load()
+
+    if cmd in ("list", "ls"):
+        status = args[0] if args and not args[0].startswith("--") else None
+        company = None
+        if "--company" in args:
+            company = company_for(args[args.index("--company") + 1])
+        rows = [t for t in data["tasks"]
+                if (status == "alle" or (status and t.get("status") == status) or (not status and t.get("status") != "erledigt"))
+                and (not company or t.get("company") == company)]
+        rows.sort(key=lambda t: (STATUSES.index(t.get("status", "inbox")) if t.get("status") in STATUSES else 9,
+                                 -int(t.get("priority", 1)), t.get("due") or "9999"))
+        for t in rows:
+            flag = "!" if int(t.get("priority", 1)) == 2 else " "
+            due = t.get("due", "")[:10]
+            print(f"{t['id']}  {flag} {t.get('status',''):8} {t.get('company',''):9} {due:10}  {t.get('title','')}")
+        if not rows:
+            print("(keine Aufgaben)")
+    elif cmd == "add":
+        if not args: sys.exit("Text fehlt")
+        t = parse(" ".join(args))
+        data["tasks"].append(t); save(data)
+        print(f"angelegt {t['id']}: {t['title']} [{t['company']}, {t['status']}]")
+    elif cmd == "done":
+        if not args: sys.exit("ID fehlt")
+        t = find(data, args[0]); set_status(t, "erledigt")
+        if len(args) > 1:
+            t["notes"] = (t.get("notes", "") + "\n\n" if t.get("notes") else "") + " ".join(args[1:])
+        save(data); print(f"erledigt {t['id']}: {t.get('title')}")
+    elif cmd == "move":
+        if len(args) < 2 or args[1] not in STATUSES: sys.exit("aos move <id> <" + "|".join(STATUSES) + ">")
+        t = find(data, args[0]); set_status(t, args[1]); save(data); print(f"{t['id']} -> {args[1]}")
+    elif cmd == "note":
+        if len(args) < 2: sys.exit("aos note <id> \"Text\"")
+        t = find(data, args[0])
+        t["notes"] = (t.get("notes", "") + "\n\n" if t.get("notes") else "") + " ".join(args[1:])
+        save(data); print(f"Notiz an {t['id']} angehängt")
+    elif cmd == "mcp-junie":
+        # aos mcp-junie <name> <url> [command args...]  -> ~/.junie/mcp/mcp.json
+        if len(args) < 2: sys.exit("aos mcp-junie <name> <url|''> [befehl ...]")
+        path = os.path.expanduser("~/.junie/mcp/mcp.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        cfg = {}
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                cfg = json.load(f)
+        servers = cfg.setdefault("mcpServers", {})
+        if args[1]:
+            servers[args[0]] = {"url": args[1]}
+        else:
+            servers[args[0]] = {"command": args[2], "args": args[3:]}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        print(f"Junie: {args[0]} eingetragen in {path}")
+    elif cmd == "show":
+        print(json.dumps(find(data, args[0]), ensure_ascii=False, indent=2))
+    else:
+        sys.exit(f"Unbekannter Befehl: {cmd}\n\n{__doc__.strip()}")
+
+
+if __name__ == "__main__":
+    main(sys.argv)

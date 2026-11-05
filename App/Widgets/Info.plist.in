@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>__BUNDLE_ID__.widgets</string>
+<key>CFBundleName</key><string>Salenta Code Widgets</string>
+<key>CFBundleDisplayName</key><string>__DISPLAY__</string>
+<key>CFBundleExecutable</key><string>SalentaWidgets</string>
+<key>CFBundlePackageType</key><string>XPC!</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>__BUILD__</string>
+<key>CFBundleDevelopmentRegion</key><string>de</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSHumanReadableCopyright</key><string>© 2026 The Salenta Code authors</string>
+<key>NSExtension</key><dict>
+  <key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string>
+</dict>
+</dict></plist>

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>__BUNDLE_ID__</string>
+<key>CFBundleName</key><string>Salenta Code</string>
+<key>CFBundleDisplayName</key><string>__DISPLAY__</string>
+<key>CFBundleExecutable</key><string>SalentaOS</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>NSHumanReadableCopyright</key><string>© 2026 The Salenta Code authors</string>
+<key>CFBundleShortVersionString</key><string>__VERSION__</string>
+<key>SCUpdateRepo</key><string>__UPDATE_REPO__</string>
+<key>CFBundleVersion</key><string>__BUILD__</string>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
+<key>CFBundleLocalizations</key><array><string>en</string><string>de</string></array>
+<key>CFBundleAllowMixedLocalizations</key><true/>
+<key>CFBundleURLTypes</key><array><dict>
+  <key>CFBundleURLName</key><string>Salenta Code</string>
+  <key>CFBundleURLSchemes</key><array><string>salentacode</string></array>
+</dict></array>
+<key>AOSRoot</key><string>__ROOT__</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Salenta Code shows your appointments and lets agents create events.</string>
+<key>NSCalendarsUsageDescription</key><string>Salenta Code shows your appointments and lets agents create events.</string>
+<key>NSRemindersFullAccessUsageDescription</key><string>Salenta Code keeps your tasks in sync with the Reminders list "Salenta Code".</string>
+<key>NSRemindersUsageDescription</key><string>Salenta Code keeps your tasks in sync with the Reminders list "Salenta Code".</string>
+<key>NSAppleEventsUsageDescription</key><string>Salenta Code reads and sends mail through Apple Mail and focuses browser tabs.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>So you can talk to your assistant.</string>
+<key>NSCameraUsageDescription</key><string>For video calls in embedded web apps.</string>
+<key>NSMicrophoneUsageDescription</key><string>For voice input and calls in embedded web apps.</string>
+<key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+</dict></plist>

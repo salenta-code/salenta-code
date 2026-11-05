@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+"""Salenta Code als MCP-Server (stdio) – damit Claude Code, Codex und Junie das OS sehen und steuern können.
+
+Installieren:
+  claude mcp add --scope user salenta-os -- python3 "$HOME/Salenta Code/bin/aos-mcp"
+  codex mcp add salenta-os -- python3 "$HOME/Salenta Code/bin/aos-mcp"
+
+Daten: data/tasks.json (Aufgaben), data/status.json (schreibt die App: Agents, Termine, Mail, Integrationen),
+data/commands.jsonl (Befehle an die App: Agent starten, Seite öffnen, Benachrichtigen).
+"""
+import datetime as dt
+import json
+import os
+import sys
+import time
+import uuid
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+ROOT = os.path.abspath(os.environ.get("AOS_HOME") or os.path.join(HERE, ".."))
+DATA = os.path.join(ROOT, "data")
+
+import importlib.machinery  # noqa: E402
+import importlib.util  # noqa: E402
+
+_loader = importlib.machinery.SourceFileLoader("aos_cli", os.path.join(HERE, "aos"))
+aos = importlib.util.module_from_spec(importlib.util.spec_from_loader("aos_cli", _loader))
+_loader.exec_module(aos)
+
+AGENTS = ["os", "claude", "codex", "junie"]
+STATUSES = ["inbox", "heute", "woche", "warten", "erledigt"]
+PAGES = ["cockpit", "mission", "tasks", "agents", "mail", "calendar", "mcp", "assistant", "wissen", "nachtschicht", "rueckblick", "betreuer"]
+
+TOOLS = [
+    {"name": "lage", "description": "Gesamtüberblick des Salenta Code: Fokus-Aufgaben, Termine heute/morgen, ungelesene Mails, laufende Agents, Berichte verbundener Integrationen. Zuerst aufrufen, wenn du wissen willst, was gerade los ist.",
+     "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": True}},
+    {"name": "aufgaben_liste", "description": "Aufgaben aus dem Salenta Code. status: inbox|heute|woche|warten|erledigt|offen (Standard offen). bereich: ein Bereich aus data/areas.json (z. B. privat, arbeit).",
+     "inputSchema": {"type": "object", "properties": {"status": {"type": "string"}, "bereich": {"type": "string"}}}, "annotations": {"readOnlyHint": True}},
+    {"name": "aufgabe_anlegen", "description": "Neue Aufgabe. Text mit Tags wie im Cockpit: #bereich (z. B. #privat, #arbeit), ! = hoch, heute/morgen/fr/15.11., @claude/@codex/@junie.",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "notiz": {"type": "string"}}, "required": ["text"]}},
+    {"name": "aufgabe_erledigen", "description": "Aufgabe abhaken, optional mit Zusammenfassung.",
+     "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "zusammenfassung": {"type": "string"}}, "required": ["id"]}},
+    {"name": "aufgabe_verschieben", "description": "Status einer Aufgabe ändern (inbox|heute|woche|warten|erledigt).",
+     "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "status": {"type": "string", "enum": STATUSES}}, "required": ["id", "status"]}},
+    {"name": "agent_starten", "description": "Startet im Salenta Code einen Agent mit Auftrag (sichtbar unter Aufträge). agent os = der eigene Agent des Nutzers mit allen Anbindungen und Browser (für alles außer Coding); claude/codex/junie = Coding im Ordner. modus autonom = arbeitet allein und hakt die Aufgabe am Ende ab; interaktiv = Terminal-Dialog. ordner = Projektpfad (Standard: zuletzt genutzt).",
+     "inputSchema": {"type": "object", "properties": {"agent": {"type": "string", "enum": AGENTS}, "auftrag": {"type": "string"},
+                                                     "ordner": {"type": "string"}, "modus": {"type": "string", "enum": ["autonom", "interaktiv"]},
+                                                     "bereich": {"type": "string"}}, "required": ["agent", "auftrag"]}},
+    {"name": "laufende_agents", "description": "Welche Agents gerade im Salenta Code laufen oder fertig sind (Anbieter, Auftrag, Ordner, Laufzeit, Ergebnis).",
+     "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": True}},
+    {"name": "termine", "description": "Termine aus allen Mac-Kalendern der nächsten Tage.",
+     "inputSchema": {"type": "object", "properties": {"tage": {"type": "number"}}}, "annotations": {"readOnlyHint": True}},
+    {"name": "mails", "description": "Neueste ungelesene Mails (Absender, Betreff) aus Apple Mail.",
+     "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": True}},
+    {"name": "seite_oeffnen", "description": "Öffnet eine Seite im Salenta-Code-Fenster: " + ", ".join(PAGES) + ".",
+     "inputSchema": {"type": "object", "properties": {"seite": {"type": "string", "enum": PAGES}}, "required": ["seite"]}},
+    {"name": "projekt_betreuer", "description": "Gibt dem Projekt-Betreuer eines Repos eine Nachricht oder ein Ziel (nimmt das Projekt bei Bedarf in Betreuung). Der Betreuer plant daraufhin Aufgaben und schickt Helfer los. Nutze das für längere Vorhaben an einem Projekt („kümmere dich um …“, „bring X bis Freitag live“).",
+     "inputSchema": {"type": "object", "properties": {"ordner": {"type": "string", "description": "Pfad zum Repo"}, "text": {"type": "string", "description": "Nachricht oder Ziel"}}, "required": ["ordner", "text"]}},
+    {"name": "nachtschicht", "description": "Legt eine Aufgabe in die Nachtschicht-Warteschlange von Salenta Code: Nachts arbeiten die Agents sie nacheinander ab (Mac bleibt wach, Prüfschleife), morgens gibt es ein Briefing. Nutze das, wenn der Nutzer etwas „heute Nacht“ oder „über Nacht“ erledigt haben will. agent: auto (Standard) oder claude/codex/…",
+     "inputSchema": {"type": "object", "properties": {"auftrag": {"type": "string"}, "ordner": {"type": "string"}, "agent": {"type": "string"}}, "required": ["auftrag"]}},
+    {"name": "benachrichtigen", "description": "Zeigt dem Nutzer eine Mitteilung im Salenta Code (und als macOS-Benachrichtigung).",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
+    {"name": "freigabe", "description": "Interne Freigabe-Prüfung des Salenta-Code-Agents (wird von Claude Code als permission-prompt-tool aufgerufen). Lesende Tools werden direkt erlaubt, alles andere fragt den Nutzer im Salenta Code.",
+     "inputSchema": {"type": "object", "properties": {"tool_name": {"type": "string"}, "input": {"type": "object"}, "tool_use_id": {"type": "string"}}, "required": ["tool_name"]}},
+    {"name": "projekte_und_skills", "description": "Alle Repos/Projekte auf dem Mac (Pfade, Git) und alle installierten Skills (Claude Code, Plugins, Codex, Junie) – optional gefiltert mit suche. Nutze das, um für einen Auftrag den richtigen Projektordner und passende Skills zu wählen.",
+     "inputSchema": {"type": "object", "properties": {"suche": {"type": "string"}}}},
+    {"name": "delegieren", "description": "Gibt einen Teilauftrag an einen anderen Agent ab (z. B. Coding an Claude Code oder Codex im Projektordner) – er erscheint als Helfer unter dem aktuellen Auftrag. warten=true (Standard) wartet bis zu 15 Minuten und liefert das Ergebnis; sonst später mit ergebnis abholen.",
+     "inputSchema": {"type": "object", "properties": {"agent": {"type": "string", "enum": ["claude", "codex", "junie", "os"]},
+                     "auftrag": {"type": "string"}, "ordner": {"type": "string"}, "warten": {"type": "boolean"},
+                     "modell": {"type": "string", "enum": ["", "opus", "sonnet", "haiku"], "description": "Nur für claude/os: opus = schwierig, sonnet = normal, haiku = trivial"},
+                     "denktiefe": {"type": "string", "enum": ["", "low", "medium", "high"], "description": "Nur für codex"}},
+                     "required": ["agent", "auftrag"]}},
+    {"name": "ergebnis", "description": "Status und Ergebnis eines delegierten Teilauftrags (id aus delegieren).",
+     "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "warten": {"type": "boolean"}}, "required": ["id"]}},
+    {"name": "obsidian_suchen", "description": "Durchsucht den Obsidian-Vault des Nutzers (Wissen, Firmen, Kunden, Entscheidungen, Journal der Agents) nach Stichworten. Liefert Pfade und Textstellen.",
+     "inputSchema": {"type": "object", "properties": {"suche": {"type": "string"}, "max": {"type": "integer"}}, "required": ["suche"]}},
+    {"name": "obsidian_lesen", "description": "Liest eine Notiz aus dem Obsidian-Vault (Pfad relativ zum Vault, z. B. 'Salenta Code/Lage.md').",
+     "inputSchema": {"type": "object", "properties": {"pfad": {"type": "string"}}, "required": ["pfad"]}},
+    {"name": "obsidian_schreiben", "description": "Schreibt in den Obsidian-Vault. modus 'anhaengen' (Standard) hängt an, 'ersetzen' überschreibt, 'journal' trägt einen Abschnitt ins heutige Agent-Journal ein. Nie Passwörter, Tokens oder API-Keys schreiben.",
+     "inputSchema": {"type": "object", "properties": {"pfad": {"type": "string"}, "text": {"type": "string"},
+                     "modus": {"type": "string", "enum": ["anhaengen", "ersetzen", "journal"]}}, "required": ["text"]}},
+]
+
+
+def status():
+    try:
+        with open(os.path.join(DATA, "status.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"hinweis": "Salenta Code läuft gerade nicht – Status nicht verfügbar."}
+
+
+def command(kind, **payload):
+    os.makedirs(DATA, exist_ok=True)
+    payload.update({"id": str(uuid.uuid4()), "art": kind, "zeit": dt.datetime.now().astimezone().isoformat()})
+    with open(os.path.join(DATA, "commands.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return payload["id"]
+
+
+def vault():
+    v = os.environ.get("AOS_VAULT") or status().get("obsidian_vault")
+    return v if v and os.path.isdir(v) else None
+
+
+def vault_path(rel):
+    v = vault()
+    if not v:
+        raise ValueError("Kein Obsidian-Vault gefunden (Salenta Code muss einmal gelaufen sein).")
+    full = os.path.realpath(os.path.join(v, rel))
+    if not full.startswith(os.path.realpath(v) + os.sep):
+        raise ValueError("Pfad liegt außerhalb des Vaults.")
+    return full
+
+
+SECRET = ("api_key", "apikey", "password", "passwort", "secret", "token=", "bearer ", "sk-")
+
+
+READ_HINTS = ("lesen", "liste", "list", "get", "search", "suchen", "status", "ueberblick", "überblick", "read", "query",
+              "find", "fetch", "lookup", "details", "kennzahlen", "auswertung", "historie", "snapshot", "screenshot",
+              "navigate", "wait", "hover", "tabs", "console", "network", "info", "describe", "explore", "balance", "metrics",
+              "pruefen", "prüfen", "verfuegbar", "profile", "whoami", "context", "schema", "vorschau", "akte")
+WRITE_HINTS = ("senden", "send", "post", "publish", "delete", "loeschen", "löschen", "remove", "entfernen", "trash", "kauf",
+               "buy", "order", "pay", "transfer", "create", "anlegen", "update", "aktualisieren", "setzen", "set_", "starten",
+               "start", "buchen", "absagen", "verschieben", "entscheiden", "upload", "deploy", "mutation", "write", "edit")
+
+
+SAFE_CMDS = ("ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "pwd", "echo", "which", "file", "sed -n", "awk",
+             "git status", "git diff", "git log", "git show", "git branch", "git fetch", "git add", "git commit", "git stash",
+             "git checkout -b", "git switch", "npm test", "npm run", "npm ci", "npm install", "pnpm", "yarn", "npx tsc",
+             "npx eslint", "npx prettier", "npx vitest", "npx jest", "tsc", "node ", "python3 ", "python ", "pytest",
+             "swift build", "swift test", "xcodebuild", "make", "cargo", "go test", "go build", "deno", "bun ",
+             "supabase status", "supabase functions serve", "shopify theme check", "shopify theme dev", "jq", "curl -s",
+             "mkdir", "touch", "cp ", "mv ",
+             # übliche Prüf- und Bau-Befehle, die im Projekt bleiben (wie Claude Code sie ständig nutzt)
+             "npx next ", "npx playwright test", "npx vite", "npx biome", "npx turbo", "turbo ", "npx astro", "npx svelte-check",
+             "git restore", "git mv", "git rev-parse", "git ls-files", "git worktree list", "uv run", "ruff", "mypy", "sort", "uniq",
+             "diff ", "tree", "du ", "stat ", "basename", "dirname", "realpath", "date", "test ", "[ ")
+RISKY_CMDS = ("git push", "push --force", "rm ", "rm\t", "sudo", "supabase db push", "supabase db reset", "supabase functions deploy",
+              "vercel --prod", "vercel deploy", "shopify theme push", "shopify theme publish", "npm publish", "drop table",
+              "truncate", "delete from", "curl -x post", "curl -x delete", "curl -d", "chmod -r", "kill ", "launchctl",
+              "> /dev", "mkfs", "dd ", "git reset --hard", "git clean")
+
+
+def bash_needs_approval(cmd):
+    c = " ".join(str(cmd).lower().split())
+    if any(r in c for r in RISKY_CMDS):
+        return True
+    parts = [p.strip() for p in c.replace("&&", ";").replace("||", ";").replace("|", ";").split(";") if p.strip()]
+    for p in parts:
+        if p.startswith("cd ") or p == "cd":
+            continue
+        if not any(p.startswith(s) for s in SAFE_CMDS):
+            return True
+    return False
+
+
+def needs_approval(tool, inp):
+    """Lesende Tools laufen direkt, alles was verändert oder verschickt, fragt den Nutzer."""
+    name = tool.split("__")[-1].lower()
+    if tool == "Bash":
+        return bash_needs_approval((inp or {}).get("command", ""))
+    if tool.startswith("mcp__salenta-os__") and name not in ("agent_starten",):
+        return False
+    if tool.startswith("mcp__browser__"):
+        # Klicks und Tippen sind normale Arbeit – außer es geht ums Absenden, Kaufen, Bezahlen, Löschen, Posten.
+        if any(k in name for k in ("file_upload", "evaluate", "run_code", "install")):
+            return True
+        what = " ".join(str(v) for v in (inp or {}).values()).lower()
+        risky = ("senden", "send", "absenden", "submit", "kaufen", "bestellen", "buy", "order", "bezahlen", "zahlen", "pay",
+                 "checkout", "kasse", "löschen", "loeschen", "delete", "posten", "post", "veröffentlichen", "publish",
+                 "bestätigen", "confirm", "abschließen", "vertrag")
+        if (name.endswith("click") or name.endswith("press_key") or name.endswith("fill_form")) and any(k in what for k in risky):
+            return True
+        return False
+    if name.startswith(("get", "list", "search", "read", "find", "fetch", "query", "lookup", "describe")):
+        return False
+    if any(k in name for k in WRITE_HINTS):
+        return True
+    return not any(k in name for k in READ_HINTS)
+
+
+def project_root(start):
+    d = os.path.abspath(start or ".")
+    while d and d != "/":
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        d = os.path.dirname(d)
+    return None
+
+
+def load_block_rules():
+    """Blockier-Regeln: data/rules.json (alle Projekte) + .salenta-os.json / .aos.json im Repo des Agents."""
+    rules = []
+    paths = [os.path.join(DATA, "rules.json")]
+    root = project_root(os.environ.get("PWD") or os.getcwd())
+    if root:
+        paths += [os.path.join(root, n) for n in (".salenta-os.json", ".aos.json")]
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as f:
+                j = json.load(f)
+        except Exception:
+            continue
+        rules += j.get("blocken") or j.get("block") or []
+    return rules
+
+
+def rule_check(tool, inp):
+    """('block'|'ask'|None, Grund) – greift auch im Auto-Modus."""
+    import re
+    text = (tool + " " + json.dumps(inp or {}, ensure_ascii=False)).lower()
+    for r in load_block_rules():
+        pat = (r.get("muster") or "").strip()
+        if not pat:
+            continue
+        try:
+            if not re.search(pat, text, re.I):
+                continue
+            unless = (r.get("ausser") or "").strip()
+            if unless and re.search(unless, text, re.I):
+                continue
+        except re.error:
+            continue
+        return ("ask" if r.get("fragen") else "block"), (r.get("grund") or pat)
+    return None, ""
+
+
+def auto_mode():
+    """Auto-Modus aus data/approvals/mode.json (setzt die App)."""
+    try:
+        with open(os.path.join(DATA, "approvals", "mode.json"), encoding="utf-8") as f:
+            m = json.load(f)
+    except Exception:
+        return False
+    if not m.get("auto"):
+        return False
+    bis = m.get("bis")
+    return bis is None or time.time() < float(bis)
+
+
+def log_auto(tool, inp):
+    d = os.path.join(DATA, "approvals")
+    os.makedirs(d, exist_ok=True)
+    detail = " · ".join(f"{k}: {str(v)[:120]}" for k, v in list((inp or {}).items())[:3])
+    with open(os.path.join(d, "auto.log"), "a", encoding="utf-8") as f:
+        f.write(json.dumps({"tool": tool, "detail": detail, "zeit": time.time()}, ensure_ascii=False) + "\n")
+
+
+def ask_user(tool, inp, timeout=900):
+    d = os.path.join(DATA, "approvals")
+    os.makedirs(d, exist_ok=True)
+    rid = uuid.uuid4().hex[:12]
+    with open(os.path.join(d, f"req-{rid}.json"), "w", encoding="utf-8") as f:
+        json.dump({"id": rid, "tool": tool, "input": inp, "zeit": time.time()}, f, ensure_ascii=False)
+    dec_path = os.path.join(d, f"dec-{rid}.json")
+    end = time.time() + timeout
+    while time.time() < end:
+        if os.path.exists(dec_path):
+            try:
+                with open(dec_path, encoding="utf-8") as f:
+                    dec = json.load(f)
+                return bool(dec.get("allow")), dec.get("message") or ""
+            except Exception:
+                pass
+        time.sleep(1)
+    return False, "Keine Antwort innerhalb von 15 Minuten."
+
+
+def delegation_result(cid, wait=0):
+    """Wartet (optional) auf das Ende eines delegierten Auftrags und liefert das Ergebnis aus der Mitschrift."""
+    end = time.time() + wait
+    path = os.path.join(DATA, "delegations", f"{cid}.json")
+    while True:
+        info = None
+        try:
+            with open(path, encoding="utf-8") as f:
+                info = json.load(f)
+        except Exception:
+            pass
+        if info:
+            mid = info.get("mission")
+            rec = None
+            try:
+                with open(os.path.join(DATA, "missions.json"), encoding="utf-8") as f:
+                    rec = next((m for m in json.load(f) if m.get("id") == mid), None)
+            except Exception:
+                pass
+            if rec and rec.get("ended"):
+                text = ""
+                try:
+                    text = open(info.get("log", ""), encoding="utf-8", errors="ignore").read()
+                except Exception:
+                    pass
+                import re as _re
+                text = _re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+                return {"id": cid, "status": "fertig" if rec.get("ok") else "abgebrochen", "ordner": info.get("ordner"),
+                        "ergebnis": text[-6000:]}
+        if time.time() >= end:
+            return {"id": cid, "status": "läuft" if info else "startet", "hinweis": "Noch nicht fertig – später ergebnis(id) aufrufen."}
+        time.sleep(3)
+
+
+def short_task(t):
+    return {k: t.get(k) for k in ("id", "title", "company", "status", "priority", "due", "agent") if t.get(k) is not None}
+
+
+def call(name, a):
+    if name == "lage":
+        s = status()
+        data = aos.load()
+        today = dt.date.today().isoformat()
+        focus = [short_task(t) for t in data["tasks"] if t.get("status") != "erledigt" and
+                 (t.get("status") == "heute" or (t.get("due") or "9999") <= today)]
+        s["fokus_aufgaben"] = focus[:20]
+        return s
+    if name == "aufgaben_liste":
+        st = a.get("status") or "offen"
+        comp = aos.company_for(a["bereich"]) if a.get("bereich") else None
+        rows = [short_task(t) for t in aos.load()["tasks"]
+                if (st == "offen" and t.get("status") != "erledigt" or t.get("status") == st)
+                and (not comp or t.get("company") == comp)]
+        return {"anzahl": len(rows), "aufgaben": rows[:100]}
+    if name == "aufgabe_anlegen":
+        data = aos.load()
+        t = aos.parse(a["text"])
+        t["source"] = os.environ.get("AOS_SOURCE", "mcp")
+        if a.get("notiz"):
+            t["notes"] = a["notiz"]
+        data["tasks"].append(t)
+        aos.save(data)
+        return {"angelegt": short_task(t)}
+    if name in ("aufgabe_erledigen", "aufgabe_verschieben"):
+        data = aos.load()
+        t = next((x for x in data["tasks"] if x.get("id") == a["id"]), None)
+        if not t:
+            return {"fehler": f"Aufgabe {a['id']} nicht gefunden"}
+        aos.set_status(t, "erledigt" if name == "aufgabe_erledigen" else a["status"])
+        if a.get("zusammenfassung"):
+            t["notes"] = (t.get("notes", "") + "\n\n" if t.get("notes") else "") + a["zusammenfassung"]
+        aos.save(data)
+        return {"ok": True, "aufgabe": short_task(t)}
+    if name == "agent_starten":
+        cid = command("agent_starten", agent=a["agent"], auftrag=a["auftrag"], ordner=a.get("ordner"),
+                      modus=a.get("modus", "autonom"), bereich=a.get("bereich"))
+        return {"ok": True, "befehl": cid, "hinweis": "Agent wird im Salenta Code gestartet – Fortschritt mit laufende_agents prüfen."}
+    if name == "laufende_agents":
+        return {"agents": status().get("agents", [])}
+    if name == "termine":
+        days = int(a.get("tage") or 7)
+        limit = (dt.datetime.now() + dt.timedelta(days=days)).isoformat()
+        return {"termine": [e for e in status().get("termine", []) if (e.get("start") or "") <= limit]}
+    if name == "mails":
+        s = status()
+        return {"ungelesen": s.get("mail_ungelesen"), "mails": s.get("mails", [])}
+    if name == "seite_oeffnen":
+        command("seite_oeffnen", seite=a["seite"])
+        return {"ok": True}
+    if name == "projekt_betreuer":
+        command("betreuer_nachricht", ordner=a["ordner"], text=a["text"])
+        return {"ok": True, "hinweis": "Beim Projekt-Betreuer angekommen. Er plant und meldet sich unter Coden › Projekt-Betreuer."}
+    if name == "nachtschicht":
+        command("nachtschicht_hinzufuegen", auftrag=a["auftrag"], ordner=a.get("ordner", ""), agent=a.get("agent", "auto"))
+        return {"ok": True, "hinweis": "In der Nachtschicht-Warteschlange. Start: Seite Nachtschicht (oder heute Abend automatisch, wenn geplant)."}
+    if name == "benachrichtigen":
+        command("benachrichtigen", text=a["text"])
+        return {"ok": True}
+    if name == "freigabe":
+        tool = a.get("tool_name", "")
+        inp = a.get("input") or {}
+        # Plan fertig: nicht auf eine Freigabe warten – Salenta Code zeigt den Plan mit „Plan umsetzen“.
+        if tool == "ExitPlanMode":
+            return {"behavior": "deny", "message": "Setze jetzt nichts um. Beende deine Arbeit mit deiner vollständigen Antwort als letzte Nachricht – "
+                    "bei einer Frage die Antwort mit Datei:Zeile-Belegen, bei einem Plan den Plan mit nummerierten Schritten. Salenta Code zeigt sie dem Nutzer."}
+        # Rückfragen gehen im Hintergrundmodus nicht interaktiv – in die Schlussantwort schreiben.
+        if tool == "AskUserQuestion":
+            return {"behavior": "deny", "message": "Rückfragen sind hier nicht interaktiv möglich. Triff eine sinnvolle Annahme und mach weiter; "
+                    "schreib offene Fragen am Ende deiner Schlussantwort unter „Offen:“."}
+        verdict, why = rule_check(tool, inp)
+        if verdict == "block":
+            log_auto(tool, {"blockiert": why})
+            return {"behavior": "deny", "message": f"Durch eine Regel blockiert: {why}. Finde einen anderen Weg oder frag den Nutzer."}
+        if verdict == "ask":
+            ok, msg = ask_user(tool, dict(inp, _regel=why) if isinstance(inp, dict) else inp)
+            if ok:
+                return {"behavior": "allow", "updatedInput": inp}
+            return {"behavior": "deny", "message": msg or "Abgelehnt."}
+        if needs_approval(tool, inp) and auto_mode():
+            log_auto(tool, inp)
+            return {"behavior": "allow", "updatedInput": inp}
+        if needs_approval(tool, inp):
+            ok, msg = ask_user(tool, inp)
+        else:
+            ok, msg = True, ""
+        if ok:
+            return {"behavior": "allow", "updatedInput": inp}
+        return {"behavior": "deny", "message": msg or "Abgelehnt."}
+    if name == "projekte_und_skills":
+        s = status()
+        q = (a.get("suche") or "").lower().split()
+        def hit(*fields):
+            text = " ".join(str(f) for f in fields).lower()
+            return all(w in text for w in q) if q else True
+        projekte = [p for p in s.get("projekte", []) if hit(p.get("name"), p.get("pfad"))]
+        skills = [k for k in s.get("skills", []) if hit(k.get("name"), k.get("beschreibung"))] if q else \
+            [{"name": k.get("name"), "quelle": k.get("quelle")} for k in s.get("skills", [])]
+        return {"projekte": projekte[:80], "skills": skills[:120]}
+    if name == "delegieren":
+        me = os.environ.get("AOS_MISSION_ID")
+        try:
+            with open(os.path.join(DATA, "missions.json"), encoding="utf-8") as f:
+                mine = next((m for m in json.load(f) if m.get("id") == me), None)
+        except Exception:
+            mine = None
+        if mine and mine.get("delegated"):
+            return {"fehler": "Du bist selbst ein Helfer – bitte nicht weiter delegieren, erledige den Teil selbst."}
+        cid = command("agent_starten", agent=a["agent"], auftrag=a["auftrag"], ordner=a.get("ordner"), modus="autonom",
+                      eltern=os.environ.get("AOS_MISSION_ID"), modell=a.get("modell") or None, denktiefe=a.get("denktiefe") or None)
+        if a.get("warten", True) is False:
+            return {"id": cid, "hinweis": "Läuft – Ergebnis mit ergebnis(id) abholen."}
+        return delegation_result(cid, wait=840)
+    if name == "ergebnis":
+        return delegation_result(a["id"], wait=840 if a.get("warten") else 0)
+    if name == "obsidian_suchen":
+        v = vault()
+        if not v:
+            return {"fehler": "Kein Obsidian-Vault gefunden."}
+        q = a["suche"].lower()
+        words = [w for w in q.split() if len(w) > 1]
+        hits = []
+        for root, dirs, files in os.walk(v):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for fn in files:
+                if not fn.endswith(".md"):
+                    continue
+                fp = os.path.join(root, fn)
+                try:
+                    text = open(fp, encoding="utf-8", errors="ignore").read()
+                except Exception:
+                    continue
+                low = text.lower()
+                score = sum(low.count(w) for w in words) + (5 if q in fn.lower() else 0)
+                if score:
+                    i = max(0, low.find(words[0]) - 120) if words else 0
+                    hits.append((score, os.path.relpath(fp, v), " ".join(text[i:i + 360].split())))
+        hits.sort(key=lambda h: -h[0])
+        n = int(a.get("max") or 12)
+        return {"vault": v, "treffer": [{"pfad": p, "auszug": x} for _, p, x in hits[:n]]}
+    if name == "obsidian_lesen":
+        fp = vault_path(a["pfad"])
+        text = open(fp, encoding="utf-8", errors="ignore").read()
+        return {"pfad": a["pfad"], "inhalt": text[:40000]}
+    if name == "obsidian_schreiben":
+        text = a["text"]
+        if any(k in text.lower() for k in SECRET):
+            return {"fehler": "Sieht nach Zugangsdaten aus – wird nicht in den Vault geschrieben."}
+        mode = a.get("modus") or "anhaengen"
+        if mode == "journal":
+            rel = os.path.join("Salenta Code", "Journal", dt.date.today().isoformat() + ".md")
+            agent = os.environ.get("AOS_SOURCE", "Agent")
+            text = f"\n## {dt.datetime.now():%H:%M} · {agent}\n{text.strip()}\n"
+        else:
+            rel = a.get("pfad") or ""
+            if not rel.endswith(".md"):
+                return {"fehler": "pfad muss eine .md-Datei im Vault sein"}
+        fp = vault_path(rel)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp, "w" if mode == "ersetzen" else "a", encoding="utf-8") as f:
+            f.write(text if mode != "anhaengen" else "\n" + text.strip() + "\n")
+        return {"ok": True, "pfad": rel}
+    return {"fehler": f"Unbekanntes Tool {name}"}
+
+
+def reply(msg_id, result=None, error=None):
+    out = {"jsonrpc": "2.0", "id": msg_id}
+    if error:
+        out["error"] = {"code": -32000, "message": error}
+    else:
+        out["result"] = result
+    sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception:
+            continue
+        mid, method = msg.get("id"), msg.get("method")
+        if mid is None:
+            continue  # Notification
+        try:
+            if method == "initialize":
+                reply(mid, {"protocolVersion": msg.get("params", {}).get("protocolVersion", "2025-06-18"),
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "salenta-os", "version": "1.0"},
+                            "instructions": "Salenta Code: Aufgaben, Termine, Mails, laufende Agents. Nutze 'lage' für den Überblick und 'agent_starten', um Claude Code, Codex oder Junie arbeiten zu lassen."})
+            elif method == "tools/list":
+                reply(mid, {"tools": TOOLS})
+            elif method == "tools/call":
+                p = msg.get("params", {})
+                res = call(p.get("name"), p.get("arguments") or {})
+                reply(mid, {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False, indent=1)}],
+                            "isError": "fehler" in res})
+            elif method == "ping":
+                reply(mid, {})
+            else:
+                reply(mid, error=f"Methode {method} nicht unterstützt")
+        except Exception as e:  # noqa: BLE001
+            reply(mid, error=str(e))
+
+
+if __name__ == "__main__":
+    main()

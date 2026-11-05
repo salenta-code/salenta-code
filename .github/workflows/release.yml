@@ -1,0 +1,49 @@
+# Alternative zum Veröffentlichen vom eigenen Mac (Einstellungen › Veröffentlichen):
+# Actions › Release › „Run workflow“ mit Versionsnummer. Baut auf einem Mac bei GitHub, signiert mit deiner Developer ID, lässt Apple beglaubigen und legt das Release an.
+#
+# Secrets (Repo › Settings › Secrets and variables › Actions):
+#   MACOS_CERT_P12          Developer-ID-Zertifikat als .p12, base64 (base64 -i cert.p12 | pbcopy)
+#   MACOS_CERT_PASSWORD     Passwort der .p12
+#   NOTARY_KEY_P8           App-Store-Connect-API-Schlüssel (.p8), base64
+#   NOTARY_KEY_ID           Schlüssel-ID
+#   NOTARY_ISSUER_ID        Issuer-ID
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versionsnummer, z. B. 0.3.0 oder 0.3.0-beta.1"
+        required: true
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Zertifikat in einen Schlüsselbund nur für diesen Lauf
+        env:
+          P12: ${{ secrets.MACOS_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          kc="$RUNNER_TEMP/build.keychain-db"; pw="$(uuidgen)"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+      - name: Notar-Schlüssel
+        env: { P8: "${{ secrets.NOTARY_KEY_P8 }}" }
+        run: echo "$P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+      - name: Bauen, signieren, beglaubigen, veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_REPO: ${{ github.repository }}
+          NOTARY_KEY_PATH: ${{ runner.temp }}/notary.p8
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: scripts/release.sh "${{ inputs.version }}"

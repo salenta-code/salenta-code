@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Macht aus dem JSON-Strom von `claude -p --output-format stream-json` (und `codex exec --json`)
+eine lesbare Live-Ansicht: was der Agent gerade liest, ausführt, ändert und denkt.
+
+Aufruf:  claude -p … --output-format stream-json --verbose | aos-live --log datei.log
+Die lesbare Fassung geht ins Terminal und (ohne Farben) in die Log-Datei.
+"""
+import json
+import re
+import sys
+import time
+
+DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
+BLUE, GREEN, YELLOW, RED, MAGENTA, CYAN = "\033[34m", "\033[32m", "\033[33m", "\033[31m", "\033[35m", "\033[36m"
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+log = None
+if "--log" in sys.argv:
+    try:
+        log = open(sys.argv[sys.argv.index("--log") + 1], "a", encoding="utf-8")
+    except Exception:
+        log = None
+
+start = time.time()
+steps = 0
+last_text = ""
+
+# Statuszeile für Salenta Code (wie die Statuszeile in Claude Code): Modell, Ordner, Konnektoren, Kontext.
+status_path = (sys.argv[sys.argv.index("--log") + 1] + ".json") if "--log" in sys.argv else None
+status = {"agent": "", "model": "", "cwd": "", "mcp": [], "tools": 0, "context": 0, "output": 0, "updated": 0}
+
+
+def save_status():
+    if not status_path:
+        return
+    status["updated"] = time.time()
+    status["steps"] = steps
+    try:
+        tmp = status_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(status, f)
+        import os
+        os.replace(tmp, status_path)
+    except Exception:
+        pass
+
+
+def out(text=""):
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+    if log:
+        log.write(ANSI.sub("", text) + "\n")
+        log.flush()
+
+
+def short(s, n=110):
+    s = " ".join(str(s).split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def rel(path):
+    p = str(path or "")
+    home = "/Users/"
+    if p.startswith(home):
+        parts = p.split("/", 3)
+        p = "~/" + parts[3] if len(parts) > 3 else p
+    return p
+
+
+def stamp():
+    t = int(time.time() - start)
+    return f"{DIM}{t // 60:02d}:{t % 60:02d}{RESET}"
+
+
+def tool_line(name, inp):
+    inp = inp or {}
+    n = name.split("__")[-1] if name.startswith("mcp__") else name
+    if name in ("Read",):
+        return BLUE, "📖", f"Liest {rel(inp.get('file_path'))}"
+    if name in ("Write",):
+        return GREEN, "📝", f"Schreibt {rel(inp.get('file_path'))}"
+    if name in ("Edit", "MultiEdit", "NotebookEdit"):
+        return GREEN, "✏️ ", f"Ändert {rel(inp.get('file_path') or inp.get('notebook_path'))}"
+    if name == "Bash":
+        what = inp.get("description") or inp.get("command", "")
+        return YELLOW, "⚙️ ", f"Führt aus: {short(what)}"
+    if name in ("Glob", "Grep"):
+        return CYAN, "🔎", f"Sucht {short(inp.get('pattern', ''), 70)}"
+    if name == "WebSearch":
+        return CYAN, "🌐", f"Sucht im Web: {short(inp.get('query', ''), 80)}"
+    if name == "WebFetch":
+        return CYAN, "🌐", f"Öffnet {short(inp.get('url', ''), 90)}"
+    if name in ("Task", "Agent"):
+        return MAGENTA, "🤖", f"Startet Helfer: {short(inp.get('description', ''), 80)}"
+    if name == "TodoWrite":
+        return MAGENTA, "🗒 ", "Plan aktualisiert"
+    if name.startswith("mcp__"):
+        server = name.split("__")[1] if name.count("__") >= 2 else "MCP"
+        return MAGENTA, "🔌", f"{server}: {n}"
+    return MAGENTA, "🔧", f"{n}"
+
+
+def todos(inp):
+    for t in (inp or {}).get("todos", []):
+        mark = {"completed": f"{GREEN}☑{RESET}", "in_progress": f"{YELLOW}▶{RESET}"}.get(t.get("status"), "☐")
+        out(f"      {mark} {short(t.get('content', ''), 100)}")
+
+
+def result_text(content):
+    if isinstance(content, list):
+        return " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+    return str(content or "")
+
+
+def handle_claude(ev):
+    global steps
+    t = ev.get("type")
+    if t == "system" and ev.get("subtype") == "init":
+        out(f"{BOLD}▶ Claude Code arbeitet{RESET}  {DIM}{ev.get('model', '')} · {rel(ev.get('cwd', ''))}{RESET}")
+        out()
+        status.update(agent="claude", model=ev.get("model", ""), cwd=ev.get("cwd", ""),
+                      mcp=[{"name": m.get("name", ""), "status": m.get("status", "")} for m in ev.get("mcp_servers", []) if isinstance(m, dict)],
+                      tools=len(ev.get("tools", []) or []))
+        save_status()
+    elif t == "assistant":
+        u = ev.get("message", {}).get("usage") or {}
+        if u and not ev.get("parent_tool_use_id"):   # Helfer-Agents haben eigenen Kontext
+            status["context"] = int(u.get("input_tokens", 0)) + int(u.get("cache_read_input_tokens", 0)) + int(u.get("cache_creation_input_tokens", 0))
+            status["output"] = status.get("output", 0) + int(u.get("output_tokens", 0))
+            save_status()
+        for c in ev.get("message", {}).get("content", []):
+            if c.get("type") == "text" and c.get("text", "").strip():
+                global last_text
+                last_text = c["text"]
+                out()
+                for line in c["text"].strip().splitlines():
+                    out(f"  {line}")
+                out()
+            elif c.get("type") == "tool_use":
+                steps += 1
+                color, sym, text = tool_line(c.get("name", ""), c.get("input"))
+                out(f"{stamp()} {color}{sym} {text}{RESET}")
+                if c.get("name") == "TodoWrite":
+                    todos(c.get("input"))
+            elif c.get("type") == "thinking" and c.get("thinking", "").strip():
+                out(f"{stamp()} {DIM}💭 {short(c['thinking'], 140)}{RESET}")
+    elif t == "user":
+        for c in ev.get("message", {}).get("content", []) if isinstance(ev.get("message", {}).get("content"), list) else []:
+            if c.get("type") == "tool_result" and c.get("is_error"):
+                out(f"      {RED}✗ {short(result_text(c.get('content')), 140)}{RESET}")
+    elif t == "result":
+        status["done"] = True
+        save_status()
+        dur = int((ev.get("duration_ms") or (time.time() - start) * 1000) / 1000)
+        ok = ev.get("subtype") == "success" and not ev.get("is_error")
+        out()
+        out(f"{BOLD}{GREEN if ok else RED}━━ {'Fertig' if ok else 'Abgebrochen'} nach {dur // 60}:{dur % 60:02d} · {steps} Schritte{RESET}")
+        if ev.get("result") and str(ev["result"]).strip() != last_text.strip():
+            out()
+            for line in str(ev["result"]).strip().splitlines():
+                out(f"  {line}")
+
+
+def handle_codex(ev):
+    global steps
+    msg = ev.get("msg", ev)
+    t = msg.get("type", "")
+    item = msg.get("item") or {}
+    it = item.get("type", "") if isinstance(item, dict) else ""
+    if t in ("item.started", "item.completed") and it:
+        if it == "command_execution" and t == "item.started":
+            steps += 1
+            out(f"{stamp()} {YELLOW}⚙️  Führt aus: {short(item.get('command', ''))}{RESET}")
+        elif it == "file_change" and t == "item.completed":
+            for ch in item.get("changes", []):
+                steps += 1
+                out(f"{stamp()} {GREEN}✏️  Ändert {rel(ch.get('path'))}{RESET}")
+        elif it in ("agent_message", "assistant_message") and t == "item.completed":
+            out()
+            for line in str(item.get("text", "")).strip().splitlines():
+                out(f"  {line}")
+            out()
+        elif it == "reasoning" and t == "item.completed":
+            out(f"{stamp()} {DIM}💭 {short(item.get('text', ''), 140)}{RESET}")
+        elif it == "mcp_tool_call" and t == "item.started":
+            steps += 1
+            out(f"{stamp()} {MAGENTA}🔌 {item.get('server', 'MCP')}: {item.get('tool', '')}{RESET}")
+        elif it == "web_search" and t == "item.started":
+            out(f"{stamp()} {CYAN}🌐 Sucht im Web: {short(item.get('query', ''), 80)}{RESET}")
+    elif t == "thread.started":
+        out(f"{BOLD}▶ Codex arbeitet{RESET}")
+        out()
+        status.update(agent="codex")
+        save_status()
+    elif t == "token_count" or (t == "turn.completed" and msg.get("usage")):
+        info = msg.get("info") or {}
+        last = info.get("last_token_usage") or msg.get("usage") or {}
+        if last:
+            status["context"] = int(last.get("input_tokens", 0))
+            status["output"] = status.get("output", 0) + int(last.get("output_tokens", 0))
+        if info.get("model_context_window"):
+            status["window"] = int(info["model_context_window"])
+        save_status()
+        if t == "turn.completed":
+            out(f"{BOLD}{GREEN}━━ Fertig · {steps} Schritte{RESET}")
+    elif t == "turn.completed":
+        out(f"{BOLD}{GREEN}━━ Fertig · {steps} Schritte{RESET}")
+    elif t in ("turn.failed", "error"):
+        out(f"{RED}✗ {short(json.dumps(msg.get('error', msg), ensure_ascii=False), 200)}{RESET}")
+
+
+# Bekanntes Rauschen: Junie führt die Claude-Code-Plugin-Hooks (ECC) aus, die nur in Claude Code funktionieren.
+NOISE = ("Session start hook failed", "SessionStart hook command failed")
+hidden_hooks = False
+
+for raw in sys.stdin:
+    line = raw.rstrip("\n")
+    if not line.strip():
+        continue
+    if any(n in line for n in NOISE):
+        if not hidden_hooks:
+            hidden_hooks = True
+            out(f"{DIM}(Claude-Code-Plugin-Hook übersprungen – betrifft nur Claude Code){RESET}")
+        continue
+    try:
+        ev = json.loads(line)
+    except Exception:
+        out(line)
+        continue
+    if not isinstance(ev, dict):
+        out(line)
+        continue
+    try:
+        if "session_id" in ev or ev.get("type") in ("system", "assistant", "user", "result"):
+            handle_claude(ev)
+        else:
+            handle_codex(ev)
+    except Exception as e:  # nie den Lauf wegen der Anzeige abbrechen
+        out(f"{DIM}({e}){RESET}")

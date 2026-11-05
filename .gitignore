@@ -1,0 +1,26 @@
+# Persönliche Daten – nie committen
+data/*
+!data/mcp-catalog.json
+!data/.gitkeep
+logs/
+opensource/
+dist/
+.private-words
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+App/.build/
+App/.swiftpm/
+
+# Schlüssel und Zertifikate – nie ins Repo
+.env
+.env.*
+*.p12
+*.p8
+*.cer
+*.key
+*.pem
+*.mobileprovision
+*.keychain*
+website/preview.html

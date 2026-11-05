@@ -1,0 +1,58 @@
+[
+  {
+    "pull": "qwen3-coder-next",
+    "name": "Qwen3-Coder-Next",
+    "ram": 64,
+    "size": 52,
+    "rank": 95,
+    "note": "Stärkstes lokales Code-Modell (MoE, 256k Kontext)"
+  },
+  {
+    "pull": "laguna-xs-2.1",
+    "name": "Laguna XS 2.1",
+    "ram": 32,
+    "size": 20,
+    "rank": 90,
+    "note": "Lange Agent-Aufgaben, schnell dank MoE"
+  },
+  {
+    "pull": "qwen3.8:27b",
+    "name": "Qwen3.8 27B",
+    "ram": 32,
+    "size": 18,
+    "rank": 88,
+    "note": "Bester Allrounder für Code mit Werkzeugen"
+  },
+  {
+    "pull": "devstral-small-2",
+    "name": "Devstral Small 2",
+    "ram": 16,
+    "size": 15,
+    "rank": 84,
+    "note": "Für Agent-Arbeit gebaut, passt auf 16 GB"
+  },
+  {
+    "pull": "qwen3-coder:30b",
+    "name": "Qwen3-Coder 30B",
+    "ram": 32,
+    "size": 19,
+    "rank": 80,
+    "note": "Bewährt, ganze Repos im Blick"
+  },
+  {
+    "pull": "gemma4:31b",
+    "name": "Gemma 4 31B",
+    "ram": 32,
+    "size": 19,
+    "rank": 78,
+    "note": "Stark bei Text und Erklärungen"
+  },
+  {
+    "pull": "qwen3:8b",
+    "name": "Qwen3 8B",
+    "ram": 8,
+    "size": 5,
+    "rank": 55,
+    "note": "Klein und schnell für einfache Aufgaben"
+  }
+]

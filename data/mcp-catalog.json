@@ -1,0 +1,679 @@
+{
+ "version": 1,
+ "servers": [
+  {
+   "name": "shopify-dev",
+   "description": "Shopify Dev MCP: Admin-GraphQL-Schema, Docs, Liquid- und Theme-Validierung.",
+   "source": "https://shopify.dev/docs/apps/build/devmcp",
+   "transport": "stdio",
+   "auth": "none",
+   "command": "npx",
+   "args": [
+    "-y",
+    "@shopify/dev-mcp@latest"
+   ],
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "airtable",
+   "description": "Bases, tables, and records from your Airtable workspace.",
+   "source": "https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.airtable.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "algolia",
+   "description": "Algolia search: indices, analytics, and settings (read-only).",
+   "source": "https://www.algolia.com/doc/guides/model-context-protocol/productivity-mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.algolia.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "alltrails",
+   "description": "AllTrails: find hikes and trails with reviews and ratings.",
+   "source": "https://www.alltrails.com/mcp",
+   "transport": "http",
+   "auth": "none",
+   "url": "https://www.alltrails.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "amplitude",
+   "description": "Amplitude analytics: charts, dashboards, experiments, flags.",
+   "source": "https://amplitude.com/docs/amplitude-ai/amplitude-mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.amplitude.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "asana",
+   "description": "Tasks, projects, and goals from your Asana workspace.",
+   "source": "https://developers.asana.com/docs/integrating-with-asanas-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.asana.com/v2/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "atlassian",
+   "description": "Jira issues and Confluence pages via Atlassian's hosted remote MCP.",
+   "source": "https://support.atlassian.com/rovo/docs/getting-started-with-the-atlassian-remote-mcp-server/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.atlassian.com/v1/mcp/authv2",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "attio",
+   "description": "CRM records, lists, and notes in Attio.",
+   "source": "https://attio.com/help/apps/other-apps/using-the-attio-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.attio.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "aws-knowledge",
+   "description": "Authoritative AWS docs, API references, and best practices.",
+   "source": "https://awslabs.github.io/mcp/servers/aws-knowledge-mcp-server/",
+   "transport": "http",
+   "auth": "none",
+   "url": "https://knowledge-mcp.global.api.aws",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "betterstack",
+   "description": "Better Stack: logs, uptime monitors, incidents, and status pages.",
+   "source": "https://betterstack.com/docs/getting-started/integrations/mcp/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.betterstack.com",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "buildkite",
+   "description": "CI/CD pipelines, builds, and test results from Buildkite.",
+   "source": "https://buildkite.com/docs/apis/mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.buildkite.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "calendly",
+   "description": "Scheduling links, events, and invitees from Calendly.",
+   "source": "https://developer.calendly.com/calendly-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.calendly.com",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "canva",
+   "description": "Create, search, and manage Canva designs.",
+   "source": "https://www.canva.dev/docs/mcp/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.canva.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "circleci",
+   "description": "CircleCI: diagnose build failures, read logs, rerun workflows.",
+   "source": "https://circleci.com/docs/guides/toolkit/circleci-mcp-overview/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.circleci.com/v1/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "clickup",
+   "description": "Tasks, docs, and workspaces in ClickUp.",
+   "source": "https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.clickup.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "close",
+   "description": "Sales CRM: leads, opportunities, calls, and emails.",
+   "source": "https://help.close.com/docs/mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.close.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "cloudflare",
+   "description": "Full Cloudflare API access via the official remote MCP.",
+   "source": "https://developers.cloudflare.com/agents/model-context-protocol/cloudflare/servers-for-cloudflare/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.cloudflare.com/mcp?codemode=false",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "cloudinary",
+   "description": "Upload, search, and transform media assets in Cloudinary.",
+   "source": "https://cloudinary.com/documentation/cloudinary_llm_mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://asset-management.mcp.cloudinary.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "comfy-cloud",
+   "description": "Generate images, video, audio, and 3D on Comfy Cloud.",
+   "source": "https://docs.comfy.org/agent-tools/cloud",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://cloud.comfy.org/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "context7",
+   "description": "Up-to-date, version-specific library docs and code examples.",
+   "source": "https://context7.com/docs/resources/all-clients",
+   "transport": "http",
+   "auth": "none",
+   "url": "https://mcp.context7.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "craft",
+   "description": "Craft: structured docs, tasks, and personal knowledge base.",
+   "source": "https://support.craft.do/hc/en-us/articles/29455875123101",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.craft.do/my/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "datadog",
+   "description": "Logs, monitors, dashboards, and incidents from Datadog.",
+   "source": "https://docs.datadoghq.com/bits_ai/mcp_server/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "deepwiki",
+   "description": "Ask questions about any public GitHub repo (Devin's DeepWiki).",
+   "source": "https://docs.devin.ai/work-with-devin/deepwiki-mcp",
+   "transport": "http",
+   "auth": "none",
+   "url": "https://mcp.deepwiki.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "dropbox",
+   "description": "Search, read, and manage files in Dropbox.",
+   "source": "https://help.dropbox.com/integrations/connect-dropbox-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.dropbox.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "figma",
+   "description": "Official Figma remote MCP — design context, Code Connect, and write-to-canvas via https://mcp.figma.com/mcp (OAuth).",
+   "source": "https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.figma.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "fireflies",
+   "description": "Meeting transcripts, summaries, and action items.",
+   "source": "https://docs.fireflies.ai/getting-started/mcp-configuration",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://api.fireflies.ai/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "gamma",
+   "description": "Gamma: generate and edit AI presentations, docs, and sites.",
+   "source": "https://developers.gamma.app/docs/gamma-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.gamma.app/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "gitlab",
+   "description": "GitLab: issues, merge requests, pipelines, and repo context.",
+   "source": "https://docs.gitlab.com/user/model_context_protocol/mcp_server/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://gitlab.com/api/v4/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "globalping",
+   "description": "Ping, traceroute, DNS, and HTTP tests from global probes.",
+   "source": "https://github.com/jsdelivr/globalping-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.globalping.dev/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "grafana",
+   "description": "Query metrics, logs, dashboards, alerts, and incidents from Grafana Cloud.",
+   "source": "https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.grafana.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "hugging_face",
+   "description": "Models, datasets, Spaces, and papers from the Hugging Face Hub.",
+   "source": "https://huggingface.co/docs/hub/agents-mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://huggingface.co/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "indeed",
+   "description": "Search jobs and listings on Indeed.",
+   "source": "https://docs.indeed.com/indeed-mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.indeed.com/claude/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "intercom",
+   "description": "Conversations, tickets, and customer data from Intercom.",
+   "source": "https://developers.intercom.com/docs/guides/mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.intercom.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "kiwi",
+   "description": "Kiwi.com flight search: itineraries with direct booking links.",
+   "source": "https://www.kiwi.com/stories/kiwi-mcp-connector/",
+   "transport": "http",
+   "auth": "none",
+   "url": "https://mcp.kiwi.com",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "klaviyo",
+   "description": "Klaviyo marketing: campaigns, flows, segments, and reporting.",
+   "source": "https://developers.klaviyo.com/en/docs/klaviyo_mcp_server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.klaviyo.com/mcp?core-tools-only=true&disable-tools-with-user-generated-content=true",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "linear",
+   "description": "Find, create, and update Linear issues, projects, and comments.",
+   "source": "https://linear.app/docs/mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.linear.app/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "microsoft-learn",
+   "description": "Official Microsoft, Azure, and .NET docs and code samples.",
+   "source": "https://learn.microsoft.com/en-us/training/support/mcp-get-started",
+   "transport": "http",
+   "auth": "none",
+   "url": "https://learn.microsoft.com/api/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "miro",
+   "description": "Read and edit Miro boards, diagrams, and frames.",
+   "source": "https://developers.miro.com/docs/connecting-to-miro-mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.miro.com/",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "mixpanel",
+   "description": "Mixpanel analytics: events, funnels, retention, dashboards.",
+   "source": "https://docs.mixpanel.com/docs/mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.mixpanel.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "monday",
+   "description": "Boards, items, docs, and workflows in monday.com.",
+   "source": "https://developer.monday.com/apps/docs/mondaycom-mcp-integration",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.monday.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "motherduck",
+   "description": "MotherDuck: query DuckDB cloud warehouses with SQL.",
+   "source": "https://motherduck.com/docs/key-tasks/ai-and-motherduck/mcp-setup/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://api.motherduck.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "n8n-official",
+   "description": "Connect to your n8n instance's official MCP server with browser OAuth.",
+   "source": "https://docs.n8n.io/connect/connect-to-n8n-mcp-server/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "${N8N_MCP_SERVER_URL}",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "neon",
+   "description": "Neon serverless Postgres: projects, branches, and SQL.",
+   "source": "https://neon.com/docs/ai/neon-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.neon.tech/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "netlify",
+   "description": "Sites, deploys, and env vars via Netlify's hosted MCP.",
+   "source": "https://docs.netlify.com/build/build-with-ai/agent-setup-guides/agent-setup-overview/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://netlify-mcp.netlify.app/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "notion",
+   "description": "Pages and databases from your Notion workspace.",
+   "source": "https://developers.notion.com/docs/mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.notion.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "paypal",
+   "description": "Payments, invoices, and subscriptions via PayPal's hosted MCP.",
+   "source": "https://developer.paypal.com/tools/mcp-server/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.paypal.com/sse",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "plaid",
+   "description": "Plaid dashboard: integrations, Items, and usage debugging.",
+   "source": "https://plaid.com/docs/resources/mcp/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://api.dashboard.plaid.com/mcp/",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "postman",
+   "description": "Postman workspaces, collections, environments, and APIs.",
+   "source": "https://learning.postman.com/docs/reference/postman-api/postman-mcp-server/postman-mcp-remote-server/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.postman.com/minimal",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "prisma-postgres",
+   "description": "Create and manage Prisma Postgres databases.",
+   "source": "https://www.prisma.io/docs/postgres/integrations/mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.prisma.io/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "railway",
+   "description": "Railway: projects, services, deployments, and environments.",
+   "source": "https://docs.railway.com/guides/mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.railway.com",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "rentahuman",
+   "description": "Find people and manage real-world work through RentAHuman.",
+   "source": "https://rentahuman.ai/docs#mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://rentahuman.ai/api/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "robinhood",
+   "description": "Robinhood agentic trading: portfolio, balances, and orders.",
+   "source": "https://robinhood.com/us/en/support/articles/agentic-trading-overview/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://agent.robinhood.com/mcp/trading",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "semgrep",
+   "description": "Scan code for security vulnerabilities with Semgrep.",
+   "source": "https://semgrep.dev/docs/mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.semgrep.ai/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "sentry",
+   "description": "Issues, stack traces, and error context from Sentry.",
+   "source": "https://docs.sentry.io/product/sentry-mcp/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.sentry.dev/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "square",
+   "description": "Catalog, orders, and payments via Square's hosted MCP.",
+   "source": "https://developer.squareup.com/docs/mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.squareup.com/sse",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "strava",
+   "description": "Strava: activities, fitness trends, training load (read-only).",
+   "source": "https://support.strava.com/en-us/articles/15401531-strava-mcp-connector",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.strava.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "stripe",
+   "description": "Payments, customers, and invoices via Stripe's hosted MCP.",
+   "source": "https://docs.stripe.com/mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.stripe.com",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "supabase",
+   "description": "Database, auth, and storage from your Supabase projects.",
+   "source": "https://supabase.com/docs/guides/ai-tools/mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.supabase.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "todoist",
+   "description": "Manage Todoist tasks and projects.",
+   "source": "https://www.todoist.com/help/articles/todoist-mcp-server",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://ai.todoist.net/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "trivago",
+   "description": "trivago hotel search: compare prices by city and dates.",
+   "source": "https://mcp.trivago.com/mcp",
+   "transport": "http",
+   "auth": "none",
+   "url": "https://mcp.trivago.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "twelve-data",
+   "description": "Stocks, forex, and crypto market data from Twelve Data.",
+   "source": "https://twelvedata.com/docs",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.twelvedata.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "twilio-docs",
+   "description": "Twilio developer docs search (public beta, read-only).",
+   "source": "https://www.twilio.com/docs/ai/mcp",
+   "transport": "http",
+   "auth": "none",
+   "url": "https://mcp.twilio.com/docs",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "unreal-engine",
+   "description": "Drive the Unreal Engine 5.8 editor over its local MCP server.",
+   "source": "https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor",
+   "transport": "http",
+   "auth": "none",
+   "url": "http://127.0.0.1:8000/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "vercel",
+   "description": "Deployments, logs, and projects via Vercel's hosted MCP.",
+   "source": "https://vercel.com/docs/mcp",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.vercel.com",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "webflow",
+   "description": "Sites, CMS collections, and pages via Webflow's hosted MCP.",
+   "source": "https://developers.webflow.com/mcp/reference/getting-started",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://mcp.webflow.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "wolfram",
+   "description": "Wolfram|Alpha computation, math, and curated knowledge.",
+   "source": "https://www.wolfram.com/agent-tools/",
+   "transport": "http",
+   "auth": "none",
+   "url": "https://agenttools.wolfram.com/mcp",
+   "featured": false,
+   "catalog": "Salenta Code"
+  },
+  {
+   "name": "wordpress-com",
+   "description": "WordPress.com: posts, pages, drafts, stats, and comments.",
+   "source": "https://developer.wordpress.com/docs/mcp/",
+   "transport": "http",
+   "auth": "oauth",
+   "url": "https://public-api.wordpress.com/wpcom/v2/mcp/v1",
+   "featured": false,
+   "catalog": "Salenta Code"
+  }
+ ]
+}
