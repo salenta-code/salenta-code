@@ -45,7 +45,10 @@ struct SalentaMark: View {
 /// Logo + Schriftzug für die Seitenleiste.
 struct BrandHeader: View {
     var active = false
+    @AppStorage("theme.planet") private var planetRaw = Planet.salenta.rawValue
+    @State private var picking = false
     var body: some View {
+        let planet = Planet(rawValue: planetRaw) ?? .salenta
         HStack(spacing: 8) {
             LiveMark(size: 22, active: active)
             HStack(spacing: 4) {
@@ -63,8 +66,14 @@ struct BrandHeader: View {
             Spacer()
         }
         .padding(.horizontal, 14).padding(.top, 6).padding(.bottom, 6)
-        // eigener Hintergrund: die Liste scrollt sonst sichtbar unter dem Logo durch
-        .background(.bar)
+        .frame(height: 64, alignment: .center)
+        // eigener Hintergrund: die Liste scrollt sonst sichtbar unter dem Logo durch – mit Sternen und deinem Planeten
+        .background(ZStack { Rectangle().fill(.bar); PlanetBackdrop(planet: planet) })
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { picking = true }
+        .contextMenu { Button(L("Planet wählen …")) { picking = true } }
+        .popover(isPresented: $picking, arrowEdge: .trailing) { PlanetPicker().padding(Grid.l).frame(width: 470) }
+        .help(L("Doppelklick: Planet und Hell/Dunkel wählen"))
     }
 }
 
@@ -90,4 +99,130 @@ enum BrandImage {
         img.isTemplate = true
         return img
     }()
+}
+
+// MARK: - Salenta-Farben (wie auf salenta.ai): Schwarz/Weiß, Blau als Akzent, Grün = läuft, Orange = Achtung
+
+enum SC {
+    static let blue = Color(red: 10 / 255, green: 132 / 255, blue: 1)          // #0A84FF
+    static let live = Color(red: 50 / 255, green: 215 / 255, blue: 75 / 255)    // #32D74B
+    static let warn = Color(red: 1, green: 159 / 255, blue: 10 / 255)           // #FF9F0A
+    static let red = Color(red: 1, green: 69 / 255, blue: 58 / 255)             // #FF453A
+    static let ink = Color(red: 245 / 255, green: 245 / 255, blue: 247 / 255)   // #F5F5F7
+    static let card = Color(red: 19 / 255, green: 19 / 255, blue: 23 / 255)     // #131317
+    static let line = Color(red: 35 / 255, green: 35 / 255, blue: 41 / 255)     // #232329
+    static let bg = Color(red: 9 / 255, green: 9 / 255, blue: 11 / 255)         // #09090B
+}
+
+/// Startbild: Weltraum mit Sternen und Nebel, Salenta als Planet – die Pulslinie zeichnet sich über die Kugel,
+/// ein Mond zieht seine Bahn, dann blendet alles weich aus.
+struct SplashOverlay: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var draw: CGFloat = 0
+    @State private var dot = false
+    @State private var visible = true
+    @State private var rise = false
+    @State private var twinkle = false
+    @State private var orbit = false
+    private let size: CGFloat = 150
+
+    var body: some View {
+        if visible {
+            ZStack {
+                // Weltraum: fast schwarz, zwei Nebel, Sterne in zwei Ebenen (die vordere funkelt)
+                Color.black.ignoresSafeArea()
+                RadialGradient(colors: [SC.blue.opacity(0.28), .clear], center: UnitPoint(x: 0.72, y: 0.25), startRadius: 0, endRadius: 520)
+                RadialGradient(colors: [Color(hex: 0x7B3FE4).opacity(0.22), .clear], center: UnitPoint(x: 0.2, y: 0.8), startRadius: 0, endRadius: 480)
+                StarField(count: 220, seed: 7).opacity(0.7)
+                StarField(count: 60, seed: 42, big: true).opacity(twinkle ? 1 : 0.35)
+                VStack(spacing: 26) {
+                    ZStack {
+                        // Umlaufbahn mit Mond
+                        Ellipse().stroke(Color.white.opacity(0.12), lineWidth: 1)
+                            .frame(width: size * 1.9, height: size * 0.55).rotationEffect(.degrees(-14))
+                        Circle().fill(Color.white).frame(width: 7, height: 7)
+                            .shadow(color: .white, radius: 4)
+                            .offset(x: orbit ? size * 0.95 : -size * 0.95)
+                            .rotationEffect(.degrees(-14))
+                        // Salenta als Planet
+                        Circle()
+                            .fill(RadialGradient(colors: [Color(white: 0.30), Color(white: 0.08), .black], center: UnitPoint(x: 0.32, y: 0.28),
+                                                 startRadius: 2, endRadius: size * 0.75))
+                            .overlay(Circle().strokeBorder(LinearGradient(colors: [SC.blue.opacity(0.9), .clear], startPoint: .topTrailing, endPoint: .bottomLeading), lineWidth: 2))
+                            .shadow(color: SC.blue.opacity(dot ? 0.55 : 0.15), radius: 40)
+                            .frame(width: size, height: size)
+                        SalentaPulse()
+                            .trim(from: 0, to: draw)
+                            .stroke(Color.white, style: StrokeStyle(lineWidth: size * 26 / 512, lineCap: .round, lineJoin: .round))
+                            .frame(width: size, height: size)
+                        Circle().fill(Color.white)
+                            .frame(width: size * 34 / 512, height: size * 34 / 512)
+                            .scaleEffect(dot ? 1 : 0.01)
+                            .offset(x: size * (394 - 256) / 512)
+                    }
+                    .frame(width: size * 2, height: size * 1.2)
+                    .scaleEffect(rise ? 1 : 0.86)
+                    .offset(y: rise ? 0 : 16)
+                    HStack(spacing: 7) {
+                        Text("salenta").font(.system(size: 30, weight: .semibold, design: .rounded)).kerning(-0.6)
+                        Text("Code").font(.system(size: 16, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.6))
+                    }
+                    .foregroundStyle(SC.ink)
+                    .opacity(dot ? 1 : 0)
+                    .offset(y: dot ? 0 : 8)
+                }
+            }
+            .transition(.opacity.combined(with: .scale(scale: 1.04)))
+            .onAppear {
+                guard !reduceMotion else {
+                    draw = 1; dot = true; rise = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { withAnimation(.easeOut(duration: 0.25)) { visible = false } }
+                    return
+                }
+                withAnimation(.spring(response: 0.8, dampingFraction: 0.8)) { rise = true }
+                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { twinkle = true }
+                withAnimation(.easeInOut(duration: 1.8)) { orbit = true }
+                withAnimation(.easeInOut(duration: 0.8).delay(0.15)) { draw = 1 }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { withAnimation(.spring(response: 0.35, dampingFraction: 0.55)) { dot = true } }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { withAnimation(.easeOut(duration: 0.45)) { visible = false } }
+            }
+        }
+    }
+}
+
+/// Sterne (festes Muster je seed, gezeichnet in einem Durchgang)
+struct StarField: View {
+    var count: Int
+    var seed: UInt64
+    var big = false
+    var body: some View {
+        Canvas { ctx, size in
+            var x = seed &* 0x9E3779B97F4A7C15
+            func rnd() -> CGFloat { x = x &* 6364136223846793005 &+ 1442695040888963407; return CGFloat(x >> 33) / CGFloat(UInt32.max >> 1) }
+            for _ in 0..<count {
+                let p = CGPoint(x: rnd() * size.width, y: rnd() * size.height)
+                let r = big ? 1.2 + rnd() * 1.6 : 0.4 + rnd() * 0.9
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x, y: p.y, width: r, height: r)), with: .color(.white.opacity(0.3 + Double(rnd()) * 0.7)))
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+    }
+}
+
+/// Karten erscheinen weich (leicht von unten) – sparsam, ohne Daueranimation.
+struct AppearIn: ViewModifier {
+    var delay: Double = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var on = false
+    func body(content: Content) -> some View {
+        content
+            .opacity(on || reduceMotion ? 1 : 0)
+            .offset(y: on || reduceMotion ? 0 : 8)
+            .onAppear { withAnimation(.spring(response: 0.45, dampingFraction: 0.85).delay(delay)) { on = true } }
+    }
+}
+
+extension View {
+    func appearIn(_ delay: Double = 0) -> some View { modifier(AppearIn(delay: delay)) }
 }

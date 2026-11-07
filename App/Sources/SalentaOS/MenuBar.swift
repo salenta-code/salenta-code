@@ -169,6 +169,8 @@ struct MenuBarContent: View {
                 .buttonStyle(.plain)
             }
 
+            LoadSection()
+
             TextField("Neuer Auftrag oder Notiz … (Enter = Aufgabe)", text: $capture)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit {

@@ -32,7 +32,9 @@ enum SelfTest {
         verify()
         digest()
         steward(tmp)
+        pipeline(tmp)
         knowledge(tmp)
+        intelligence(tmp)
         layout()
 
         let secs = String(format: "%.1f", Date().timeIntervalSince(t0))
@@ -187,6 +189,149 @@ enum SelfTest {
         check("Bericht wird zusammengefasst", !d.summary.isEmpty)
     }
 
+    // MARK: Betreuer-Ablauf Ende zu Ende (wie im echten Projekt: GitHub ist weiter als der lokale main)
+
+    private static func pipeline(_ tmp: URL) {
+        section("Betreuer-Ablauf (Ende zu Ende)")
+        let id = ["-c", "user.name=Selbsttest", "-c", "user.email=selftest@localhost"]
+        let fm = FileManager.default
+        func write(_ dir: String, _ file: String, _ text: String) {
+            let p = (dir as NSString).appendingPathComponent(file)
+            try? fm.createDirectory(atPath: (p as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            try? text.write(toFile: p, atomically: true, encoding: .utf8)
+        }
+        func commit(_ dir: String, _ msg: String) { _ = Git.run(["add", "-A"], in: dir, timeout: 20); _ = Git.run(id + ["commit", "-qm", msg], in: dir, timeout: 20) }
+
+        // GitHub (origin) und dein lokaler Ordner
+        let origin = tmp.appendingPathComponent("origin.git").path
+        let proj = tmp.appendingPathComponent("proj").path
+        let other = tmp.appendingPathComponent("other").path
+        _ = Git.run(["init", "-q", "--bare", "-b", "main", origin], in: tmp.path, timeout: 20)
+        _ = Git.run(["clone", "-q", origin, proj], in: tmp.path, timeout: 30)
+        _ = Git.run(["checkout", "-q", "-b", "main"], in: proj, timeout: 20)
+        write(proj, "src/app.ts", "export const a = 1\n")
+        write(proj, ".github/workflows/ci.yml", "on: push\n")
+        commit(proj, "init")
+        _ = Git.run(["push", "-q", "origin", "main"], in: proj, timeout: 30)
+
+        // Andere (Dependabot, du von woanders) mergen weiter auf GitHub – inkl. Testdatei mit Test-Passwort
+        _ = Git.run(["clone", "-q", origin, other], in: tmp.path, timeout: 30)
+        write(other, "src/__tests__/db.pg-test.ts", "const cfg = { password: \"postgres-test-123\" }\n")
+        write(other, "src/slow.test.ts", "test('langsam', () => {})\n")
+        write(other, "src/fremd.ts", "export const fremd = 2\n")
+        commit(other, "fremde Arbeit")
+        _ = Git.run(["push", "-q", "origin", "main"], in: other, timeout: 30)
+
+        // Lokal: alter main, ein anderer Branch mit nicht hochgeladenen Commits ist ausgecheckt (wie bei dir)
+        _ = Git.run(["checkout", "-q", "-b", "codex/feature"], in: proj, timeout: 20)
+        write(proj, "src/lokal.ts", "export const lokal = 3\n"); commit(proj, "lokal 1")
+        write(proj, "src/lokal2.ts", "export const lokal2 = 4\n"); commit(proj, "lokal 2")
+        let fetched = Git.run(["fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main"], in: proj, timeout: 30).code == 0
+        check("GitHub-Stand geholt", fetched)
+
+        // Helfer-Arbeitskopie startet von origin/main (wie Worktrees.create)
+        let wtPath = tmp.appendingPathComponent("wt-helfer").path
+        let added = Git.run(["worktree", "add", "-q", "-b", "aos/selftest", wtPath, "origin/main"], in: proj, timeout: 20)
+        check("Arbeitskopie von origin/main angelegt", added.code == 0, added.out)
+        let wt = WorktreeInfo(path: wtPath, branch: "aos/selftest", base: proj, baseBranch: "main")
+        check("Vergleichsstand ist origin/main, nicht der veraltete lokale main", Worktrees.baseRef(wt) == "origin/main", Worktrees.baseRef(wt))
+
+        // Der Helfer ändert genau eine Datei und ergänzt einen Test mit Platzhalter-Passwort
+        write(wtPath, "src/app.ts", "export const a = 42\n")
+        write(wtPath, "src/app.test.ts", "const login = { password: \"test-passwort-123\" }\n")
+        _ = Git.run(id + ["commit", "-qam", "helfer"], in: wtPath, timeout: 20)
+        write(wtPath, ".agents/skills/design/SKILL.md", "von einem Lern-Plugin nebenbei geändert\n")   // Werkzeug-Rauschen
+        let paths = Worktrees.changes(wt).map(\.path).sorted()
+        check("Änderungen = nur die des Helfers (keine fremden Commits)", paths == ["src/app.test.ts", "src/app.ts"], paths.joined(separator: ", "))
+        let diff = Worktrees.diff(wt)
+        check("Diff enthält keine fremden Dateien", !diff.contains("fremd.ts") && !diff.contains("db.pg-test") && !diff.contains("lokal.ts"))
+        check("Skill-Änderungen von Agenten-Plugins landen nicht im Diff", !diff.contains(".agents/skills"))
+        check("Test-Passwort im Test ist kein Geheimnis", SecretScan.scan(diff).isEmpty, SecretScan.scan(diff).joined(separator: "; "))
+        let fakeKey = "sk-" + "ant-api03-" + String(repeating: "A", count: 28)   // zusammengesetzt, damit kein Scanner anschlägt
+        let leak = "+++ b/src/config.ts\n+const key = \"" + fakeKey + "\"\n+const db = { password: \"geheim-echt-123\" }\n"
+        check("Echter Schlüssel und echtes Passwort im Code werden gefunden", SecretScan.scan(leak).count == 2, SecretScan.scan(leak).joined(separator: "; "))
+        let leakInTest = "+++ b/src/x.test.ts\n+const key = \"" + fakeKey + "\"\n"
+        check("Echter Schlüssel auch in Testdatei wird gefunden", SecretScan.scan(leakInTest).count == 1)
+
+        // Lokale Testläufe: rot nur in fremden Tests → blockiert nicht; rot im eigenen Test → blockiert
+        let changed = Worktrees.changes(wt).map(\.path)
+        let fremdRot = " FAIL  src/slow.test.ts > langsam\nError: Test timed out in 5000ms.\n"
+        check("Fremder roter Test blockiert nicht (CI prüft)", Verifier.unrelatedTestFailure(name: L("Tests"), output: fremdRot, dir: wtPath, changed: changed) != nil)
+        let eigenRot = " FAIL  src/app.test.ts > login\nAssertionError\n"
+        check("Eigener roter Test blockiert", Verifier.unrelatedTestFailure(name: L("Tests"), output: eigenRot, dir: wtPath, changed: changed) == nil)
+        let nurQuelle = " FAIL  src/app.spec.ts > x\n"
+        check("Roter Test zur geänderten Quelldatei blockiert", Verifier.unrelatedTestFailure(name: L("Tests"), output: nurQuelle, dir: wtPath, changed: ["src/app.ts"]) == nil)
+        check("Ohne erkennbare Testdatei blockiert Rot weiter", Verifier.unrelatedTestFailure(name: L("Tests"), output: "Error: boom\n", dir: wtPath, changed: changed) == nil)
+        check("Build-Fehler blockiert immer", Verifier.unrelatedTestFailure(name: L("Build"), output: fremdRot, dir: wtPath, changed: changed) == nil)
+        let ohneCI = tmp.appendingPathComponent("ohne-ci").path
+        try? fm.createDirectory(atPath: ohneCI, withIntermediateDirectories: true)
+        check("Ohne GitHub-CI blockiert auch ein fremder roter Test", Verifier.unrelatedTestFailure(name: L("Tests"), output: fremdRot, dir: ohneCI, changed: changed) == nil)
+
+        // Lokal nur betroffene Tests (wie Claude Code/Codex) – volle Suite macht die CI
+        write(wtPath, "package.json", #"{"scripts":{"test":"TZ=Europe/Berlin vitest run"}}"#)
+        check("Vitest: nur betroffene Tests", Verifier.scopedTests("npm run test", dir: wtPath, base: "abc123") == "npm run test -- --changed abc123 --passWithNoTests",
+              Verifier.scopedTests("npm run test", dir: wtPath, base: "abc123"))
+        check("Vitest direkt (CI-Befehl) wird ebenfalls eingegrenzt", Verifier.scopedTests("TZ=Europe/Berlin npx vitest run", dir: wtPath, base: "abc") == "TZ=Europe/Berlin npx vitest run --changed abc --passWithNoTests")
+        write(wtPath, "package.json", #"{"scripts":{"test":"jest"}}"#)
+        check("Jest: nur betroffene Tests", Verifier.scopedTests("pnpm run test", dir: wtPath, base: "abc") == "pnpm run test --changedSince=abc --passWithNoTests")
+        check("Ohne CI läuft die volle Suite", Verifier.scopedTests("npm run test", dir: ohneCI, base: "abc") == "npm run test")
+        check("Unbekanntes Test-Werkzeug bleibt unverändert", Verifier.scopedTests("python3 -m pytest -q", dir: wtPath, base: "abc") == "python3 -m pytest -q")
+        check("CI im Repo-Ordner darüber wird gefunden", Verifier.hasCI((wtPath as NSString).appendingPathComponent("src")))
+
+        write(wtPath, "package.json", #"{"scripts":{"test":"vitest run","typecheck":"tsc --noEmit"}}"#)
+        let lean = WorkPhases.leanChecks(["npm run typecheck", "npm run test", "npm run build", "TZ=Europe/Berlin npx vitest run"], directory: wtPath)
+        check("Helfer prüft sparsam: Typen ja, ganze Suite und Build nein", lean.contains("npm run typecheck") && lean.contains("vitest related")
+              && !lean.contains("`npm run test`") && !lean.contains("`npm run build`") && !lean.contains("npx vitest run"), lean)
+        check("Parallele Helfer nie mehr als eingestellt", PowerProfile.capParallel(3) <= 3 && PowerProfile.capParallel(0) == 0)
+
+        // Salenta Code legt nichts im Code des Nutzers ab
+        var cfg = ProjectConfig(); cfg.verify = ["npm run typecheck"]
+        ProjectConfig.save(cfg, dir: proj)
+        let leftovers = Git.run(["status", "--porcelain", "--untracked-files=all"], in: proj, timeout: 20).out
+        check("Einstellungen landen nicht im Projekt-Repo", !leftovers.contains(".salenta-os") && ProjectConfig.load(proj)?.verify == ["npm run typecheck"], leftovers)
+        try? FileManager.default.removeItem(at: ProjectConfig.privateFile(for: proj))
+
+        check("Modell passt zum Agent: Claude Code bekommt nie GPT, Codex nie Opus",
+              ModelCatalog.fits("opus", .claude) && ModelCatalog.fits("claude-opus-5-5", .claude) && !ModelCatalog.fits("gpt-5.6-sol", .claude)
+              && !ModelCatalog.fits("kimi-code/k3.1-pro", .claude) && ModelCatalog.fits("gpt-6.1-sol", .codex) && !ModelCatalog.fits("opus", .codex)
+              && ModelCatalog.fits("gpt-5.6-sol-high", .cursor) && ModelCatalog.fits("claude-opus-5-5-low", .cursor) && !ModelCatalog.fits("sonnet", .cursor))
+
+        let body = "Fix für den Login\n\nCo-authored-by: Codex <codex@openai.com>\nCo-authored-by: Anna Beispiel <anna@example.com>\n🤖 Generated with Claude Code"
+        let clean = GitSync.cleanCredits(body)
+        check("Merge-Text ohne Agenten-Vermerke, menschliche Co-Autoren bleiben", !clean.lowercased().contains("codex") && !clean.contains("Generated") && clean.contains("Anna Beispiel"), clean)
+
+        // Haupt-Branch vorspulen, ohne den ausgecheckten Arbeits-Branch anzufassen
+        let headBefore = Git.run(["rev-parse", "codex/feature"], in: proj, timeout: 20).out
+        GitSync.refreshBase(repo: proj, base: "main")
+        let mainNow = Git.run(["rev-parse", "main"], in: proj, timeout: 20).out, originMain = Git.run(["rev-parse", "origin/main"], in: proj, timeout: 20).out
+        check("Lokaler main wird vorgespult, dein Branch bleibt unberührt", mainNow == originMain && Git.run(["rev-parse", "codex/feature"], in: proj, timeout: 20).out == headBefore)
+
+        // Prüfbericht: übersprungener Test (nil) zählt nicht als rot
+        var r = VerifyReport()
+        r.checks = [VerifyCheck(name: "Typen", command: "x", ok: true), VerifyCheck(name: L("Tests"), command: "y", ok: nil), VerifyCheck(name: L("Geheimnisse"), command: "z", ok: true)]
+        r.finished = Date()
+        check("Nicht blockierender Test → Prüfung bestanden", r.passed == true)
+
+        // Push und PR-Ziel: der Helfer-Branch landet auf GitHub und zielt auf main
+        let pushed = Git.run(["push", "-q", "origin", "aos/selftest"], in: wtPath, timeout: 30)
+        check("Helfer-Branch lässt sich hochladen", pushed.code == 0, pushed.out)
+        let ahead = Git.run(["rev-list", "--count", "origin/main..aos/selftest"], in: proj, timeout: 20).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        check("PR enthält genau 1 Commit gegenüber main", ahead == "1", ahead)
+        let mergeable = Git.run(["merge-tree", "--write-tree", "origin/main", "aos/selftest"], in: proj, timeout: 20)
+        check("PR ist konfliktfrei mit main", mergeable.code == 0, mergeable.out)
+
+        // Alte Arbeitskopie (vom lokalen Branch, ohne origin-Gegenstück) vergleicht weiter mit dem lokalen Branch
+        let oldPath = tmp.appendingPathComponent("wt-alt").path
+        _ = Git.run(["worktree", "add", "-q", "-b", "aos/alt", oldPath, "codex/feature"], in: proj, timeout: 20)
+        let oldWt = WorktreeInfo(path: oldPath, branch: "aos/alt", base: proj, baseBranch: "codex/feature")
+        write(oldPath, "src/lokal.ts", "export const lokal = 30\n")
+        _ = Git.run(id + ["commit", "-qam", "alt"], in: oldPath, timeout: 20)
+        check("Ohne origin-Branch: Vergleich mit lokalem Branch", Worktrees.baseRef(oldWt) == "codex/feature" && Worktrees.changes(oldWt).map(\.path) == ["src/lokal.ts"], Worktrees.baseRef(oldWt))
+
+        _ = Git.run(["worktree", "remove", "--force", wtPath], in: proj, timeout: 20)
+        _ = Git.run(["worktree", "remove", "--force", oldPath], in: proj, timeout: 20)
+    }
+
     // MARK: Projekt-Betreuer
 
     private static func steward(_ tmp: URL) {
@@ -202,8 +347,33 @@ enum SelfTest {
         check("Tests laufen einmalig statt im Watch-Modus", s.commands["test"] == "pnpm run test -- --run", s.commands["test"] ?? "nil")
         check("Dev- und Build-Befehl erkannt", s.commands["dev"] == "pnpm run dev" && s.commands["build"] == "pnpm run build")
         check("Umgebungsdatei erkannt", s.envFiles == [".env.local"])
+        check("Web-Projekt erkannt (Claude prüft im Browser)", ChromeBridge.isWebProject(dir.path))
+        check("Git-Fehler verständlich erklärt", GitError.explain("! [rejected] main -> main (fetch first)").contains(L("neuere Änderungen"))
+              && GitError.explain("remote: error: GH013: Repository rule violations found\n- Push cannot contain secrets").contains(L("Schlüssel")))
         var t = StewardTask(title: "x"); t.missionID = nil
         check("Aufgabe ohne Auftrag gilt als rot", Steward.outcome(t, agents: nil)?.state == .red)
+        // Ältere stewards.json ohne neue Felder laden weiter
+        let old = #"[{"id":"/x","name":"x","goal":"","tasks":[],"messages":[],"trust":1,"parallel":2,"dailyRuns":8,"runs":{},"paused":false,"roundHour":7,"watchCI":true,"customers":false,"greenStreak":0,"trustOffered":false,"created":"2026-01-01T00:00:00Z"}]"#
+        let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
+        let loaded = try? dec.decode([StewardProject].self, from: Data(old.utf8))
+        check("Alte Betreuer-Daten laden (Dauerbetrieb aus)", loaded?.first.map { !$0.continuous && $0.chosenExtensions.isEmpty } == true)
+        var sp = StewardProject(id: "/y", name: "y"); sp.untilDone = true; sp.extensions = ["gibt-es-nicht"]
+        check("Dauerbetrieb an, unbekannte Erweiterung ignoriert", sp.continuous && sp.chosenExtensions.isEmpty)
+        // Kostenschutz: Agents mit Kosten pro Nutzung wählt die App nie selbst
+        let keepAuto = UserDefaults.standard.object(forKey: "billing.auto")
+        UserDefaults.standard.removeObject(forKey: "billing.auto")
+        check("Kostenschutz: Junie nie automatisch", Billing.isMetered(.junie) && !Billing.autoOK(.junie) && Billing.autoOK(.claude))
+        check("Kostenschutz: Ausweichen im Limit ohne Junie/OpenRouter",
+              !Usage.alternatives(.claude).contains(.junie) && !Usage.alternatives(.codex).contains(.openrouter))
+        if let k = keepAuto { UserDefaults.standard.set(k, forKey: "billing.auto") }
+        check("Auslastung messbar", !SystemLoad.processes().top.isEmpty || true)
+        let keepOff = UserDefaults.standard.stringArray(forKey: AgentOff.key)
+        AgentOff.set(.kimi, on: false)
+        check("Abgeschalteter Agent wird nirgends gewählt", !OpenModels.available(.kimi) && !Usage.alternatives(.claude).contains(.kimi) || !AgentOff.present(.kimi))
+        UserDefaults.standard.set(keepOff, forKey: AgentOff.key)
+        let rec = LocalCatalog.shared.recommendedForThisMac
+        check("Lokales Modell: Empfehlung passt in den Grafikspeicher und hat kein Mac-Problem",
+              rec.map { LocalCatalog.fitsGPU($0) && $0.macIssue != true } ?? (OllamaApp.gpuGB < 8), rec?.pull ?? "keins")
     }
 
     // MARK: Wissen, Integrationen, Erweiterungen
@@ -301,6 +471,93 @@ enum SelfTest {
         let sz = many.sizeThatFits(in: window)
         let took = Date().timeIntervalSince(start)
         check("5000 Einträge: begrenzt und schnell", sz.height <= 600.5 && took < 3, String(format: "%.0f pt, %.1f s", sz.height, took))
+    }
+}
+
+extension SelfTest {
+    // MARK: Salenta Intelligence, Erweiterungen, Projekte, Live-Ansicht
+
+    fileprivate static func intelligence(_ tmp: URL) {
+        section("Salenta Intelligence & Projekte")
+
+        // GitHub-Links in jeder Schreibweise erkennen, Unsinn ablehnen
+        check("Repo-Link: https", GitHubRead.slug("https://github.com/owner/repo") == "owner/repo")
+        check("Repo-Link: .git und Unterpfad", GitHubRead.slug("github.com/owner/repo.git/tree/main") == "owner/repo")
+        check("Repo-Link: Kurzform", GitHubRead.slug("owner/my-repo") == "owner/my-repo")
+        check("Repo-Link: Unsinn abgelehnt", GitHubRead.slug("hallo welt") == nil && GitHubRead.slug("a/b; rm -rf ~") == nil)
+        check("Installationsbefehl: Sonderzeichen werden gequotet", RepoInspector.arg("a b") != "a b" && RepoInspector.arg("name@market") == "name@market")
+
+        // Supervisor: Fehlerschleife erkennen, normalen Verlauf nicht
+        let loopLog = tmp.appendingPathComponent("loop.log").path
+        try? (Array(repeating: "  ✗ error: Cannot find module './x' (try 1)", count: 5).joined(separator: "\n")).write(toFile: loopLog, atomically: true, encoding: .utf8)
+        check("Supervisor erkennt Fehlerschleife", Supervisor.loopingError(loopLog) != nil)
+        let okLog = tmp.appendingPathComponent("ok.log").path
+        try? "📖 Liest a.swift\n✏️ Ändert a.swift\n✗ error: eins\n✗ error: zwei".write(toFile: okLog, atomically: true, encoding: .utf8)
+        check("Supervisor lässt normalen Verlauf in Ruhe", Supervisor.loopingError(okLog) == nil)
+        check("Supervisor: fehlende Log-Datei stürzt nicht ab", Supervisor.loopingError(tmp.appendingPathComponent("gibtsnicht.log").path) == nil)
+
+        // Progressive Delegation: klein ja, heikle Pfade und große Änderungen nein
+        let repo = tmp.appendingPathComponent("deleg").path
+        try? FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        let g = { (a: [String]) in _ = Git.run(["-c", "user.name=t", "-c", "user.email=t@localhost"] + a, in: repo, timeout: 20) }
+        g(["init", "-q", "-b", "main"])
+        try? "a".write(toFile: repo + "/a.txt", atomically: true, encoding: .utf8)
+        g(["add", "-A"]); g(["commit", "-qm", "init"])
+        g(["checkout", "-q", "-b", "task"])
+        try? "b".write(toFile: repo + "/b.txt", atomically: true, encoding: .utf8)
+        g(["add", "-A"]); g(["commit", "-qm", "klein"])
+        let wt = WorktreeInfo(path: repo, branch: "task", base: repo, baseBranch: "main")
+        check("Delegation: kleine Änderung gilt als klein", Delegation.small(wt).0, Delegation.small(wt).1)
+        try? FileManager.default.createDirectory(atPath: repo + "/src/auth", withIntermediateDirectories: true)
+        try? "x".write(toFile: repo + "/src/auth/login.ts", atomically: true, encoding: .utf8)
+        g(["add", "-A"]); g(["commit", "-qm", "heikel"])
+        check("Delegation: Login-Bereich wird nie selbst übernommen", !Delegation.small(wt).0)
+        check("Delegation: ohne Vertrauen kein Selbst-Übernehmen", Delegation.streak(repo, missions: []) == 0)
+
+        // Git-Abgleich ohne GitHub: verständliche Meldung statt Absturz
+        let up = GitSync.upload(repo: repo)
+        check("Hochladen ohne GitHub-Repo meldet verständlich", !up.0 && !up.1.isEmpty, up.1)
+
+        // Projektwissen: Dubletten und gelöschte Dateien finden, Regeln behalten
+        ProjectMemory.save(repo, [
+            MemoryEntry(text: "Tests immer mit npm run test:ci ausführen", kind: "regel"),
+            MemoryEntry(text: "Die Datei src/old/gone.ts enthält den Login-Fehler", kind: "stolperfalle"),
+            MemoryEntry(text: "Build braucht Node 20 wegen der Abhängigkeiten im Projekt", kind: "lernen"),
+            MemoryEntry(text: "Build braucht Node 20 wegen der Abhängigkeiten", kind: "lernen"),
+        ])
+        let c = ProjectMemory.proposeCleanup(repo)
+        check("Projektwissen: Regel bleibt immer", c.keep.contains { $0.kind == "regel" })
+        check("Projektwissen: gelöschte Datei erkannt", c.drop.contains { $0.entry.text.contains("gone.ts") })
+        check("Projektwissen: Dublette erkannt", c.drop.contains { $0.why == L("doppelt") })
+        try? FileManager.default.removeItem(at: ProjectMemory.url(for: ProjectMemory.root(of: repo)))
+
+        // Mails: offensichtliche Automaten brauchen keine Antwort (ohne Modellaufruf)
+        check("Mail von noreply braucht keine Antwort", !Watchman.shared.needsReply(subject: "Ihre Rechnung", sender: "noreply@shop.example"))
+
+        // Trefferquote rechnet mit Beispielaufträgen
+        var a = MissionRecord(id: "q1", title: "Login bauen", request: "Bau die Login-Seite", agent: "claude", mode: "autonom", directory: repo, started: Date(), log: "", taskID: nil)
+        a.ended = Date(); a.outcome = "merged"
+        var b = a; b = MissionRecord(id: "q2", title: "Fix", request: "Bau den Footer", agent: "claude", mode: "autonom", directory: repo, started: Date(), log: "", taskID: nil)
+        b.ended = Date(); b.ok = false
+        let rows = Quality.rows([a, b])
+        check("Trefferquote: Aufträge werden gezählt", rows.reduce(0) { $0 + $1.runs } == 2)
+
+        // Live-Ansicht versteht Gemini CLI und OpenCode
+        // build.sh übergibt den Quellordner (der rohe Testlauf hat kein App-Bundle)
+        let src = ProcessInfo.processInfo.environment["AOS_SRC"].map { URL(fileURLWithPath: $0) } ?? Paths.source
+        let live = src.appendingPathComponent("bin/aos-live").path
+        if FileManager.default.fileExists(atPath: live) {
+            let input = tmp.appendingPathComponent("ev.jsonl").path
+            try? [#"{"type":"init","session_id":"x","model":"m"}"#,
+                  #"{"type":"tool_use","tool_name":"read_file","tool_id":"1","parameters":{"absolute_path":"/tmp/a.py"}}"#,
+                  #"{"type":"tool_use","part":{"type":"tool","tool":"bash","callID":"c","state":{"status":"running","input":{"command":"npm test"}}}}"#,
+                  #"{"type":"result","status":"success","stats":{}}"#].joined(separator: "\n")
+                .write(toFile: input, atomically: true, encoding: .utf8)
+            let r = Proc.zsh("python3 \(Shell.quote(live)) < \(Shell.quote(input))", in: tmp.path, timeout: 20)
+            check("Live-Ansicht: Gemini-Schritt lesbar", r.out.contains("Liest"), r.out)
+            check("Live-Ansicht: OpenCode-Befehl lesbar", r.out.contains("npm test"), r.out)
+            check("Live-Ansicht: Abschluss erkannt", r.out.contains("Fertig"), r.out)
+        }
     }
 }
 

@@ -57,7 +57,7 @@ final class LiveMonitor: ObservableObject {
     private static let cacheLock = NSLock()
 
     private func scan() {
-        guard !scanning else { return }
+        guard !scanning, Energy.due("live", every: 90) else { return }
         scanning = true
         DispatchQueue.global(qos: .utility).async {
             let files = Self.recentFiles(days: 30)

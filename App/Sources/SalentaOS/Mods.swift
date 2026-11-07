@@ -304,7 +304,7 @@ struct ModsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(Grid.m)
-                .background(RoundedRectangle(cornerRadius: 12).fill(.background.secondary))
+                .background(ModernCardBackground(radius: 12))
 
                 if !store.mods.isEmpty {
                     VStack(alignment: .leading, spacing: Grid.s) {
@@ -322,7 +322,7 @@ struct ModsView: View {
                                 Button(role: .destructive) { store.remove(m) } label: { Image(systemName: "trash") }.buttonStyle(.plain).help(L("Mod löschen"))
                             }
                             .padding(Grid.s)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(.background.secondary))
+                            .background(ModernCardBackground(radius: 10, accent: false))
                         }
                     }
                 }
@@ -348,7 +348,7 @@ struct ModsView: View {
                             }
                             .padding(Grid.m)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 12).fill(.background.secondary))
+                            .background(ModernCardBackground(radius: 12))
                         }
                     }
                 }

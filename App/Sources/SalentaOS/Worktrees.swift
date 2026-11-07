@@ -70,14 +70,21 @@ enum Worktrees {
     static func isWorktree(_ dir: String) -> Bool { dir.hasPrefix(root.path) || dir.hasPrefix(legacyRoot.path) }
 
     /// Legt eine Arbeitskopie an. nil = kein Git-Repo, ausgeschaltet oder fehlgeschlagen (dann im Original arbeiten).
-    static func create(for dir: String, id: String) -> WorktreeInfo? {
+    /// `from`: auf dem aktuellen Stand dieses Branches von GitHub aufsetzen (z. B. „main“) statt auf dem lokal ausgecheckten –
+    /// sonst landen nicht hochgeladene lokale Commits mit im Pull Request.
+    static func create(for dir: String, id: String, from remoteBranch: String? = nil) -> WorktreeInfo? {
         guard enabled, !isWorktree(dir), let repo = Git.root(of: dir) else { return nil }
-        let baseBranch = Git.run(["rev-parse", "--abbrev-ref", "HEAD"], in: repo).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        var baseBranch = Git.run(["rev-parse", "--abbrev-ref", "HEAD"], in: repo).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        var startPoint = "HEAD"
+        if let rb = remoteBranch, !rb.isEmpty,
+           Git.run(["fetch", "--quiet", "origin", "+refs/heads/\(rb):refs/remotes/origin/\(rb)"], in: repo, timeout: 120).code == 0 {
+            baseBranch = rb; startPoint = "origin/" + rb
+        }
         let short = String(id.prefix(8)).lowercased()
         let name = (repo as NSString).lastPathComponent.replacingOccurrences(of: " ", with: "-")
         let path = root.appendingPathComponent("\(name)-\(short)").path
         let branch = "aos/\(short)"
-        let r = Git.run(["worktree", "add", "-b", branch, path, "HEAD"], in: repo)
+        let r = Git.run(["worktree", "add", "-b", branch, path, startPoint], in: repo)
         guard r.code == 0 else { return nil }
         prepare(worktree: path, from: repo)
         // Unterordner beibehalten (Auftrag galt z. B. für repo/app)
@@ -133,7 +140,11 @@ enum Worktrees {
     }
 
     /// Verlinkte Abhängigkeiten nie mit committen (ein Link ist für git eine Datei – „node_modules/“ greift da nicht).
-    static let addSpec = [".", ":(exclude)node_modules", ":(exclude,glob)**/node_modules"]
+    /// Was Agenten-Werkzeuge nebenbei in der Arbeitskopie umschreiben (z. B. Lern-Plugins, die Skills anpassen),
+    /// gehört nicht zum Auftrag: kommt weder in den Diff, die Prüfung, das Review noch den Pull Request.
+    static let toolNoise = [":(exclude,glob).agents/skills/**", ":(exclude,glob).claude/skills/**", ":(exclude,glob).cursor/skills/**",
+                            ":(exclude,glob).codex/skills/**"]
+    static let addSpec = [".", ":(exclude)node_modules", ":(exclude,glob)**/node_modules"] + toolNoise
 
     static func top(_ wt: WorktreeInfo) -> String { Git.root(of: wt.path) ?? wt.path }
 
@@ -144,12 +155,30 @@ enum Worktrees {
         let removed: Int
     }
 
+    /// Der Stand, von dem die Kopie wirklich abzweigt: der neuere von lokalem Branch und origin/<Branch>.
+    /// (Neue Kopien starten von origin/<Branch>; ist der lokale Branch älter, enthielte ein Vergleich mit ihm
+    /// fremde, längst gemergte Änderungen – riesige Diffs, falsche Geheimnis-Treffer und abgelehnte Reviews.)
+    static func baseRef(_ wt: WorktreeInfo) -> String {
+        let dir = top(wt)
+        let remote = "origin/" + wt.baseBranch
+        guard Git.run(["rev-parse", "--verify", "--quiet", "refs/remotes/" + remote], in: dir, timeout: 10).code == 0 else { return wt.baseBranch }
+        let local = Git.run(["merge-base", "HEAD", wt.baseBranch], in: dir, timeout: 15).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        let origin = Git.run(["merge-base", "HEAD", remote], in: dir, timeout: 15).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if local.isEmpty { return remote }
+        if origin.isEmpty { return wt.baseBranch }
+        return Git.run(["merge-base", "--is-ancestor", local, origin], in: dir, timeout: 10).code == 0 ? remote : wt.baseBranch
+    }
+
+    static func forkPoint(_ wt: WorktreeInfo) -> String {
+        Git.run(["merge-base", "HEAD", baseRef(wt)], in: top(wt), timeout: 15).out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Änderungen gegenüber dem Ausgangsstand (eigene Commits + noch nicht committete Dateien).
     static func changes(_ wt: WorktreeInfo) -> [FileChange] {
         let dir = top(wt)
         Git.run(["add", "-A", "--intent-to-add", "--"] + Self.addSpec, in: dir)
-        let base = Git.run(["merge-base", "HEAD", wt.baseBranch], in: dir).out.trimmingCharacters(in: .whitespacesAndNewlines)
-        let r = Git.run(["diff", "--numstat", base.isEmpty ? "HEAD" : base], in: dir)
+        let base = forkPoint(wt)
+        let r = Git.run(["diff", "--numstat", base.isEmpty ? "HEAD" : base, "--"] + addSpec, in: dir)
         return r.out.split(separator: "\n").compactMap { line in
             let p = line.split(separator: "\t", maxSplits: 2).map(String.init)
             guard p.count == 3 else { return nil }
@@ -159,13 +188,13 @@ enum Worktrees {
 
     static func diff(_ wt: WorktreeInfo, file: String? = nil) -> String {
         let dir = top(wt)
-        let base = Git.run(["merge-base", "HEAD", wt.baseBranch], in: dir).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = forkPoint(wt)
         var args = ["diff", "--no-color", base.isEmpty ? "HEAD" : base]
-        if let file { args += ["--", file] }
+        if let file { args += ["--", file] } else { args += ["--"] + addSpec }
         return Git.run(args, in: dir).out
     }
 
-    private static func commitAll(_ wt: WorktreeInfo, message: String) {
+    static func commitAll(_ wt: WorktreeInfo, message: String) {
         let dir = top(wt)
         Git.run(["add", "-A", "--"] + Self.addSpec, in: dir)
         let staged = Git.run(["diff", "--cached", "--quiet"], in: dir).code != 0
@@ -229,21 +258,48 @@ enum Worktrees {
     static func pullRequest(_ wt: WorktreeInfo, title: String, body: String) -> (Bool, String) {
         commitAll(wt, message: title)
         let dir = top(wt)
-        let push = Git.run(["push", "-u", "origin", wt.branch], in: dir, timeout: 120)
-        guard push.code == 0 else { return (false, push.out) }
         let gh = Detection.which("gh") ?? "/opt/homebrew/bin/gh"
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: gh)
-        p.arguments = ["pr", "create", "--head", wt.branch, "--base", wt.baseBranch, "--title", title, "--body", body]
-        p.currentDirectoryURL = URL(fileURLWithPath: dir)
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = pipe
-        do { try p.run() } catch { return (false, "gh: \(error.localizedDescription)") }
-        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        while p.isRunning { usleep(20_000) }
-        if p.terminationStatus == 0 { discard(wt, keepBranch: true) }
-        return (p.terminationStatus == 0, out.trimmingCharacters(in: .whitespacesAndNewlines))
+        func run(_ args: [String]) -> (code: Int32, out: String) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: gh)
+            p.arguments = args
+            p.currentDirectoryURL = URL(fileURLWithPath: dir)
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = pipe
+            do { try p.run() } catch { return (1, "gh: \(error.localizedDescription)") }
+            let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            p.waitUntilExit()
+            return (p.terminationStatus, out.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        // 1. Hochladen – gibt es den Branch auf GitHub schon mit anderem Stand, automatisch unter neuem Namen
+        var branch = wt.branch
+        var push = Git.run(["push", "-u", "origin", "HEAD:refs/heads/" + branch], in: dir, timeout: 120)
+        if push.code != 0, GitError.explain(push.out).contains(L("neuere Änderungen")) {
+            branch = wt.branch + "-" + String(Int(Date().timeIntervalSince1970) % 100000)
+            push = Git.run(["push", "-u", "origin", "HEAD:refs/heads/" + branch], in: dir, timeout: 120)
+        }
+        guard push.code == 0 else { return (false, push.out) }
+        // 2. Pull Request – Ziel-Branch muss auf GitHub existieren, sonst der Haupt-Branch des Repos
+        var base = wt.baseBranch
+        if Git.run(["ls-remote", "--exit-code", "--heads", "origin", base], in: dir, timeout: 30).code != 0 {
+            let def = run(["repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])
+            if def.code == 0, !def.out.isEmpty { base = def.out }
+        }
+        var r = run(["pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body])
+        if r.code != 0 {
+            let o = r.out.lowercased()
+            if o.contains("already exists") {
+                // Es gibt schon einen PR für diesen Branch: der neue Stand ist hochgeladen – den nehmen wir
+                let v = run(["pr", "view", branch, "--json", "url", "-q", ".url"])
+                if v.code == 0, !v.out.isEmpty { r = (0, v.out) }
+            } else if o.contains("base") && (o.contains("invalid") || o.contains("not found") || o.contains("does not exist")) {
+                let def = run(["repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])
+                if def.code == 0, !def.out.isEmpty, def.out != base { r = run(["pr", "create", "--head", branch, "--base", def.out, "--title", title, "--body", body]) }
+            }
+        }
+        if r.code == 0 { discard(wt, keepBranch: true) }
+        return (r.code == 0, r.out)
     }
 
     static func discard(_ wt: WorktreeInfo, keepBranch: Bool) {
@@ -312,7 +368,7 @@ struct ChangesPanel: View {
             .help(L("Leere Arbeitskopie aufräumen und den Auftrag schließen"))
         }
         .padding(Grid.l)
-        .background(RoundedRectangle(cornerRadius: 14).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 14))
         .frame(maxWidth: 780)
         .padding(.horizontal, Grid.l)
         .onAppear { ChangeState.shared.empty.insert(rec.id) }
@@ -470,15 +526,24 @@ struct ChangesPanel: View {
                 .font(.caption).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(Grid.l)
-        .background(RoundedRectangle(cornerRadius: 14).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder((red ? Color.orange : Color.secondary).opacity(0.25)))
+        .background(ModernCardBackground(radius: 14))
         .frame(maxWidth: 780)
         .padding(.horizontal, Grid.l)
         .task(id: rec.id) { reload() }
         .sheet(isPresented: $showPreview) { PreviewSheet(id: rec.id, title: rec.title) }
         .sheet(isPresented: $showPR) {
             PRSheet(rec: rec, wt: wt, files: files) { ok, msg in
-                guard ok else { app.show(msg); return }
+                guard ok else {
+                    // Nicht hängen lassen: ein Agent behebt die Ursache, danach wird der PR automatisch erstellt
+                    let why = GitError.explain(msg)
+                    app.show("⚠️ " + why + " – " + L("ein Agent behebt das, danach wird der Pull Request automatisch erstellt."))
+                    Handoff.continueMission(rec, message: AutoPR.fixMessage(why), target: rec.agent, agents: agents, hub: hub,
+                                            note: L("PR-Problem automatisch beheben")) { s in
+                        AutoPR.mark(s.id.uuidString, title: rec.title)
+                        app.page = .chat(s.id.uuidString)
+                    }
+                    return
+                }
                 store.setPR(rec.id, msg)
                 store.setOutcome(rec.id, "pr")
                 ModStore.shared.fire(.prCreated, rec: rec, result: msg)
@@ -518,16 +583,21 @@ struct ChangesPanel: View {
             let (ok, msg) = work()
             DispatchQueue.main.async {
                 busy = false
-                app.show(ok ? "✓ " + msg : msg)
+                // Fehler immer verständlich: was passiert ist und was hilft
+                app.show(ok ? "✓ " + msg : "⚠️ " + (outcome == "pr" || outcome == "merged" ? GitError.explain(msg) : msg))
                 guard let outcome else { if ok { reload() }; return }   // Checkpoint: nur neu laden
                 if ok {
                     PreviewServer.shared.stop(rec.id)
                     if outcome == "merged" {
+                        Celebration.shared.fire(L("Übernommen"), rec.title)
                         ModStore.shared.fire(.merged, rec: rec)
                         let repo = wt.base, branch = wt.baseBranch
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { Worktrees.offerPush(repo: repo, branch: branch, app: app) }
                     }
-                    if outcome == "pr" { ModStore.shared.fire(.prCreated, rec: rec, result: msg) }
+                    if outcome == "pr" {
+                        Celebration.shared.fire(L("Pull Request erstellt"), rec.title, symbol: "arrow.triangle.pull", tint: .purple)
+                        ModStore.shared.fire(.prCreated, rec: rec, result: msg)
+                    }
                     store.setOutcome(rec.id, outcome)
                     Learning.record(rec, outcome: outcome)
                     store.clearWorktree(rec.id)

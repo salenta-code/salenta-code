@@ -447,3 +447,78 @@ footer .base { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-t
   .icon-hero .pulse-draw { stroke-dashoffset: 0; }
   .win { transform: none; }
 }
+
+/* Planeten-Auswahl */
+.planets { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 40px; align-items: center; }
+.planets i { width: 54px; height: 54px; border-radius: 50%; display: block; position: relative;
+  background: radial-gradient(circle at 32% 28%, var(--a), var(--b) 78%); box-shadow: 0 0 28px color-mix(in srgb, var(--a) 45%, transparent);
+  animation: planet-float 6s ease-in-out infinite; }
+.planets i:nth-child(2n) { animation-delay: -2s; } .planets i:nth-child(3n) { animation-delay: -4s; }
+.planets i.ring::after { content: ""; position: absolute; left: -16px; right: -16px; top: 21px; height: 12px; border-radius: 50%;
+  border: 3px solid color-mix(in srgb, var(--a) 75%, transparent); transform: rotate(-16deg); }
+@keyframes planet-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) { .planets i { animation: none; } }
+
+/* ── Weltall ───────────────────────────────────────────── */
+#space { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
+.nebula { position: fixed; inset: -20vh -10vw; z-index: -1; pointer-events: none; transform: translate3d(0, calc(var(--sy, 0) * -0.06px), 0); }
+.nebula i { position: absolute; border-radius: 50%; filter: blur(70px); opacity: .55; animation: neb 28s ease-in-out infinite alternate; }
+.nebula .n1 { width: 55vw; height: 55vw; left: 52%; top: 4%; background: radial-gradient(circle, rgba(10,132,255,.28), transparent 65%); }
+.nebula .n2 { width: 48vw; height: 48vw; left: -8%; top: 46%; background: radial-gradient(circle, rgba(123,63,228,.22), transparent 65%); animation-delay: -9s; }
+.nebula .n3 { width: 38vw; height: 38vw; left: 60%; top: 120%; background: radial-gradient(circle, rgba(50,215,180,.14), transparent 65%); animation-delay: -18s; }
+@keyframes neb { from { transform: translate(0, 0) scale(1); } to { transform: translate(-4vw, 3vh) scale(1.12); } }
+main, .top, footer { position: relative; }
+.hero::before { opacity: .45; }
+
+/* Logo als Planet mit Umlaufbahnen */
+.hero-in { position: relative; }
+.orbit-wrap { position: absolute; top: 0; left: 50%; width: 0; height: 0; pointer-events: none; }
+.orbit { position: absolute; border: 1px solid rgba(255,255,255,.12); border-radius: 50%; transform: rotate(-16deg); }
+.orbit.o1 { width: 230px; height: 70px; left: -115px; top: 22px; }
+.orbit.o2 { width: 330px; height: 110px; left: -165px; top: 2px; border-color: rgba(10,132,255,.18); }
+.orbit .moon { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px #fff;
+  offset-path: border-box; animation: moon 9s linear infinite; }
+.orbit .moon.sm { width: 5px; height: 5px; background: #8fc6ff; box-shadow: 0 0 8px #0A84FF; animation-duration: 15s; animation-direction: reverse; }
+@keyframes moon { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+.icon-hero { position: relative; z-index: 1; filter: drop-shadow(0 0 40px rgba(10,132,255,.35)); }
+
+/* Abschnitts-Überschriften schweben beim Scrollen leicht herein */
+@supports (animation-timeline: view()) {
+  .blk h2 { animation: drift linear both; animation-timeline: view(); animation-range: entry 0% cover 40%; }
+  @keyframes drift { from { opacity: 0; transform: translateY(40px) scale(.98); filter: blur(4px); } to { opacity: 1; transform: none; filter: none; } }
+}
+
+/* ── Tour: alle Funktionen beim Scrollen ───────────────── */
+.tour { display: grid; grid-template-columns: minmax(260px, 420px) 1fr; gap: 56px; margin-top: 48px; }
+.tour-stage { position: sticky; top: 90px; height: 440px; display: grid; place-items: center; align-content: start; }
+.tour-stage > .ts-orbit, .tour-stage > .ts-planet { grid-area: 1 / 1; place-self: center; margin-top: 20px; }
+.tour-stage > .ts-orbit { position: relative; }
+.ts-planet { width: 190px; height: 190px; border-radius: 50%; display: grid; place-items: center;
+  background: radial-gradient(circle at 32% 28%, #3a3a44, #0b0b0f 70%); box-shadow: 0 0 80px rgba(10,132,255,calc(.18 + var(--p, 0) * .06)), inset -18px -24px 40px rgba(0,0,0,.6);
+  border: 1px solid rgba(10,132,255,.35); transition: box-shadow .6s, transform .6s; }
+.ts-planet svg { width: 62%; }
+.ts-planet svg path { stroke-dasharray: 1200; stroke-dashoffset: calc(1200 - var(--p, 1) * 133.4); transition: stroke-dashoffset .8s ease; }
+.ts-orbit { position: absolute; width: 330px; height: 330px; border-radius: 50%; border: 1px dashed rgba(255,255,255,.14);
+  transform: rotate(calc(var(--p, 1) * 45deg)); transition: transform .8s cubic-bezier(.2,.8,.2,1); }
+.ts-orbit i { position: absolute; top: -6px; left: 50%; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #0A84FF; box-shadow: 0 0 18px #0A84FF; }
+.ts-label { position: absolute; bottom: 0; left: 0; right: 0; text-align: center; }
+.ts-num { display: block; font-family: var(--mono); font-size: 13px; color: #0A84FF; letter-spacing: .1em; }
+.ts-title { font-size: 20px; font-weight: 600; color: var(--ink); }
+.tour-steps { list-style: none; margin: 0; padding: 0; counter-reset: st; }
+.tour-steps li { counter-increment: st; min-height: 46vh; padding: 28px 0 28px 64px; position: relative; opacity: .28; transform: translateX(10px); transition: opacity .5s, transform .5s; }
+.tour-steps li::before { content: counter(st, decimal-leading-zero); position: absolute; left: 0; top: 30px; font-family: var(--mono); font-size: 13px; color: var(--ink-3);
+  width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line-2); display: grid; place-items: center; transition: all .5s; }
+.tour-steps li.on { opacity: 1; transform: none; }
+.tour-steps li.on::before { color: #fff; background: #0A84FF; border-color: #0A84FF; box-shadow: 0 0 22px rgba(10,132,255,.6); }
+.tour-steps b { font-size: 24px; line-height: 1.25; display: block; margin-bottom: 8px; }
+.tour-steps p { color: var(--ink-2); font-size: 17px; max-width: 560px; margin: 0; }
+@media (max-width: 860px) {
+  .tour { grid-template-columns: 1fr; gap: 12px; }
+  .tour-stage { position: sticky; top: 64px; height: 170px; z-index: 2; background: linear-gradient(var(--bg) 70%, transparent); }
+  .ts-planet { width: 92px; height: 92px; } .ts-orbit { width: 150px; height: 150px; } .ts-label { display: none; }
+  .tour-steps li { min-height: 34vh; padding-left: 56px; } .tour-steps b { font-size: 20px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nebula, .nebula i, .orbit .moon, .ts-orbit, .tour-steps li { animation: none !important; transition: none !important; transform: none !important; }
+  .tour-steps li { opacity: 1; }
+}

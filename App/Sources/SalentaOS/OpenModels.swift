@@ -74,10 +74,11 @@ enum Secrets {
 enum OpenModels {
     /// Ist der Agent wirklich nutzbar (CLI da, bei OpenRouter auch ein Schlüssel)?
     static func available(_ k: AgentKind) -> Bool {
+        if AgentOff.isOff(k) { return false }        // von dir abgeschaltet (z. B. Abo gekündigt)
         if AgentHealth.needsLogin(k) { return false }   // gerade nicht angemeldet → nicht automatisch wählen
         switch k {
         case .openrouter: return Detection.which("claude") != nil && hasOpenRouter
-        case .ollama: return Detection.which("claude") != nil && Detection.which("ollama") != nil
+        case .ollama: return Detection.which("claude") != nil && OllamaApp.installed
         default: return Detection.which(k.command) != nil
         }
     }
@@ -144,9 +145,8 @@ enum OpenModels {
 
     /// Lokal installierte Ollama-Modelle.
     static func ollamaModels() -> [String] {
-        guard Detection.which("ollama") != nil else { return [] }
-        let r = Proc.zsh("ollama list", in: NSTemporaryDirectory(), timeout: 15)
-        return r.out.split(separator: "\n").dropFirst().compactMap { $0.split(separator: " ").first.map(String.init) }.filter { !$0.isEmpty }
+        guard OllamaApp.installed else { return [] }
+        return OllamaApp.models()
     }
 }
 
@@ -177,15 +177,7 @@ struct ModelAccessSettings: View {
                 Link("Schlüssel erstellen: openrouter.ai/keys", destination: URL(string: "https://openrouter.ai/keys")!).font(.caption)
             }
             Section("Lokal mit Ollama (kostenlos, privat)") {
-                HStack {
-                    Image(systemName: Detection.which("ollama") != nil ? "checkmark.circle.fill" : "circle.dashed")
-                        .foregroundStyle(Detection.which("ollama") != nil ? .green : .secondary)
-                    Text(Detection.which("ollama") != nil ? L("Ollama ist installiert") : L("Ollama fehlt"))
-                    Spacer()
-                    Button(Detection.which("ollama") != nil ? L("Coding-Modell laden (qwen3-coder)") : L("Installieren")) {
-                        Detection.runInTerminal(Detection.which("ollama") != nil ? "ollama pull qwen3-coder" : "brew install ollama && ollama pull qwen3-coder")
-                    }
-                }
+                LocalSetupRow()
                 Text("Läuft komplett auf deinem Mac. Für kleine, klare Aufgaben – für große Umbauten sind die Cloud-Modelle deutlich besser.")
                     .font(.caption).foregroundStyle(.secondary)
             }

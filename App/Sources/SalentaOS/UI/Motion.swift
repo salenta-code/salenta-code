@@ -8,12 +8,16 @@ struct LiveMark: View {
     var size: CGFloat = 28
     var active: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.controlActiveState) private var windowState
     @State private var run = false
+    /// Dauer-Animationen zwingen das Fenster zu ständigem Neuzeichnen (WindowServer + Grafikchip).
+    /// Nur, wenn Salenta Code vorne ist und nicht Strom gespart wird – sonst ein ruhiges Zeichen.
+    private var animate: Bool { active && !reduceMotion && windowState == .key && !Energy.saving }
 
     // Gemessen: die frühere Fassung zeichnete 30× pro Sekunde neu (TimelineView + Schatten) – je Zeichen, auch in der
     // Seitenleiste. Jetzt eine einzige Core-Animation, die das System selbst abspielt: kein Neuberechnen des Fensters.
     var body: some View {
-        if active && !reduceMotion {
+        if animate {
             if size < 18 {
                 SalentaMark(size: size)
                     .opacity(run ? 0.45 : 1)
@@ -32,6 +36,9 @@ struct LiveMark: View {
             }
         } else {
             SalentaMark(size: size)
+                .overlay(alignment: .bottomTrailing) {
+                    if active { Circle().fill(.green).frame(width: max(4, size * 0.3), height: max(4, size * 0.3)) }
+                }
         }
     }
 }

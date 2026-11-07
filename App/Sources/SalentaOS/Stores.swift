@@ -193,6 +193,7 @@ final class TaskStore: ObservableObject {
     func update(_ task: TaskItem) {
         guard let i = tasks.firstIndex(where: { $0.id == task.id }) else { return add(task) }
         var t = task
+        if t.status == .erledigt, tasks[i].status != .erledigt { Celebration.shared.fire(L("Aufgabe erledigt"), t.title) }
         if t.status == .erledigt, t.doneAt == nil { t.doneAt = Date() }
         if t.status != .erledigt { t.doneAt = nil }
         tasks[i] = t

@@ -56,7 +56,7 @@ enum PRWriter {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-pr-\(UUID().uuidString).md")
         try? prompt.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
-        let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model haiku --output-format json --max-turns 1 --strict-mcp-config < \(Shell.quote(file.path))",
+        let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model haiku --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))",
                          in: NSTemporaryDirectory(), timeout: 120)
         var d = PRDraft(base: base)
         if let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"),

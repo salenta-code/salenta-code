@@ -214,7 +214,7 @@ final class Essentials: ObservableObject {
             case .claude: return "curl -fsSL https://claude.ai/install.sh | bash"
             case .codex: return "brew install codex || npm install -g @openai/codex"
             case .tmux: return "brew install tmux"
-            case .ollama: return "brew install ollama && brew services start ollama"
+            case .ollama: return ""
             }
         }
     }
@@ -232,13 +232,17 @@ final class Essentials: ObservableObject {
                 f[t] = Proc.zsh("command -v \(cmd) >/dev/null", in: NSTemporaryDirectory(), timeout: 10).code == 0
             }
             // git über Xcode-Werkzeuge: „command -v git“ findet den Platzhalter auch ohne Installation
+            if f[.ollama] != true { f[.ollama] = OllamaApp.installed }
             if f[.git] == true { f[.git] = Proc.zsh("xcode-select -p >/dev/null 2>&1 || command -v brew >/dev/null && brew list git >/dev/null 2>&1", in: NSTemporaryDirectory(), timeout: 10).code == 0 }
             let logged = f[.gh] == true && Proc.zsh("gh auth status >/dev/null 2>&1", in: NSTemporaryDirectory(), timeout: 15).code == 0
             DispatchQueue.main.async { self.found = f; self.ghLoggedIn = logged }
         }
     }
 
-    func install(_ t: Tool) { Detection.runInTerminal(t.install + " ; echo; echo '✓ Fertig – zurück zu Salenta Code und „Erneut prüfen“.'") }
+    func install(_ t: Tool) {
+        if t == .ollama { LocalSetup.shared.run(manual: true); return }   // ohne Terminal – Salenta Code macht das selbst
+        Detection.runInTerminal(t.install + " ; echo; echo '✓ Fertig – zurück zu Salenta Code und „Erneut prüfen“.'")
+    }
 
     /// Alles Fehlende in einem Rutsch (Terminal zeigt jeden Schritt).
     func installMissing() {

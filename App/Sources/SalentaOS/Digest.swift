@@ -57,7 +57,7 @@ enum Digest {
         let quick = heuristic(text)
         MissionStore.shared.setDigest(id, quick)
         var models: [AgentKind: [String]] = [:]
-        let installed = AgentKind.coders.filter { OpenModels.available($0) }
+        let installed = AgentKind.coders.filter { OpenModels.available($0) && Billing.autoOK($0) }
         for a in installed { models[a] = ModelCatalog.shared.latest(for: a, limit: 6).map(\.value) }
         DispatchQueue.global(qos: .utility).async {
             let ai = Self.ai(rec: rec, text: text, installed: installed, models: models)
@@ -146,7 +146,7 @@ enum Digest {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-digest-\(UUID().uuidString).md")
         try? prompt.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
-        let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model haiku --output-format json --max-turns 1 --strict-mcp-config < \(Shell.quote(file.path))",
+        let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model haiku --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))",
                          in: NSTemporaryDirectory(), timeout: 150)
         guard let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"),
               let data = res[a...b].data(using: .utf8),
@@ -283,7 +283,7 @@ struct DigestCard: View {
             }
         }
         .padding(Grid.l)
-        .background(RoundedRectangle(cornerRadius: 14).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 14))
         .frame(maxWidth: 780)
         .padding(.horizontal, Grid.l)
     }
@@ -354,8 +354,7 @@ struct DigestCard: View {
             }
         }
         .padding(Grid.l)
-        .background(RoundedRectangle(cornerRadius: 14).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor.opacity(0.2)))
+        .background(ModernCardBackground(radius: 14))
         .frame(maxWidth: 780)
         .padding(.horizontal, Grid.l)
     }

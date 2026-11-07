@@ -41,7 +41,7 @@ struct Card<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.m) {
             HStack(spacing: Grid.s) {
-                Image(systemName: symbol).foregroundStyle(.secondary)
+                Image(systemName: symbol).foregroundStyle(Color.accentColor)
                 Text(title).font(.headline)
                 Spacer()
                 if let trailing { trailing }
@@ -50,8 +50,8 @@ struct Card<Content: View>: View {
         }
         .padding(Grid.l)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.separator.opacity(0.6)))
+        .background(ModernCardBackground())
+        .appearIn()
     }
 }
 
@@ -75,15 +75,17 @@ struct StatTile: View {
     let label: String
     let symbol: String
     var tint: Color = .accentColor
+    @State private var hover = false
 
     var body: some View {
         HStack(spacing: Grid.m) {
             Image(systemName: symbol)
-                .font(.title2)
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(value).font(.title2.weight(.semibold)).monospacedDigit()
+                .frame(width: 34, height: 34)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tint.opacity(0.14)))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(value).font(.system(size: 22, weight: .bold, design: .rounded)).monospacedDigit()
                     .contentTransition(.numericText())
                     .animation(.snappy, value: value)
                 Text(label).font(.caption).foregroundStyle(.secondary)
@@ -91,8 +93,32 @@ struct StatTile: View {
             Spacer(minLength: 0)
         }
         .padding(Grid.m)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.separator.opacity(0.6)))
+        .background(ModernCardBackground(tint: tint, radius: 14))
+        .scaleEffect(hover ? 1.015 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: hover)
+        .onHover { hover = $0 }
+    }
+}
+
+/// Karten-Hintergrund im Stil der Website: ruhige Fläche, feine Kante, ein Hauch Akzent oben.
+struct ModernCardBackground: View {
+    var tint: Color = .accentColor
+    var radius: CGFloat = 16
+    var accent = true
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.pureBlack) private var black
+    var body: some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(black ? SC.card : scheme == .dark ? Color(nsColor: .underPageBackgroundColor) : Color.white)
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(LinearGradient(colors: [tint.opacity(accent ? (scheme == .dark ? 0.10 : 0.06) : 0), .clear], startPoint: .top, endPoint: .center))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(LinearGradient(colors: [accent ? tint.opacity(0.35) : (scheme == .dark ? SC.line : Color.black.opacity(0.08)), (scheme == .dark ? SC.line : Color.black.opacity(0.08))],
+                                                 startPoint: .top, endPoint: .bottom), lineWidth: 1)
+            )
     }
 }
 

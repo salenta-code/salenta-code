@@ -35,6 +35,7 @@ Salenta Code holt sie in ein Fenster:
 
 | | |
 |---|---|
+| **Salenta Intelligence** | Die Schicht zwischen dir und deinen Agents, läuft auf deinem Mac: prüfbares „Fertig, wenn …“ für jeden Auftrag, ein Supervisor für hängende Agents, Trefferquote pro Agent, Vertrauen, das pro Projekt wächst, Lernen über Nacht und eine Mitteilungs-Zentrale mit Ruhezeit und Morgen-Briefing. |
 | **Mission Control** | Alle laufenden Agents auf einem Bildschirm: was sie tun, wie voll ihr Kontext ist, welche Werkzeuge aktiv sind. |
 | **Automatische Auswahl** | Bauen → Claude Code, Fehlersuche → Junie, Review → Codex, Kleinigkeiten → lokales Modell. Ist ein Limit erreicht, übernimmt der nächste. |
 | **Fragen oder Bauen** | *Fragen* läuft nur lesend und antwortet mit `Datei:Zeile`. *Bauen* setzt den Auftrag um. Fragen werden automatisch erkannt. |

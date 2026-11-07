@@ -150,7 +150,7 @@ final class ModelCatalog: ObservableObject {
             return (discovered[agent.rawValue] ?? []).map { ModelOption(value: $0, label: $0, hint: $0.hasSuffix(":free") ? L("kostenlos") : "") }
         case .ollama:
             let local = discovered[agent.rawValue] ?? []
-            return (local.isEmpty ? ["qwen3-coder"] : local).map { ModelOption(value: $0, label: $0, hint: local.isEmpty ? L("erst laden: ollama pull qwen3-coder") : L("lokal")) }
+            return (local.isEmpty ? ["qwen3-coder"] : local).map { ModelOption(value: $0, label: $0, hint: local.isEmpty ? L("wird automatisch eingerichtet (Einstellungen › Modelle)") : L("lokal")) }
         case .junie, .shell:
             return []
         }
@@ -199,11 +199,28 @@ final class ModelCatalog: ObservableObject {
     // MARK: Gewählt pro Agent
 
     static func selected(for agent: AgentKind) -> String {
-        UserDefaults.standard.string(forKey: "mission.model.\(agent.rawValue)") ?? ""
+        let v = UserDefaults.standard.string(forKey: "mission.model.\(agent.rawValue)") ?? ""
+        return fits(v, agent) ? v : ""   // falsch abgelegte Wahl (z. B. GPT unter Claude Code) gilt nicht
     }
 
     static func select(_ value: String, for agent: AgentKind) {
         UserDefaults.standard.set(value, forKey: "mission.model.\(agent.rawValue)")
+    }
+
+    /// Passt die Modell-ID zum Agent? (Nach einem Agent-Wechsel darf z. B. Codex nie „opus“ bekommen
+    /// und Claude Code nie ein GPT- oder Kimi-Modell – sonst läuft still ein anderes Modell als gedacht.)
+    static func fits(_ model: String, _ agent: AgentKind) -> Bool {
+        let m = model.lowercased()
+        if m.isEmpty { return true }
+        let claudeAlias = ["opus", "sonnet", "haiku"].contains(m)
+        let claudeID = m.hasPrefix("claude-") || claudeAlias
+        let openAI = m.hasPrefix("gpt-") || m.hasPrefix("o3") || m.hasPrefix("o4") || m.contains("codex")
+        switch agent {
+        case .claude: return claudeID
+        case .codex: return openAI
+        case .cursor: return !claudeAlias
+        default: return !claudeAlias && !(m.hasPrefix("claude-") && agent != .opencode && agent != .openrouter)
+        }
     }
 
     /// Kann der Agent ein Modell per Parameter bekommen?

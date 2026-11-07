@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
 }
 
 struct ContentView: View {
+    @ObservedObject private var triage = PRTriage.shared
     @ObservedObject private var steward = Steward.shared
     static var restored = false
     @EnvironmentObject private var app: AppModel
@@ -114,7 +115,7 @@ struct ContentView: View {
                             // gleiche Namen (z. B. zwei Klone desselben Repos) am Elternordner unterscheiden
                             let twin = steward.projects.contains { $0.id != sp.id && $0.name == sp.name }
                             let parent = URL(fileURLWithPath: sp.id).deletingLastPathComponent().lastPathComponent
-                            (Text(sp.name) + (twin ? Text(" · " + parent).foregroundColor(.secondary) : Text(""))).lineLimit(1)
+                            (Text(sp.name) + (twin ? Text(" · " + L("Ordner") + " „" + parent + "“").foregroundColor(.secondary) : Text(""))).lineLimit(1)
                                 .help(sp.id.replacingOccurrences(of: Paths.home.path, with: "~"))
                             Spacer()
                             if sp.count(.running) > 0 { LiveMark(size: 10, active: true) }
@@ -141,7 +142,8 @@ struct ContentView: View {
                     // Helfer (vom Agent gestartete Sub-Agents) hängen aufklappbar unter ihrem Hauptauftrag
                     // Läuft ein Helfer/Mod noch, obwohl sein Hauptauftrag schon abgeschlossen ist, bleibt der Hauptauftrag
                     // als Kopf sichtbar – so hängt nie etwas lose in der Liste.
-                    let base = Array(missions.open.prefix(40))
+                    // Aufträge des Projekt-Betreuers stehen auf seiner Tafel (oben unter „Projekt-Betreuer“), nicht hier
+                    let base = Array(missions.open.filter { Steward.shared.owner(ofMission: $0.id) == nil }.prefix(40))
                     let roots = Set(base.filter { $0.delegated == true }.map { missions.rootID(of: $0.id) })
                     let extra = roots.filter { r in !base.contains { $0.id == r } }.compactMap { missions.mission($0) }
                     let open = (base + extra).sorted { $0.started > $1.started }
@@ -219,13 +221,17 @@ struct ContentView: View {
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) { BrandHeader(active: agents.runningCount > 0) }
+            .pureBlackSurface(sidebar: true)
             .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
         } detail: {
             // Sicherheitsnetz: eine zu hohe Ansicht wird unten abgeschnitten, statt Kopf und Seitenleiste wegzuschieben
             detail
                 .containedInWindow()
+                .pureBlackSurface()
         }
         .overlay(alignment: .top) { ApprovalBar().animation(.snappy, value: approvals.pending) }
+        .overlay(alignment: .top) { CelebrationOverlay() }
+        .sheet(item: $triage.sheet) { r in PRTriageSheet(repo: r.path) }
         .overlay(alignment: .bottom) { if app.page != .home { FloatingDictationStrip() } }
         .onOpenURL { url in WidgetFeed.open(url, app: app) }
         .overlay(alignment: .bottom) {
@@ -268,6 +274,18 @@ struct ContentView: View {
             bridge.start()
             approvals.bridge = bridge
             approvals.start()
+            NotifyCenter.shared.start(app: app, approvals: approvals, tasks: tasks)
+            SystemLoad.shared.start()
+            // Fertiges räumt sich selbst weg (alle 2 Minuten, am Akku seltener)
+            if !AutoClose.started {
+                AutoClose.started = true
+                Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { _ in
+                    if Energy.due("autoclose", every: 600) { AutoClose.run(agents: agents, tasks: tasks, current: app.page ?? .home) }
+                }
+            }
+            LocalSetup.shared.boot()
+            Watchman.shared.start(calendar: calendar, mail: mail, tasks: tasks, projects: projectCatalog)
+            Supervisor.shared.start(agents: agents, hub: hub)
             live.start()
             if !Self.restored {
                 Self.restored = true
@@ -294,6 +312,7 @@ struct ContentView: View {
             let store = tasks, model = app, mgr = agents, mcp = hub
             agents.onFinish = { s in
                 let mid = s.id.uuidString
+                Billing.record(s.kind, seconds: (s.endedAt ?? Date()).timeIntervalSince(s.startedAt))
                 if s.kind == .ollama { LocalStats.record(s) }
                 // Startoption, die die installierte CLI nicht (mehr) kennt? Merken und einmal ohne sie neu starten.
                 if !s.succeeded, let text = s.resultTail(maxChars: 4000), !s.isOSAgent,
@@ -359,25 +378,59 @@ struct ContentView: View {
                 if s.succeeded, s.mode == .autonom, s.worktree != nil, Verifier.autoRun {
                     Verifier.run(mid) { report in
                         guard report.passed == false, Verifier.autoFix,
-                              let rec = MissionStore.shared.mission(mid), (rec.fixRound ?? 0) < 1, rec.archived != true else {
+                              let rec = MissionStore.shared.mission(mid), (rec.fixRound ?? 0) < 2, rec.archived != true else {
                             if let p = report.passed, Focus.isOn == false || !p {
                                 model.show(p ? "✓ " + L("Geprüft – alles grün: ") + s.label : "✗ " + L("Prüfung fehlgeschlagen: ") + s.label)
                             }
+                            // Progressive Delegation: bei genug Vertrauen kleine, unkritische Änderungen selbst übernehmen
+                            if report.passed == true, let rec = MissionStore.shared.mission(mid) {
+                                Delegation.maybeApply(rec) { ok, msg in
+                                    model.show(ok ? "✓ " + msg : msg)
+                                    if ok {
+                                        Celebration.shared.fire(L("Selbst übernommen"), s.label, symbol: "sparkles", tint: .purple)
+                                        NotifyCenter.shared.post(.runDone, title: msg, body: s.label, route: .page("chat:" + mid))
+                                    }
+                                }
+                            }
+                            if report.passed == true { Celebration.shared.fire(L("Geschafft – alles grün"), s.label) }
+                            // War das eine Reparatur nach gescheitertem PR? Dann jetzt den Pull Request selbst erstellen.
+                            if report.passed == true, let title = AutoPR.take(mid), let rec = MissionStore.shared.mission(mid), let wt = rec.worktree {
+                                DispatchQueue.global(qos: .userInitiated).async {
+                                    let (ok, out) = Worktrees.pullRequest(wt, title: title, body: rec.digest?.summary ?? rec.request)
+                                    DispatchQueue.main.async {
+                                        if ok {
+                                            MissionStore.shared.setPR(mid, out); MissionStore.shared.setOutcome(mid, "pr")
+                                            MissionStore.shared.clearWorktree(mid)
+                                            Celebration.shared.fire(L("Pull Request erstellt"), title, symbol: "arrow.triangle.pull", tint: .purple)
+                                            model.show("✓ " + L("Pull Request automatisch erstellt"))
+                                        } else {
+                                            model.show("⚠️ " + GitError.explain(out))
+                                        }
+                                    }
+                                }
+                            }
                             if let p = report.passed {
-                                Notifier.push(p ? L("Geprüft – bereit zum Übernehmen") : L("Prüfung rot"), s.label, priority: p ? 3 : 4,
-                                              tags: p ? "white_check_mark" : "x")
+                                NotifyCenter.shared.post(p ? .runDone : .runFailed,
+                                                         title: p ? L("Geprüft – bereit zum Übernehmen") : L("Prüfung rot"),
+                                                         body: s.label, route: .page("chat:" + mid))
                             }
                             return
                         }
-                        Verifier.fix(rec, agents: mgr, hub: mcp) { n in
-                            model.show("↻ " + L("Prüfung rot – Agent bessert nach: ") + s.label)
+                        // Zweite rote Runde: ein anderer Anbieter übernimmt (frischer Blick statt derselbe Fehler nochmal)
+                        let second = (rec.fixRound ?? 0) >= 1
+                        let other = second ? Verifier.reviewer(for: rec.agent).rawValue : nil
+                        Verifier.fix(rec, agents: mgr, hub: mcp, agent: other) { n in
+                            model.show((second ? "⇄ " + L("Zweimal rot – ein anderer Agent übernimmt: ") : "↻ " + L("Prüfung rot – Agent bessert nach: ")) + s.label)
                             if model.page == .chat(mid) { model.page = .chat(n.id.uuidString) }
                         }
                     }
                 }
-                if s.mode == .autonom, s.worktree == nil || !s.succeeded {
-                    Notifier.push(s.succeeded ? "✓ \(s.displayName) " + L("fertig") : "✗ \(s.displayName) " + L("abgebrochen"),
-                                  s.label, priority: s.succeeded ? 3 : 4, tags: s.succeeded ? "white_check_mark" : "warning")
+                let isHelper = MissionStore.shared.mission(mid)?.delegated == true || Steward.shared.owner(ofMission: mid) != nil
+                if s.mode == .autonom, s.worktree == nil, s.succeeded, !s.planOnly, !isHelper { Celebration.shared.fire(L("Auftrag erledigt"), s.label) }
+                if s.mode == .autonom, s.worktree == nil || !s.succeeded, !isHelper || !s.succeeded {
+                    NotifyCenter.shared.post(s.succeeded ? .runDone : .runFailed,
+                                             title: s.succeeded ? "✓ \(s.displayName) " + L("fertig") : "✗ \(s.displayName) " + L("abgebrochen"),
+                                             body: s.label, route: .page("chat:" + mid))
                 }
                 if s.mode == .autonom, s.succeeded, let rec = MissionStore.shared.mission(mid) {
                     if Digest.worth(rec) { Digest.make(mid) }   // Ergebnis-Karte: Zusammenfassung + Vorschläge zum Umsetzen
@@ -389,8 +442,6 @@ struct ContentView: View {
                 Obsidian.journal(agent: s.kind.title, title: s.label,
                                  text: s.resultTail(maxChars: 1500) ?? "Interaktive Sitzung beendet (Aufgabe \(id)).", ok: s.succeeded)
                 if s.mode == .autonom {
-                    NSSound(named: s.succeeded ? "Glass" : "Basso")?.play()
-                    NSApp.requestUserAttention(.informationalRequest)
                     model.show(s.succeeded ? "✓ \(s.kind.title) fertig: \(s.label)" : "✗ \(s.kind.title) abgebrochen: \(s.label)")
                 }
             }

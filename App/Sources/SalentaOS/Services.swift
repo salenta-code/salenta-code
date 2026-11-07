@@ -357,8 +357,9 @@ final class SystemStatus: ObservableObject {
     }
 
     func installed(_ kind: AgentKind) -> Bool {
+        if AgentOff.isOff(kind) { return false }
         if kind == .openrouter { return cliPaths[.claude] != nil && OpenModels.hasOpenRouter }
-        if kind == .ollama { return cliPaths[.claude] != nil && cliPaths[.ollama] != nil }
+        if kind == .ollama { return cliPaths[.claude] != nil && (cliPaths[.ollama] != nil || OllamaApp.appPath != nil) }
         return kind == .shell || cliPaths[kind] != nil
     }
 

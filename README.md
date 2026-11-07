@@ -46,6 +46,7 @@ Salenta Code puts them in one window:
 
 | | |
 |---|---|
+| **Salenta Intelligence** | The layer between you and your agents, running on your Mac: a checkable “done when …” for every task, a supervisor for stuck agents, hit rates per agent, trust that grows per project, overnight learning and a notification center with quiet hours and a morning briefing. |
 | **Mission Control** | Every running agent on one screen: what it is doing, how full its context is, which tools are active. |
 | **Automatic routing** | Building → Claude Code, debugging → Junie, review → Codex, small edits → local model. At a limit, the next agent takes over. |
 | **Ask or build** | *Ask* runs read-only and answers with `file:line` references. *Build* carries out the task. Questions are detected automatically. |

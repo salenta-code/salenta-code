@@ -69,6 +69,9 @@ enum Detection {
     private static var cache: [String: String?] = [:]
     private static let cacheLock = NSLock()
 
+    /// Nach einer Installation neu suchen.
+    static func forget(_ tool: String) { cacheLock.lock(); cache[tool] = nil; cacheLock.unlock() }
+
     /// Sucht ein Programm wie die Login-Shell (Homebrew, nvm, volta, bun …). Ergebnis wird gemerkt.
     static func which(_ tool: String) -> String? {
         cacheLock.lock(); let hit = cache[tool]; cacheLock.unlock()

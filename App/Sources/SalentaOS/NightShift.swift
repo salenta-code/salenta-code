@@ -125,6 +125,7 @@ final class NightShift: ObservableObject {
     // MARK: Ablauf
 
     private func tick() {
+        guard Energy.backgroundAgentsOK else { return }      // am Akku wartet die Nachtschicht aufs Netzteil
         if let s = scheduledAt, s <= Date(), !active { begin(); return }
         guard active, let agents else { return }
         // läuft gerade etwas?
@@ -273,7 +274,7 @@ struct NightShiftView: View {
                     }
                 }
                 .padding(Grid.m)
-                .background(RoundedRectangle(cornerRadius: 12).fill(.background.secondary))
+                .background(ModernCardBackground(radius: 12))
 
                 // Warteschlange
                 VStack(alignment: .leading, spacing: 6) {
@@ -341,7 +342,7 @@ struct NightShiftView: View {
                     }
                 }
                 .padding(Grid.m)
-                .background(RoundedRectangle(cornerRadius: 12).fill(.background.secondary))
+                .background(ModernCardBackground(radius: 12))
             }
             .padding(Grid.xl)
             .frame(maxWidth: 900, alignment: .leading)

@@ -39,10 +39,18 @@ fi
 if [[ -z "$identity" ]]; then
   identity=$(security find-identity -v -p codesigning 2>/dev/null | grep -m1 -o '"Apple Development: [^"]*"' | tr -d '"' || true)
 fi
+# Entwickler-Version: sonst mit dem vorhandenen Developer-ID-Zertifikat signieren. Eine feste Signatur sorgt dafür, dass macOS
+# „Immer erlauben“ (Schlüsselbund, Ordnerzugriff) über Neubauten hinweg behält – ohne neue Rückfrage nach jedem Neubau.
+if [[ -z "$identity" ]]; then
+  identity=$(security find-identity -v -p codesigning 2>/dev/null | grep -m1 -o '"Developer ID Application: [^"]*"' | tr -d '"' || true)
+fi
 [[ -n "$identity" ]] || identity=-
 # Developer ID: gehärtete Laufzeit (Pflicht für Apples Beglaubigung)
 sign_opts=()
-[[ "$identity" == Developer\ ID* ]] && sign_opts=(--options runtime --timestamp)
+if [[ "$identity" == Developer\ ID* ]]; then
+  sign_opts=(--options runtime)
+  [[ $release -eq 1 ]] && sign_opts+=(--timestamp)   # Zeitstempel nur für die Veröffentlichung (braucht Internet)
+fi
 
 echo "→ swift build ($config) – erster Lauf lädt SwiftTerm und dauert 1–3 Minuten …"
 mkdir -p "$scratch"; touch "$scratch/.build-start"
@@ -103,7 +111,7 @@ fi
 echo "→ Selbsttest …"
 # Ohne Terminal-Bindung starten (eigene Sitzung): aus einem Terminal heraus würden interaktive Shells im Test sonst
 # vom Terminal angehalten (SIGTTOU) und als „hängt“ gewertet. Gestartet aus der App gibt es kein Terminal – dort egal.
-/usr/bin/perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$bin" --selftest > "$logdir/selftest.log" 2>&1 </dev/null
+AOS_SRC="$root" /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$bin" --selftest > "$logdir/selftest.log" 2>&1 </dev/null
 st=$?
 tail -1 "$logdir/selftest.log"
 if [[ $st -ne 0 ]]; then

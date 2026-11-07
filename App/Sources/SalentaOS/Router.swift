@@ -61,7 +61,7 @@ enum Router {
                 return RouteDecision(target: .codex, directory: p.path, projectName: p.name,
                                      reason: "Prüfen/Review in \(p.name) – Codex als zweite Meinung")
             }
-            if debugging {
+            if debugging, Billing.autoOK(.junie), OpenModels.available(.junie) {
                 return RouteDecision(target: .junie, directory: p.path, projectName: p.name,
                                      reason: "Fehler finden und beheben in \(p.name) – Junie")
             }
@@ -235,6 +235,8 @@ struct AIRouteDecision {
     /// Wie anspruchsvoll ist der Auftrag (trivial, small, medium, large) – und schafft ihn ein kleines lokales Modell sicher?
     var complexity: String? = nil
     var localOK: Bool? = nil
+    /// Woran man erkennt, dass der Auftrag erledigt ist – geht an Agent und Prüfer.
+    var doneWhen: String? = nil
 }
 
 enum AIRouter {
@@ -243,6 +245,8 @@ enum AIRouter {
     /// Fragt Claude Haiku (dein Abo, ~3–8 s). Fällt bei Fehlern oder Zeitüberschreitung auf die Stichwort-Regeln zurück.
     static func decide(_ text: String, projects: [Project], skills: [Skill], installed: Set<AgentKind>,
                        tools: [String] = [], fallback: RouteDecision, completion: @escaping (AIRouteDecision) -> Void) {
+        // Agents mit Kosten pro Nutzung nimmt die automatische Wahl nie von sich aus
+        let installed = installed.filter { Billing.autoOK($0) }
         let fallbackAI = AIRouteDecision(target: fallback.target, model: defaultModel(for: fallback.target, text: text), effort: nil,
                                          directory: fallback.directory, skills: [], reason: fallback.reason)
         guard enabled, installed.contains(.claude) else {
@@ -282,7 +286,8 @@ enum AIRouter {
         Models (field "model"):
         - for claude and os: "opus" only for hard tasks (architecture, multi-file features, tricky bugs, important texts); \
         otherwise leave empty (the agent's own default)
-        - for codex: leave model empty; set "effort" to "high" for deep reviews and hard bugs, otherwise leave empty
+        - "effort" (claude and codex): "low" for trivial/mechanical tasks, "medium" for almost everything (default – Opus needs no more),
+          "high" only for genuinely hard bugs, deep reviews, security or architecture. Never max/xhigh.
         - for junie: leave model empty
 
         Projects on this Mac (pick "directory" only for coding agents, must be one of these paths or empty):
@@ -320,7 +325,11 @@ enum AIRouter {
         - "localOK": true ONLY if a small local model could finish it reliably in one go: trivial/small, clearly specified, \
         no investigation, no debugging, no security/auth/payment/database/deploy topics, no multi-step tool use. When unsure: false.
 
-        JSON schema: {"agent":"claude|junie|codex|os|cursor|opencode|gemini|grok|kiro|pi|kimi","model":"","effort":"","directory":"","skills":[],"tools":[],"extensions":[],"suggest":[],"complexity":"trivial|small|medium|large","localOK":false,"reason":"max 12 words, in \(Profile.languageCode == "de" ? "German" : "English")"}
+        - "done_when": for tasks that change code or files: ONE short, checkable sentence in \(Profile.languageCode == "de" ? "German" : "English") \
+        saying when the task is done from the user's point of view (what works or is visible afterwards). Only use what the task says – \
+        do not invent requirements. Empty for questions, research and non-coding tasks.
+
+        JSON schema: {"done_when":"","agent":"claude|junie|codex|os|cursor|opencode|gemini|grok|kiro|pi|kimi","model":"","effort":"","directory":"","skills":[],"tools":[],"extensions":[],"suggest":[],"complexity":"trivial|small|medium|large","localOK":false,"reason":"max 12 words, in \(Profile.languageCode == "de" ? "German" : "English")"}
         """
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -329,7 +338,7 @@ enum AIRouter {
             defer { try? FileManager.default.removeItem(at: file) }
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            p.arguments = ["-lc", LocalFirst.cliEnv() + "claude -p --model haiku --output-format json --max-turns 1 --strict-mcp-config < \(Shell.quote(file.path))"]
+            p.arguments = ["-lc", LocalFirst.cliEnv() + "claude -p --model haiku --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))"]
             p.currentDirectoryURL = Paths.support
             var env = ProcessInfo.processInfo.environment
             env["AOS_SOURCE"] = "router"
@@ -373,7 +382,7 @@ enum AIRouter {
         // Die Auswahl darf nur hochstufen, nie herunter: ohne Angabe läuft der Agent mit seinem eigenen Standard –
         // genau wie im Terminal. (Früher wählte die Vorauswahl oft „sonnet“/„haiku“ bzw. niedrige Denktiefe → schwächere Ergebnisse.)
         let model = (j["model"] as? String).flatMap { $0.lowercased() == "opus" ? "opus" : nil }
-        let effort = (j["effort"] as? String).flatMap { $0.lowercased() == "high" ? "high" : nil }
+        let effort: String = (j["effort"] as? String).map { $0.lowercased() }.flatMap { ["low", "medium", "high"].contains($0) ? $0 : nil } ?? "medium"
         let dirRaw = (j["directory"] as? String) ?? ""
         let dir = projects.first { $0.path == dirRaw }?.path
         let names = Set(skills.map(\.name))
@@ -387,13 +396,14 @@ enum AIRouter {
         let localOK = (j["localOK"] as? Bool) ?? (j["localOK"] as? String).map { $0.lowercased() == "true" }
         return AIRouteDecision(target: target,
                                model: (target == .claude || target == .osAgent) ? model : nil,
-                               effort: target == .codex ? effort : nil,
+                               effort: (target == .codex || target == .claude) ? effort : nil,
                                directory: (target == .osAgent) ? nil : dir,
                                skills: Array(chosen), reason: reason.isEmpty ? L("Von der KI gewählt") : reason,
                                tools: (target == .osAgent || target == .claude) && !tools.isEmpty ? pickedTools : nil,
                                extensions: (target == .osAgent || target == .claude) ? pickedExt : nil,
                                suggest: Array(suggested.prefix(2)),
-                               complexity: complexity, localOK: localOK)
+                               complexity: complexity, localOK: localOK,
+                               doneWhen: (j["done_when"] as? String).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : String($0.prefix(300)) })
     }
 
     /// Ohne KI: Standardmodell aus der Länge/Art des Auftrags.

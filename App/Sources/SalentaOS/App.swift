@@ -47,6 +47,8 @@ struct AgenticOSApp: App {
                 .environmentObject(live)
                 .environmentObject(approvals)
                 .frame(minWidth: 1000, minHeight: 640)
+                .overlay(SplashOverlay())
+                .planetLook()
                 .onAppear {
                     delegate.agents = agents
                     delegate.system = system
@@ -70,6 +72,7 @@ struct AgenticOSApp: App {
                         let log = Paths.source.appendingPathComponent("logs/rebuild.log").path
                         Shell.spawn("mkdir -p \(Shell.quote((log as NSString).deletingLastPathComponent)) && cd \(Shell.quote(app)) && ./build.sh --open > \(Shell.quote(log)) 2>&1")
                     }
+                    Button("Effizienz-Bericht schreiben") { _ = EfficiencyAudit.write() }
                 } else {
                     Button("Nach Updates suchen …") { Updater.shared.check(manual: true) }
                 }
@@ -142,6 +145,7 @@ struct AgenticOSApp: App {
 
         Settings {
             SettingsView()
+                .planetLook()
                 .environmentObjects(app, tasks, panels, agents, calendar, mail, system)
                 .environmentObject(hub)
                 .environmentObject(approvals)
@@ -192,7 +196,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// Beenden ohne Rückfrage (z. B. für ein Update)
+    static var quietQuit = false
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Helfer im Hintergrund (tmux) laufen sonst unsichtbar weiter – also fragen, statt still weiterzurechnen
+        let background = agents?.sessions.filter { $0.running && $0.persistent } ?? []
+        // Beenden von außen (Neu bauen, Update, Abmelden): nicht fragen – Hintergrund-Helfer laufen weiter wie bisher
+        let external = NSAppleEventManager.shared().currentAppleEvent.map { $0.eventClass == AEEventClass(kCoreEventClass) && $0.eventID == AEEventID(kAEQuitApplication) } ?? false
+        if !background.isEmpty, !external, !AppDelegate.quietQuit {
+            let alert = NSAlert()
+            alert.messageText = String(format: L("%d Helfer arbeiten noch"), background.count)
+            alert.informativeText = L("Sie können im Hintergrund weiterarbeiten (Salenta Code holt die Ergebnisse beim nächsten Start ab) oder jetzt gestoppt werden. Im Hintergrund prüft und liefert niemand – das passiert erst, wenn Salenta Code wieder läuft.")
+            alert.addButton(withTitle: L("Stoppen und beenden"))
+            alert.addButton(withTitle: L("Weiterlaufen lassen"))
+            alert.addButton(withTitle: L("Abbrechen"))
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                for s in background { s.terminate() }
+            case .alertSecondButtonReturn:
+                break
+            default:
+                return .terminateCancel
+            }
+        }
         let running = agents?.sessions.filter { $0.running && !$0.persistent }.count ?? 0
         guard running > 0 else { AppDelegate.terminating = true; SafeStart.cleanExit(); return .terminateNow }
         let alert = NSAlert()

@@ -44,6 +44,9 @@ def header(home):
     <a class="brand" href="{h or '#'}" aria-label="Salenta Code">{LOGO}<span class="name">Salenta Code</span></a>
     <nav class="nav" id="nav" aria-label="[[Sections||Bereiche]]">
       <a href="{h}#coding">[[Coding||Coden]]</a>
+      <a href="{h}#steward">[[Steward||Betreuer]]</a>
+      <a href="{h}#intelligence">Intelligence</a>
+      <a href="{h}#costs">[[Costs||Kosten]]</a>
       <a href="{h}#ship">Pull Requests</a>
       <a href="{h}#local">[[Local||Lokal]]</a>
       <a href="{h}#workspace">[[Workspace||Arbeitsplatz]]</a>
@@ -62,7 +65,7 @@ def footer(home):
     return f'''<footer>
   <div class="wrap">
     <div><a class="brand" href="{h or '#'}">{LOGO}<span class="name">Salenta Code</span></a><p class="small">[[The free, open-source Mac workspace for AI coding agents.||Der kostenlose Open-Source-Arbeitsplatz für KI-Coding-Agents auf dem Mac.]]</p></div>
-    <div><h5>Produkt</h5><ul><li><a href="{h}#coding">[[Coding||Coden]]</a></li><li><a href="{h}#ship">Pull Requests</a></li><li><a href="{h}#local">[[Local &amp; offline||Lokal &amp; offline]]</a></li><li><a href="{h}#workspace">[[Workspace||Arbeitsplatz]]</a></li></ul></div>
+    <div><h5>Produkt</h5><ul><li><a href="{h}#coding">[[Coding||Coden]]</a></li><li><a href="{h}#intelligence">Salenta Intelligence</a></li><li><a href="{h}#ship">Pull Requests</a></li><li><a href="{h}#local">[[Local &amp; offline||Lokal &amp; offline]]</a></li><li><a href="{h}#workspace">[[Workspace||Arbeitsplatz]]</a></li></ul></div>
     <div><h5>[[Resources||Ressourcen]]</h5><ul><li><a href="{DMG}">[[Download (.dmg)||Download (.dmg)]]</a></li><li><a href="https://github.com/salenta-code/salenta-code/releases">[[Releases||Versionen]]</a></li><li><a href="https://github.com/salenta-code/salenta-code">[[Source code||Quellcode]]</a></li><li><a href="https://github.com/salenta-code/salenta-code/issues">[[Report a bug||Fehler melden]]</a></li></ul></div>
     <div><h5>[[Legal||Rechtliches]]</h5><ul><li><a href="impressum.html">Impressum</a></li><li><a href="datenschutz.html">[[Privacy||Datenschutz]]</a></li><li><a href="https://github.com/salenta-code/salenta-code/blob/main/LICENSE">[[License (Apache-2.0)||Lizenz (Apache-2.0)]]</a></li></ul></div>
     <div class="base"><span>© 2026 Salenta Code</span><span>[[Not affiliated with Anthropic, OpenAI, Google, JetBrains, Cursor or Ollama. Names are trademarks of their owners.||Keine Verbindung zu Anthropic, OpenAI, Google, JetBrains, Cursor oder Ollama. Namen sind Marken ihrer Inhaber.]]</span></div>

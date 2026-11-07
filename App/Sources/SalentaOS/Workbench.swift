@@ -502,7 +502,7 @@ struct ProjectsView: View {
             // Alle 5 Minuten neu holen, solange die Seite offen ist
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(300))
-                if !Task.isCancelled { refresh() }
+                if !Task.isCancelled, !Energy.saving { refresh() }
             }
         }
         .onChange(of: catalog.local.count) { _, _ in refresh() }
@@ -721,7 +721,13 @@ struct ProjectsView: View {
                             }
                         }
                     }
-                    if p.prs.count > 2 { Text("+ \(p.prs.count - 2) " + L("weitere Pull Requests")).font(.caption2).foregroundStyle(.tertiary) }
+                    HStack(spacing: 6) {
+                        if p.prs.count > 2 { Text("+ \(p.prs.count - 2) " + L("weitere Pull Requests")).font(.caption2).foregroundStyle(.tertiary) }
+                        Spacer()
+                        Button { PRTriage.shared.open(p.path) } label: { Label(L("Alle prüfen …"), systemImage: "checklist") }
+                            .controlSize(.mini)
+                            .help(L("Alle offenen Pull Requests prüfen: noch nötig, schon eingebaut, veraltet, Konflikte? Dann mit einem Klick mergen, nachbessern lassen oder schließen."))
+                    }
                 }
             }
             if openRuns.count > 1 {
@@ -768,6 +774,14 @@ struct ProjectsView: View {
                 Menu {
                     Button { rulesFor = p.path } label: { Label(L("Regeln und Prüfbefehle"), systemImage: "shield.lefthalf.filled") }
                     Button { memoryFor = p.path } label: { Label(L("Projektwissen"), systemImage: "brain.head.profile") }
+                    Divider()
+                    Toggle(isOn: Binding(get: { Delegation.autoApply(p.path) }, set: { Delegation.set(p.path, apply: $0); refresh() })) {
+                        Text(String(format: L("Kleine Änderungen selbst übernehmen (ab %d grünen Runden)"), Delegation.threshold))
+                    }
+                    Toggle(isOn: Binding(get: { Delegation.autoPush(p.path) }, set: { Delegation.set(p.path, push: $0); refresh() })) {
+                        Text(L("… und danach auf GitHub hochladen"))
+                    }.disabled(!Delegation.autoApply(p.path))
+                    Divider()
                     Button { app.page = .steward(Steward.shared.adopt(p.path)) } label: {
                         Label(Steward.shared.projects.contains(where: { p.path.hasPrefix($0.id) }) ? L("Projekt-Betreuer öffnen") : L("In Betreuung geben"), systemImage: "safari")
                     }
@@ -796,8 +810,7 @@ struct ProjectsView: View {
         .clipped()
         .opacity(board.hidden.contains(p.path) ? 0.55 : 1)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(color.opacity(color == .secondary ? 0.15 : 0.45)))
+        .background(ModernCardBackground(radius: 16))
     }
 
     // MARK: Hochladen, Holen, Mergen – mit klarer Rückmeldung statt stillem Nichts
@@ -812,7 +825,10 @@ struct ProjectsView: View {
         app.show(L("Lädt hoch …"))
         DispatchQueue.global(qos: .userInitiated).async {
             let (ok, msg) = GitSync.upload(repo: p.path)
-            DispatchQueue.main.async { app.show(ok ? "✓ " + msg : msg); refresh() }
+            DispatchQueue.main.async {
+                if ok { Celebration.shared.fire(L("Auf GitHub hochgeladen"), p.name, symbol: "arrow.up", tint: .blue) } else { app.show(msg) }
+                refresh()
+            }
         }
     }
 
@@ -833,7 +849,10 @@ struct ProjectsView: View {
         app.show(L("Merged …"))
         DispatchQueue.global(qos: .userInitiated).async {
             let (ok, msg) = GitSync.mergePR(repo: p.path, number: pr.number)
-            DispatchQueue.main.async { app.show(ok ? "✓ " + msg : msg); refresh() }
+            DispatchQueue.main.async {
+                if ok { Celebration.shared.fire(String(format: L("PR #%d gemergt"), pr.number), pr.title, symbol: "arrow.triangle.merge", tint: .purple) } else { app.show(msg) }
+                refresh()
+            }
         }
     }
 
@@ -910,15 +929,57 @@ enum GitSync {
 
     /// PR mergen (Squash, Branch löschen) und danach den lokalen Stand holen.
     static func mergePR(repo: String, number: Int) -> (Bool, String) {
-        let r = Proc.zsh("gh pr merge \(number) --squash --delete-branch", in: repo, timeout: 120)
+        // Merge-Nachricht ohne Agenten-Vermerke (z. B. „Co-authored-by: <KI-Agent>“, „Generated with …“) – menschliche Co-Autoren bleiben
+        let info = Proc.zsh("gh pr view \(number) --json body,baseRefName", in: repo, timeout: 60)
+        var base = ""
+        var bodyArg = ""
+        if info.code == 0, let a = info.out.firstIndex(of: "{"),
+           let j = try? JSONSerialization.jsonObject(with: Data(info.out[a...].utf8)) as? [String: Any] {
+            base = j["baseRefName"] as? String ?? ""
+            let cleaned = cleanCredits(j["body"] as? String ?? "")
+            let f = FileManager.default.temporaryDirectory.appendingPathComponent("aos-merge-\(number).md")
+            if (try? cleaned.write(to: f, atomically: true, encoding: .utf8)) != nil { bodyArg = " --body-file " + Shell.quote(f.path) }
+        }
+        let r = Proc.zsh("gh pr merge \(number) --squash --delete-branch" + bodyArg, in: repo, timeout: 120)
         guard r.code == 0 else {
             let o = r.out.lowercased()
             if o.contains("not mergeable") || o.contains("conflict") { return (false, L("GitHub lässt den Merge nicht zu: Konflikte oder fehlende Prüfungen.")) }
             if o.contains("review") { return (false, L("Für diesen Branch ist ein Review vorgeschrieben – bitte auf GitHub freigeben.")) }
-            return (false, String(r.out.suffix(300)))
+            return (false, GitError.explain(r.out))
         }
-        _ = update(repo: repo)
+        refreshBase(repo: repo, base: base)
         return (true, String(format: L("Pull Request #%d gemergt – neuer Stand ist geholt"), number))
+    }
+
+    /// Agenten-Vermerke aus Commit-/Merge-Texten entfernen (Co-authored-by eines KI-Agents, „Generated with …“-Zeilen).
+    static func cleanCredits(_ text: String) -> String {
+        let agents = ["codex", "claude", "cursor", "copilot", "openai", "anthropic", "gemini", "junie", "kimi", "grok", "devin", "aider", "salenta code"]
+        let lines = text.components(separatedBy: "\n").filter { line in
+            let l = line.lowercased().trimmingCharacters(in: .whitespaces)
+            if l.hasPrefix("co-authored-by:"), agents.contains(where: { l.contains($0) }) { return false }
+            if l.contains("generated with") && agents.contains(where: { l.contains($0) }) { return false }
+            if l.hasPrefix("claude-session:") || l.hasPrefix("🤖") { return false }
+            return true
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Nur den Haupt-Branch auffrischen (vorspulen, nie umschreiben). Dein gerade ausgecheckter Arbeits-Branch bleibt unberührt.
+    static func refreshBase(repo: String, base: String) {
+        Git.run(["fetch", "--quiet", "--prune", "origin"], in: repo, timeout: 60)
+        let b = base.isEmpty ? (Git.run(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], in: repo, timeout: 10).out
+            .trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "origin/", with: "")) : base
+        guard !b.isEmpty else { return }
+        let current = Git.run(["rev-parse", "--abbrev-ref", "HEAD"], in: repo, timeout: 10).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if current == b {
+            // ausgecheckt: nur ohne eigene Änderungen und nur vorspulen
+            if Git.run(["status", "--porcelain", "--untracked-files=no"], in: repo, timeout: 20).out.isEmpty {
+                Git.run(["merge", "--ff-only", "--quiet", "origin/" + b], in: repo, timeout: 60)
+            }
+        } else {
+            // nicht ausgecheckt: lokalen Branch-Zeiger vorspulen (schlägt still fehl, wenn er eigene Commits hat)
+            Git.run(["fetch", "--quiet", "origin", b + ":" + b], in: repo, timeout: 60)
+        }
     }
 
     private static func explain(_ out: String) -> String {
@@ -926,6 +987,6 @@ enum GitSync {
         if o.contains("protected") { return L("Branch ist auf GitHub geschützt – bitte als Pull Request übernehmen.") }
         if o.contains("permission") || o.contains("403") || o.contains("denied") { return L("Keine Schreibrechte für dieses Repo auf GitHub (Anmeldung prüfen: gh auth status).") }
         if o.contains("rejected") { return L("GitHub hat neuere Änderungen – bitte erst holen (Pull).") }
-        return String(out.suffix(300))
+        return GitError.explain(out)
     }
 }

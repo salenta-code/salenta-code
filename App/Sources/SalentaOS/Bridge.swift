@@ -81,6 +81,7 @@ final class Bridge: ObservableObject {
     }
 
     func writeStatus() {
+        guard Energy.due("bridge", every: 120) else { return }
         let s = snapshot()
         guard let d = try? JSONSerialization.data(withJSONObject: s, options: [.prettyPrinted, .withoutEscapingSlashes]) else { return }
         try? d.write(to: statusURL, options: .atomic)

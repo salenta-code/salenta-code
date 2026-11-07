@@ -198,6 +198,7 @@ final class Updater: ObservableObject {
         try? p.run()
         AppDelegate.terminating = true
         SafeStart.cleanExit()
+        AppDelegate.quietQuit = true
         NSApp.terminate(nil)
     }
 

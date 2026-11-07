@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Macht aus dem JSON-Strom von `claude -p --output-format stream-json` (und `codex exec --json`)
+"""Macht aus dem JSON-Strom von `claude -p --output-format stream-json`, `codex exec --json`,
+`gemini --output-format stream-json` und `opencode run --format json`
 eine lesbare Live-Ansicht: was der Agent gerade liest, ausführt, ändert und denkt.
 
 Aufruf:  claude -p … --output-format stream-json --verbose | aos-live --log datei.log
@@ -45,12 +46,24 @@ def save_status():
         pass
 
 
+_last_status_save = [0.0]
+
+
 def out(text=""):
     sys.stdout.write(text + "\n")
     sys.stdout.flush()
+    plain = ANSI.sub("", text)
     if log:
-        log.write(ANSI.sub("", text) + "\n")
+        log.write(plain + "\n")
         log.flush()
+    # Letzter Arbeitsschritt für die Live-Anzeige in Salenta Code (höchstens alle 2 s gespeichert)
+    p = plain.strip()
+    if p and len(p) > 7 and p[2:3] == ":" and p[:2].isdigit():
+        status["last"] = p.split(" ", 1)[1][:160] if " " in p else p[:160]
+        now = time.time()
+        if now - _last_status_save[0] > 2:
+            _last_status_save[0] = now
+            save_status()
 
 
 def short(s, n=110):
@@ -209,6 +222,111 @@ def handle_codex(ev):
         out(f"{RED}✗ {short(json.dumps(msg.get('error', msg), ensure_ascii=False), 200)}{RESET}")
 
 
+# Gemini CLI (--output-format stream-json) und OpenCode (run --format json): Werkzeugnamen und Felder vereinheitlichen
+NAME_MAP = {
+    "read_file": "Read", "read": "Read", "view": "Read", "fs_read": "Read", "read_many_files": "Read",
+    "write_file": "Write", "write": "Write", "create": "Write", "fs_write": "Write",
+    "replace": "Edit", "edit": "Edit", "edit_file": "Edit", "str_replace": "Edit", "apply_patch": "Edit", "patch": "Edit", "multiedit": "Edit",
+    "run_shell_command": "Bash", "bash": "Bash", "shell": "Bash", "execute_bash": "Bash", "run_command": "Bash",
+    "glob": "Glob", "list_directory": "Glob", "ls": "Glob", "list": "Glob",
+    "search_file_content": "Grep", "grep": "Grep",
+    "google_web_search": "WebSearch", "web_search": "WebSearch", "websearch": "WebSearch",
+    "web_fetch": "WebFetch", "webfetch": "WebFetch", "fetch": "WebFetch",
+    "write_todos": "TodoWrite", "todowrite": "TodoWrite", "todo_write": "TodoWrite", "task": "Task",
+}
+
+
+def norm_input(inp):
+    inp = dict(inp or {}) if isinstance(inp, dict) else {}
+    for k in ("absolute_path", "path", "filePath", "file", "filename"):
+        if k in inp and "file_path" not in inp:
+            inp["file_path"] = inp[k]
+    if "cmd" in inp and "command" not in inp:
+        inp["command"] = inp["cmd"]
+    if "query" in inp and "pattern" not in inp:
+        inp["pattern"] = inp["query"]
+    return inp
+
+
+GENERIC = ("init", "message", "tool_use", "tool_result", "step_start", "step_finish", "text", "reasoning")
+
+
+def is_generic(ev):
+    t = ev.get("type")
+    return t in GENERIC or "part" in ev or (t == "result" and "stats" in ev) or (t == "error" and "session_id" not in ev and "msg" not in ev)
+
+
+def handle_generic(ev):
+    global steps, last_text
+    t = ev.get("type")
+    part = ev.get("part") if isinstance(ev.get("part"), dict) else {}
+    if t == "init":
+        status.update(agent=status.get("agent") or "gemini", model=ev.get("model", ""))
+        save_status()
+        out(f"{BOLD}▶ Agent arbeitet{RESET}  {DIM}{ev.get('model', '')}{RESET}")
+        out()
+    elif t in ("tool_use",) or (part.get("type") == "tool" and part.get("state", {}).get("status") in ("running", "pending", None)):
+        name = ev.get("tool_name") or ev.get("name") or part.get("tool") or ""
+        inp = ev.get("parameters") or ev.get("input") or (part.get("state") or {}).get("input") or {}
+        key = str(ev.get("tool_id") or part.get("callID") or part.get("id") or "")
+        if key and key in seen_tools:
+            return
+        if key:
+            seen_tools.add(key)
+        steps += 1
+        mapped = NAME_MAP.get(str(name).lower(), name)
+        color, sym, text = tool_line(mapped, norm_input(inp))
+        out(f"{stamp()} {color}{sym} {text}{RESET}")
+        if mapped == "TodoWrite":
+            todos(norm_input(inp))
+    elif t == "tool_result":
+        if str(ev.get("status", "")).lower() in ("error", "failed", "failure"):
+            out(f"      {RED}✗ {short(ev.get('output') or ev.get('error') or '', 140)}{RESET}")
+    elif t in ("message", "text") or part.get("type") == "text":
+        role = ev.get("role", "assistant")
+        txt = ev.get("content") or part.get("text") or ev.get("text") or ""
+        if isinstance(txt, list):
+            txt = result_text(txt)
+        if role != "assistant" or not str(txt).strip():
+            return
+        if ev.get("delta"):
+            pending_text.append(str(txt))
+            return
+        last_text = str(txt)
+        out()
+        for line in str(txt).strip().splitlines():
+            out(f"  {line}")
+        out()
+    elif t == "reasoning" or part.get("type") == "reasoning":
+        out(f"{stamp()} {DIM}💭 {short(ev.get('text') or part.get('text') or '', 140)}{RESET}")
+    elif t == "error":
+        out(f"{RED}✗ {short(ev.get('message') or json.dumps(ev.get('error', ev), ensure_ascii=False), 200)}{RESET}")
+    elif t in ("result", "step_finish") and (t == "result" or part.get("reason") == "stop"):
+        flush_text()
+        status["done"] = True
+        save_status()
+        ok = str(ev.get("status", "success")).lower() in ("success", "ok", "") and t == "result" or t == "step_finish"
+        out()
+        out(f"{BOLD}{GREEN if ok else RED}━━ {'Fertig' if ok else 'Abgebrochen'} · {steps} Schritte{RESET}")
+
+
+seen_tools = set()
+pending_text = []
+
+
+def flush_text():
+    global last_text
+    if pending_text:
+        txt = "".join(pending_text)
+        pending_text.clear()
+        if txt.strip():
+            last_text = txt
+            out()
+            for line in txt.strip().splitlines():
+                out(f"  {line}")
+            out()
+
+
 # Bekanntes Rauschen: Junie führt die Claude-Code-Plugin-Hooks (ECC) aus, die nur in Claude Code funktionieren.
 NOISE = ("Session start hook failed", "SessionStart hook command failed")
 hidden_hooks = False
@@ -230,10 +348,36 @@ for raw in sys.stdin:
     if not isinstance(ev, dict):
         out(line)
         continue
+    # Sitzungs-ID merken: Folgerunden setzen dieselbe Sitzung fort (spart Tokens, Kontext bleibt erhalten)
+    sid = ev.get("session_id") or ev.get("thread_id")
+    if sid and status_path and not globals().get("_sid_saved"):
+        try:
+            with open(status_path[:-5] + ".sid", "w", encoding="utf-8") as fh:
+                fh.write(str(sid))
+            _sid_saved = True
+        except Exception:
+            pass
     try:
-        if "session_id" in ev or ev.get("type") in ("system", "assistant", "user", "result"):
+        if is_generic(ev):
+            if ev.get("type") not in ("message", "text") or not ev.get("delta"):
+                flush_text()
+            handle_generic(ev)
+        elif "session_id" in ev or ev.get("type") in ("system", "assistant", "user", "result"):
             handle_claude(ev)
-        else:
+        elif "msg" in ev or "item" in ev or "." in str(ev.get("type", "")) or ev.get("type") in ("token_count",):
             handle_codex(ev)
+        else:
+            # Unbekanntes JSON (z. B. Junie json-stream): lesbaren Text zeigen statt nichts
+            txt = ev.get("text") or ev.get("content") or ev.get("message") or ev.get("output") or ""
+            if isinstance(txt, (list, dict)):
+                txt = result_text(txt) if isinstance(txt, list) else txt.get("text", "")
+            name = ev.get("tool") or ev.get("toolName") or ev.get("tool_name")
+            if name:
+                steps += 1
+                color, sym, text = tool_line(NAME_MAP.get(str(name).lower(), str(name)), norm_input(ev.get("args") or ev.get("input") or ev.get("parameters")))
+                out(f"{stamp()} {color}{sym} {text}{RESET}")
+            elif str(txt).strip():
+                for l in str(txt).strip().splitlines():
+                    out(f"  {l}")
     except Exception as e:  # nie den Lauf wegen der Anzeige abbrechen
         out(f"{DIM}({e}){RESET}")

@@ -224,7 +224,7 @@ struct RecapView: View {
                         Divider()
                         Text("Post-Text").font(.headline)
                         Text(stats.post(showProjects: showProjects)).font(.callout).textSelection(.enabled)
-                            .padding(Grid.m).background(RoundedRectangle(cornerRadius: 10).fill(.background.secondary))
+                            .padding(Grid.m).background(ModernCardBackground(radius: 10, accent: false))
                         Button {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(stats.post(showProjects: showProjects), forType: .string)

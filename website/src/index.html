@@ -1,6 +1,9 @@
+<canvas id="space" aria-hidden="true"></canvas>
+<div class="nebula" aria-hidden="true"><i class="n1"></i><i class="n2"></i><i class="n3"></i></div>
 <section class="hero">
   <div class="spot" aria-hidden="true"></div>
   <div class="wrap hero-in">
+    <div class="orbit-wrap" aria-hidden="true"><div class="orbit o1"><i class="moon"></i></div><div class="orbit o2"><i class="moon sm"></i></div></div>
     <svg class="icon-hero" viewBox="0 0 512 512" role="img" aria-label="Salenta Code">
       <defs>
         <linearGradient id="hbg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2A2A30"/><stop offset="1" stop-color="#0A0A0C"/></linearGradient>
@@ -109,6 +112,30 @@
 </div>
 
 <!-- CODING -->
+<!-- TOUR -->
+<section class="blk wrap" id="tour">
+  <div class="eyebrow">[[Everything in 60 seconds||Alles in 60 Sekunden]]</div>
+  <h2>[[Scroll through it. <span class="dim">This is what happens to your task.</span>||Scroll einfach durch. <span class="dim">So läuft dein Auftrag.</span>]]</h2>
+  <div class="tour">
+    <div class="tour-stage" aria-hidden="true">
+      <div class="ts-orbit"><i></i></div>
+      <div class="ts-planet"><svg viewBox="0 0 512 512"><path d="M118 256 H208 L236 168 L276 344 L316 136 L348 256 H394" fill="none" stroke="#fff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/><circle cx="394" cy="256" r="20" fill="#fff"/></svg></div>
+      <div class="ts-label"><b class="ts-num">01</b><span class="ts-title"></span></div>
+    </div>
+    <ol class="tour-steps">
+      <li data-step="1"><b>[[You give a task||Du gibst einen Auftrag]]</b><p>[[Type, dictate or paste a whole plan – with screenshots or files. Pick a project, or let Salenta Code find the right one.||Tippen, diktieren oder einen ganzen Plan einfügen – mit Screenshots oder Dateien. Projekt wählen oder Salenta Code das passende finden lassen.]]</p></li>
+      <li data-step="2"><b>[[The steward plans a team||Der Betreuer plant ein Team]]</b><p>[[A main task plus supporting tasks. Each gets the strongest agent and model – Claude Code, Codex, Cursor, Gemini or a local model – and only the skills and extensions it needs.||Eine Hauptaufgabe plus Zuarbeiten. Jede bekommt den stärksten Agent und das passende Modell – Claude Code, Codex, Cursor, Gemini oder ein lokales Modell – und nur die Skills und Erweiterungen, die sie braucht.]]</p></li>
+      <li data-step="3"><b>[[Every helper gets its own copy||Jeder Helfer bekommt seine eigene Kopie]]</b><p>[[A separate working copy from the latest GitHub state, with .env and dependencies. Nobody gets in each other's way; your folder stays untouched.||Eine eigene Arbeitskopie vom neuesten GitHub-Stand, mit .env und Abhängigkeiten. Niemand kommt sich in die Quere, dein Ordner bleibt unberührt.]]</p></li>
+      <li data-step="4"><b>[[Checked like your CI||Geprüft wie deine CI]]</b><p>[[Types, lint and the tests your change touches – locally, quickly, without overheating your Mac. A second model reviews the diff.||Typen, Lint und die Tests, die deine Änderung betrifft – lokal, schnell, ohne deinen Mac zu überhitzen. Ein zweites Modell prüft den Diff.]]</p></li>
+      <li data-step="5"><b>[[Pull request and merge||Pull Request und Merge]]</b><p>[[Written description, pushed to GitHub, waiting for green CI – then merged by itself if you allow it. Red? It goes back for a fix.||Fertige Beschreibung, auf GitHub, wartet auf grüne CI – dann selbst gemerged, wenn du es erlaubst. Rot? Es geht zurück zur Korrektur.]]</p></li>
+      <li data-step="6"><b>[[A finished result||Ein fertiges Ergebnis]]</b><p>[[One message when everything is done: what was built, by which agents, which pull requests. Decisions only you may make come back as a question.||Eine Meldung, wenn alles fertig ist: was gebaut wurde, von welchen Agents, welche Pull Requests. Entscheidungen, die nur du treffen darfst, kommen als Frage zurück.]]</p></li>
+      <li data-step="7"><b>[[You see what it cost||Du siehst, was es gekostet hat]]</b><p>[[Cost per day and per pull request, an efficiency score, the top 10 skills and real limits – so nothing burns money unnoticed.||Kosten pro Tag und pro Pull Request, eine Effizienz-Note, die Top 10 Skills und echte Limits – damit nichts unbemerkt Geld verbrennt.]]</p></li>
+      <li data-step="8"><b>[[Your workspace, your look||Dein Arbeitsplatz, dein Look]]</b><p>[[Mail, calendar, tasks and notes in the same window – in Salenta blue or the colours of your favourite planet, light, dark or pure black.||Mail, Kalender, Aufgaben und Notizen im selben Fenster – in Salenta-Blau oder den Farben deines Lieblingsplaneten, hell, dunkel oder ganz schwarz.]]</p></li>
+      <li data-step="9"><b>[[Even without internet||Auch ohne Internet]]</b><p>[[Offline, a local model on your Mac takes over – free and private. Finished work is saved locally and uploaded as a pull request as soon as you're back online.||Offline übernimmt ein lokales Modell auf deinem Mac – kostenlos und privat. Fertige Arbeit wird lokal gesichert und als Pull Request hochgeladen, sobald du wieder online bist.]]</p></li>
+    </ol>
+  </div>
+</section>
+
 <section class="blk wrap" id="coding">
   <div class="eyebrow">[[Coding||Coden]]</div>
   <h2>[[Run five agents at once. <span class="dim">Stay in control of all of them.</span>||Fünf Agents gleichzeitig. <span class="dim">Und du behältst den Überblick.</span>]]</h2>
@@ -221,6 +248,94 @@
 </section>
 
 <!-- EXTEND -->
+<!-- INTELLIGENCE -->
+<section class="blk wrap" id="intelligence">
+  <div class="eyebrow">Salenta Intelligence</div>
+  <h2>[[Not just a launcher. <span class="dim">A colleague who thinks along.</span>||Kein Startknopf. <span class="dim">Ein Kollege, der mitdenkt.</span>]]</h2>
+  <p class="sub">[[Salenta Intelligence is the layer between you and your agents. It runs on your Mac with no server in between – picks the agent, checks the result, watches running work, learns from every task and tells you when something needs you.||Salenta Intelligence ist die Schicht zwischen dir und deinen Agents. Sie läuft auf deinem Mac, ohne Server dazwischen – wählt den Agent, prüft das Ergebnis, beobachtet laufende Arbeit, lernt aus jedem Auftrag und sagt dir, wenn etwas dich braucht.]]</p>
+  <div class="split">
+    <ul class="ticks rv">
+      <li><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg><span>[[<b>Done means done.</b> Every task gets a checkable “done when …”. The reviewer – always a different provider – checks exactly that against the diff.||<b>Fertig heißt fertig.</b> Jeder Auftrag bekommt ein prüfbares „Fertig, wenn …“. Der Prüfer – immer ein anderer Anbieter – kontrolliert genau das am Diff.]]</span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>[[<b>Supervisor.</b> Notices when an agent stalls or loops on the same error, and hands the task – with its history – to another agent.||<b>Supervisor.</b> Merkt, wenn ein Agent hängt oder sich im Kreis dreht, und übergibt den Auftrag samt Verlauf an einen anderen Agent.]]</span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg><span>[[<b>Learns what works.</b> Hit rate per agent and task type – the agent choice uses it. Red twice? A fresh provider takes over.||<b>Lernt, was funktioniert.</b> Trefferquote pro Agent und Aufgabenart – die Agentenwahl nutzt sie. Zweimal rot? Ein anderer Anbieter übernimmt.]]</span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg><span>[[<b>Trust that grows.</b> Per project: after 5 green rounds, small, uncritical changes are applied on their own. Login, payments, migrations and deploys always wait for you.||<b>Vertrauen, das wächst.</b> Pro Projekt: Nach 5 grünen Runden werden kleine, unkritische Änderungen selbst übernommen. Login, Zahlung, Migrationen und Deploys warten immer auf dich.]]</span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg><span>[[<b>Learns overnight.</b> A local model turns the day's failures and fixes into suggestions for the project knowledge. You confirm them in the morning.||<b>Lernt über Nacht.</b> Ein lokales Modell macht aus Fehlern und Lösungen des Tages Vorschläge fürs Projektwissen. Du bestätigst sie morgens.]]</span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg><span>[[<b>Speaks up when it matters.</b> Approvals, green or red results, ready pull requests, red CI, upcoming events, due tasks and emails that need a reply – with quiet hours, a morning briefing and actions right in the notification.||<b>Meldet sich, wenn es zählt.</b> Freigaben, grüne oder rote Ergebnisse, fertige Pull Requests, rote CI, anstehende Termine, fällige Aufgaben und Mails, die eine Antwort brauchen – mit Ruhezeit, Morgen-Briefing und Aktionen direkt in der Mitteilung.]]</span></li>
+    </ul>
+    <div class="sheet rv" aria-hidden="true">
+      <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>[[You could pick up here||Hier könntest du weitermachen]]</div>
+      <div class="row"><span class="lab">[[Ready||Bereit]]</span><span class="val">[[Dark mode switch – green, not applied yet||Dark-Mode-Schalter – grün, noch nicht übernommen]]<small>[[finished 3 h ago · Claude Code, checked by Codex||vor 3 Std. fertig · Claude Code, geprüft von Codex]]</small></span></div>
+      <div class="row"><span class="lab">Supervisor</span><span class="val">[[Login test fix stalled for 20 min||Login-Test-Fix hing 20 Min.]]<small>[[handed to Codex with full history||samt Verlauf an Codex übergeben]]</small></span></div>
+      <div class="row"><span class="lab">GitHub</span><span class="val">[[PR #42 ready to merge||PR #42 bereit zum Mergen]]<small>[[all checks green, no conflicts||alle Prüfungen grün, keine Konflikte]]</small></span></div>
+      <div class="row"><span class="lab">[[Overnight||Über Nacht]]</span><span class="val">[[2 suggestions for project knowledge||2 Vorschläge fürs Projektwissen]]<small>[[“Run npm run test:ci before finishing”||„Vor dem Abschluss npm run test:ci ausführen“]]</small></span></div>
+      <div class="foot"><span class="fake">[[Later||Später]]</span><span class="fake pri">[[Continue||Weitermachen]]</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- STEWARD -->
+<section class="blk wrap" id="steward">
+  <div class="eyebrow">[[Project steward||Projekt-Betreuer]]</div>
+  <h2>[[One prompt. <span class="dim">A team. A finished result.</span>||Ein Prompt. <span class="dim">Ein Team. Ein fertiges Ergebnis.</span>]]</h2>
+  <p class="sub">[[Give a project a steward and hand it your task – a sentence or a whole plan. It plans the work as a team, distributes it, checks every result and stays on it until it's merged.||Gib einem Projekt einen Betreuer und übergib ihm deinen Auftrag – einen Satz oder einen ganzen Plan. Er plant die Arbeit als Team, verteilt sie, prüft jedes Ergebnis und bleibt dran, bis es gemerged ist.]]</p>
+  <div class="split">
+    <ul class="ticks rv">
+      <li><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 20c.8-3.5 3.3-5 6-5s5.2 1.5 6 5M14 15.5c2.6-.3 5 .9 6 4.5"/></svg><span>[[<b>Planned as a team.</b> A main task plus clearly separated supporting tasks. For each one the strongest agent and model, with the skills and extensions that fit – never the same work twice.||<b>Als Team geplant.</b> Eine Hauptaufgabe plus klar abgegrenzte Zuarbeiten. Für jede der stärkste Agent und das passende Modell, dazu die Skills und Erweiterungen, die passen – nie dieselbe Arbeit doppelt.]]</span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h6"/></svg><span>[[<b>Big plans in waves.</b> Already done is skipped, the rest is built in order. Decisions only you may make come back to you as a question.||<b>Große Pläne in Wellen.</b> Erledigtes wird übersprungen, der Rest der Reihe nach gebaut. Entscheidungen, die nur du treffen darfst, kommen als Frage zurück.]]</span></li>
+      <li><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V9a3 3 0 0 0-3-3h-4"/></svg><span>[[<b>Through to the merge.</b> Checks, pull request on <code>main</code>, review by a second model, green CI – then it merges by itself if you allow it, and reports back.||<b>Bis zum Merge.</b> Prüfung, Pull Request auf <code>main</code>, Review durch ein zweites Modell, grüne CI – dann merged er selbst, wenn du es erlaubst, und meldet sich.]]</span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="m9 12 2 2 4-4"/></svg><span>[[<b>GitHub watcher.</b> Reviews open pull requests, sends red ones back for a fix and keeps your local main branch up to date – your working branch stays untouched.||<b>GitHub-Wächter.</b> Prüft offene Pull Requests, schickt rote zur Korrektur zurück und hält deinen lokalen Haupt-Branch aktuell – dein Arbeits-Branch bleibt unberührt.]]</span></li>
+      <li><svg viewBox="0 0 24 24"><path d="M12 2v6M12 22v-4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8"/><circle cx="12" cy="12" r="4"/></svg><span>[[<b>Keeps your Mac cool.</b> Locally only the tests your change touches – the full suite runs in CI. When the Mac gets warm or runs on battery, fewer helpers start.||<b>Hält deinen Mac kühl.</b> Lokal nur die Tests, die deine Änderung betrifft – die volle Suite läuft in der CI. Wird der Mac warm oder läuft am Akku, starten weniger Helfer.]]</span></li>
+    </ul>
+    <div class="sheet rv" aria-hidden="true">
+      <div class="hd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="8" r="3"/><path d="M3 20c.8-3.5 3.3-5 6-5s5.2 1.5 6 5"/></svg>[[Your task · 2 of 3 done||Dein Auftrag · 2 von 3 fertig]]</div>
+      <div class="row"><span class="lab">[[Main||Haupt]]</span><span class="val">[[Fix booking in the web chat||Buchung im Webchat reparieren]]<small>[[Claude Code · Opus · merged #48||Claude Code · Opus · gemerged #48]]</small></span></div>
+      <div class="row"><span class="lab">[[Support||Zuarbeit]]</span><span class="val">[[Tests for cancellations||Tests für Absagen]]<small>[[Codex · merged #49||Codex · gemerged #49]]</small></span></div>
+      <div class="row"><span class="lab">[[Support||Zuarbeit]]</span><span class="val">[[Booking button in the chat||Buchungs-Knopf im Chat]]<small>[[Cursor · PR #50 waiting for CI||Cursor · PR #50 wartet auf CI]]</small></span></div>
+      <div class="row"><span class="lab">Skills</span><span class="val">frontend-design · test-driven<small>[[only these are loaded||nur diese sind geladen]]</small></span></div>
+      <div class="foot"><span class="fake">[[Later||Später]]</span><span class="fake pri">[[Open steward||Betreuer öffnen]]</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- COSTS -->
+<section class="blk wrap" id="costs">
+  <div class="eyebrow">[[Cost &amp; efficiency||Kosten &amp; Effizienz]]</div>
+  <h2>[[See where the tokens go. <span class="dim">And where they're wasted.</span>||Sieh, wohin die Tokens gehen. <span class="dim">Und wo sie verpuffen.</span>]]</h2>
+  <div class="bento">
+    <div class="card w3 rv">
+      <h3>[[Overview||Übersicht]]</h3>
+      <p>[[API value of the last days, month to date and a projection, daily cost, an activity map and an efficiency score: green on the first try, cache share, rework.||API-Gegenwert der letzten Tage, Monat bisher und Hochrechnung, Kosten pro Tag, eine Aktivitätskarte und eine Effizienz-Note: beim ersten Mal grün, Cache-Anteil, Nacharbeit.]]</p>
+    </div>
+    <div class="card w3 rv">
+      <h3>[[Optimize||Optimieren]]</h3>
+      <p>[[Finds what burns money: runs without a usable result, repeated fix rounds, outlier days, skills that are installed but never help.||Findet, was Geld verbrennt: Läufe ohne verwertbares Ergebnis, wiederholte Nachbesserungen, Ausreißer-Tage, Skills, die installiert sind, aber nie helfen.]]</p>
+    </div>
+    <div class="card w2 rv">
+      <h3>[[Top 10 skills &amp; extensions||Top 10 Skills &amp; Erweiterungen]]</h3>
+      <p>[[How often each one runs – and how often the result is green the first time, compared with your average.||Wie oft jede läuft – und wie oft das Ergebnis beim ersten Mal grün ist, im Vergleich zu deinem Durchschnitt.]]</p>
+    </div>
+    <div class="card w2 rv">
+      <h3>[[Only the skills that help||Nur die Skills, die helfen]]</h3>
+      <p>[[Every task shows which skills and extensions it got. Helpers load only those – not your whole collection.||Jeder Auftrag zeigt, welche Skills und Erweiterungen er bekommen hat. Helfer laden nur diese – nicht deine ganze Sammlung.]]</p>
+    </div>
+    <div class="card w2 rv">
+      <h3>[[Real limits||Echte Limits]]</h3>
+      <p>[[Codex limits from its own log, Claude limits on request straight from your account – so tasks only move to another agent when it's really tight.||Codex-Limits aus seinem eigenen Protokoll, Claude-Limits auf Wunsch direkt aus deinem Konto – so wandern Aufträge nur zu einem anderen Agent, wenn es wirklich knapp wird.]]</p>
+    </div>
+  </div>
+</section>
+
+<!-- LOOK -->
+<section class="blk wrap" id="look">
+  <div class="eyebrow">[[Your look||Dein Look]]</div>
+  <h2>[[Pick a planet. <span class="dim">Light, dark or pure black.</span>||Wähl einen Planeten. <span class="dim">Hell, dunkel oder ganz schwarz.</span>]]</h2>
+  <p class="sub">[[Salenta blue is the default. Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus or Neptune change the accent, the starry sky in the sidebar and the overview – in light, dark or black mode.||Salenta-Blau ist der Standard. Merkur, Venus, Erde, Mars, Jupiter, Saturn, Uranus oder Neptun ändern Akzentfarbe, den Sternenhimmel in der Seitenleiste und die Übersicht – im hellen, dunklen oder schwarzen Modus.]]</p>
+  <div class="planets rv" aria-hidden="true">
+    <i style="--a:#0A84FF;--b:#09090B"></i><i style="--a:#C9C4BE;--b:#2A2724"></i><i style="--a:#F6DDA0;--b:#5A3510"></i><i style="--a:#7CC4FF;--b:#0B2346"></i>
+    <i style="--a:#F4935F;--b:#4A1308"></i><i style="--a:#F2D2A9;--b:#6B3E1E"></i><i class="ring" style="--a:#F7E3A6;--b:#6E5524"></i><i style="--a:#C6F4F4;--b:#1D5E6B"></i><i style="--a:#9BB0FF;--b:#101C5C"></i>
+  </div>
+</section>
+
 <section class="blk wrap" id="extend">
   <div class="eyebrow">[[Extend||Erweitern]]</div>
   <h2>[[Plugins, skills, MCP and your own automations.||Plugins, Skills, MCP und eigene Automationen.]]</h2>
@@ -368,6 +483,8 @@
         <tr><td>[[Checks taken from your GitHub workflows||Prüfungen aus deinen GitHub-Workflows]]</td><td class="y">✓</td><td class="n">[[if you ask for it||wenn du daran denkst]]</td></tr>
         <tr><td>[[Local models for small tasks, offline mode||Lokale Modelle für Kleines, Offline-Modus]]</td><td class="y">✓</td><td class="n">[[separate tools||eigene Werkzeuge]]</td></tr>
         <tr><td>[[Limits and usage across all agents||Limits und Verbrauch über alle Agents]]</td><td class="y">✓</td><td class="n">–</td></tr>
+        <tr><td>[[A steward that plans a team and sees it through to the merge||Ein Betreuer, der ein Team plant und bis zum Merge betreut]]</td><td class="y">✓</td><td class="n">–</td></tr>
+        <tr><td>[[Cost per day, per pull request and per skill||Kosten pro Tag, pro Pull Request und pro Skill]]</td><td class="y">✓</td><td class="n">–</td></tr>
         <tr><td>[[Mail, calendar, tasks, notes in the same window||Mail, Kalender, Aufgaben, Notizen im selben Fenster]]</td><td class="y">✓</td><td class="n">–</td></tr>
         <tr><td>[[Price||Preis]]</td><td class="y">[[free, open source||kostenlos, Open Source]]</td><td class="n">[[free, open source||kostenlos, Open Source]]</td></tr>
       </tbody>

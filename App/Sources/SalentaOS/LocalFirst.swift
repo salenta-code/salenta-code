@@ -29,7 +29,7 @@ final class LocalFirst: ObservableObject {
 
     /// Gibt es überhaupt ein lokales Modell?
     /// Thread-sicher: Agent-Starts und Hilfsabfragen fragen das auch aus dem Hintergrund.
-    var ready: Bool { Detection.which("ollama") != nil && Detection.which("claude") != nil && !installedModels.isEmpty }
+    var ready: Bool { OllamaApp.installed && Detection.which("claude") != nil && !installedModels.isEmpty }
     private var modelsSnap: [String] = []
     var installedModels: [String] { lock.lock(); defer { lock.unlock() }; return modelsSnap }
 
@@ -76,6 +76,7 @@ final class LocalFirst: ObservableObject {
 
     /// Echte Erreichbarkeit prüfen (WLAN ohne Internet zählt als offline).
     func probe() {
+        guard Energy.due("probe", every: 300) else { return }
         var r = URLRequest(url: URL(string: "https://api.anthropic.com")!, timeoutInterval: 6)
         r.httpMethod = "HEAD"
         URLSession.shared.dataTask(with: r) { [weak self] _, resp, err in
@@ -153,12 +154,11 @@ final class LocalFirst: ObservableObject {
             let base: String = parts.first ?? model
             let tag: String = parts.count > 1 ? parts[1] : "latest"
             let name: String = base + "-sc:" + tag
-            _ = Proc.zsh("curl -s -m 2 http://localhost:11434/api/version >/dev/null || ((open -ga Ollama 2>/dev/null || (nohup ollama serve >/dev/null 2>&1 &)); sleep 4)",
-                         in: NSTemporaryDirectory(), timeout: 20)
+            OllamaApp.startServer()
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("sc-modelfile-\(UUID().uuidString.prefix(6))")
             try? "FROM \(model)\nPARAMETER num_ctx \(contextSize)\n".write(to: tmp, atomically: true, encoding: .utf8)
-            let have = Proc.zsh("ollama show \(Shell.quote(name)) --parameters 2>/dev/null | grep -q 'num_ctx.*\(contextSize)'", in: NSTemporaryDirectory(), timeout: 20).code == 0
-            let ok = have || Proc.zsh("ollama create \(Shell.quote(name)) -f \(Shell.quote(tmp.path))", in: NSTemporaryDirectory(), timeout: 180).code == 0
+            let have = Proc.zsh("\(OllamaApp.cli) show \(Shell.quote(name)) --parameters 2>/dev/null | grep -q 'num_ctx.*\(contextSize)'", in: NSTemporaryDirectory(), timeout: 20).code == 0
+            let ok = have || Proc.zsh("\(OllamaApp.cli) create \(Shell.quote(name)) -f \(Shell.quote(tmp.path))", in: NSTemporaryDirectory(), timeout: 180).code == 0
             try? FileManager.default.removeItem(at: tmp)
             variantLock.lock(); preparing.remove(model); if ok { variants[model] = name }; variantLock.unlock()
             if ok { CrashLog.mark("Lokales Modell \(model) → \(name) (Kontext \(contextSize))") }
@@ -193,7 +193,7 @@ final class LocalFirst: ObservableObject {
         } else if onOffline && !isOnline && d.target != .osAgent {
             d.target = .ollama; d.model = m
             d.reason = L("Offline – das lokale Modell übernimmt") + " (\(m))"
-        } else if forSmall && d.target != .osAgent && AgentKind.coders.contains(a) {
+        } else if forSmall && !Energy.saving && d.target != .osAgent && AgentKind.coders.contains(a) {   // am Akku: lokal kostet zu viel Strom
             if let why = localMisfit(d, text: text) {
                 // bleibt in der Cloud – und du siehst, warum (nur wenn es sonst lokal gegangen wäre)
                 if d.localOK == true || Self.isSmall(text) { d.reason += " · " + L("nicht lokal: ") + why }
@@ -309,6 +309,7 @@ struct LocalModelInfo: Codable, Hashable, Identifiable {
     var size: Int
     var rank: Int
     var note: String
+    var macIssue: Bool? = nil      // bekanntes Problem auf dem Mac → nie automatisch empfehlen
 }
 
 final class LocalCatalog: ObservableObject {
@@ -321,11 +322,14 @@ final class LocalCatalog: ObservableObject {
     /// Stand der App (Herbst 2026). Wird durch die Online-Liste ersetzt, sobald es eine neuere gibt.
     static let builtIn: [LocalModelInfo] = [
         LocalModelInfo(pull: "qwen3-coder-next", name: "Qwen3-Coder-Next", ram: 64, size: 52, rank: 95, note: "Stärkstes lokales Code-Modell (MoE, 256k Kontext)"),
-        LocalModelInfo(pull: "laguna-xs-2.1", name: "Laguna XS 2.1", ram: 32, size: 20, rank: 90, note: "Lange Agent-Aufgaben, schnell dank MoE"),
         LocalModelInfo(pull: "qwen3.8:27b", name: "Qwen3.8 27B", ram: 32, size: 18, rank: 88, note: "Bester Allrounder für Code mit Werkzeugen"),
-        LocalModelInfo(pull: "devstral-small-2", name: "Devstral Small 2", ram: 16, size: 15, rank: 84, note: "Für Agent-Arbeit gebaut, passt auf 16 GB"),
+        LocalModelInfo(pull: "flint", name: "Flint 40B", ram: 32, size: 23, rank: 87, note: "Für Coding-Agents gebaut (MoE, 256k Kontext)"),
+        LocalModelInfo(pull: "devstral-small-2", name: "Devstral Small 2", ram: 24, size: 15, rank: 84, note: "Für Agent-Arbeit gebaut, findet sich in großen Repos zurecht"),
         LocalModelInfo(pull: "qwen3-coder:30b", name: "Qwen3-Coder 30B", ram: 32, size: 19, rank: 80, note: "Bewährt, ganze Repos im Blick"),
         LocalModelInfo(pull: "gemma4:31b", name: "Gemma 4 31B", ram: 32, size: 19, rank: 78, note: "Stark bei Text und Erklärungen"),
+        LocalModelInfo(pull: "mimo-v2.6", name: "MiMo V2.6 9B", ram: 16, size: 8, rank: 74, note: "Klein, aber stark bei Code und Werkzeugen – läuft kühl"),
+        LocalModelInfo(pull: "gemma4:12b", name: "Gemma 4 12B", ram: 16, size: 8, rank: 66, note: "Solide und sparsam, 256k Kontext"),
+        LocalModelInfo(pull: "laguna-xs-2.1", name: "Laguna XS 2.1", ram: 32, size: 20, rank: 60, note: "Lange Agent-Aufgaben – liefert auf dem Mac derzeit teils leere Antworten", macIssue: true),
         LocalModelInfo(pull: "qwen3:8b", name: "Qwen3 8B", ram: 8, size: 5, rank: 55, note: "Klein und schnell für einfache Aufgaben"),
     ]
 
@@ -338,13 +342,13 @@ final class LocalCatalog: ObservableObject {
     static var ramGB: Int { Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824) }
 
     /// Was auf diesen Mac passt, bestes zuerst.
-    var fitting: [LocalModelInfo] { models.filter { $0.ram <= Self.ramGB }.sorted { $0.rank > $1.rank } }
+    var fitting: [LocalModelInfo] { models.filter { Self.fitsGPU($0) }.sorted { ($0.macIssue == true ? 0 : 1, $0.rank) > ($1.macIssue == true ? 0 : 1, $1.rank) } }
 
     /// Gibt es ein besseres passendes Modell als das beste geladene?
     var better: LocalModelInfo? {
         let installed = LocalFirst.shared.models
         let bestInstalled = models.filter { m in installed.contains { $0.hasPrefix(m.pull.split(separator: ":").first.map(String.init) ?? m.pull) } }.map(\.rank).max() ?? 0
-        return fitting.first { $0.rank > bestInstalled && !installed.contains($0.pull) }
+        return fitting.first { $0.macIssue != true && Self.comfortable($0) && $0.rank > bestInstalled && !installed.contains($0.pull) }
     }
 
     private var timer: Timer?
@@ -395,6 +399,7 @@ final class LocalCatalog: ObservableObject {
     fileprivate func finished(_ name: String, error: String?) {
         DispatchQueue.main.async {
             self.pulling[name] = nil
+            self.notifySetup(ok: error == nil, error: error)
             if let error { self.pullError[name] = error; return }
             UserDefaults.standard.set(name, forKey: "local.model")   // gleich nutzen
             LocalFirst.shared.loadModels()
@@ -414,9 +419,7 @@ final class LocalCatalog: ObservableObject {
     /// Ollama starten, falls es nicht läuft (App oder Dienst), dann weiter.
     func ensureOllamaRunning(_ then: @escaping () -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let r = Proc.zsh("curl -s -m 2 http://localhost:11434/api/version || ((open -ga Ollama 2>/dev/null || (OLLAMA_CONTEXT_LENGTH=65536 nohup ollama serve >/dev/null 2>&1 &)); sleep 4)",
-                             in: NSTemporaryDirectory(), timeout: 30)
-            _ = r
+            OllamaApp.startServer()
             then()
         }
     }
@@ -493,6 +496,8 @@ struct LocalFirstSettings: View {
                         HStack(spacing: 6) {
                             Text(m.name).fontWeight(.medium)
                             Text("≈\(m.size) GB").font(.caption).foregroundStyle(.tertiary)
+                            if !LocalCatalog.comfortable(m) { Text(L("passt knapp – wärmer, langsamer")).font(.caption2).foregroundStyle(.orange) }
+                            if m.pull == catalog.recommendedForThisMac?.pull { Text(L("empfohlen")).font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor) }
                             if local.model?.hasPrefix(m.pull.split(separator: ":").first.map(String.init) ?? m.pull) == true {
                                 Text(L("aktiv")).font(.caption2.weight(.semibold)).foregroundStyle(.green)
                             }
@@ -509,16 +514,14 @@ struct LocalFirstSettings: View {
                             .disabled(local.model == m.pull)
                     } else {
                         Button(L("Laden")) { catalog.pull(m.pull) }
-                            .disabled(Detection.which("ollama") == nil)
+                            .disabled(!OllamaApp.installed)
                             .help(L("Lädt das Modell einmal herunter – danach ist es aktiv und läuft auch offline"))
                     }
                 }
             }
-            Text(L("Passend zu diesem Mac") + " (\(LocalCatalog.ramGB) GB). " + L("Die Liste aktualisiert sich täglich – kommt ein besseres Modell, bekommst du Bescheid."))
+            Text(L("Passend zu diesem Mac") + String(format: " (%.0f GB ", OllamaApp.gpuGB) + L("Grafikspeicher") + "). " + L("Die Liste aktualisiert sich täglich – kommt ein besseres Modell, bekommst du Bescheid."))
                 .font(.caption).foregroundStyle(.tertiary)
-            if Detection.which("ollama") == nil {
-                Button(L("Ollama installieren")) { Detection.runInTerminal("brew install ollama && ollama serve >/dev/null 2>&1 &") }
-            }
+            LocalSetupRow()
         }
         .onAppear { local.loadModels() }
     }

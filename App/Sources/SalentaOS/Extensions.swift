@@ -36,7 +36,9 @@ struct Extension: Identifiable, Hashable {
 }
 
 enum ExtensionCatalog {
-    static let all: [Extension] = [
+    /// Kuratiert + selbst hinzugefügte Repos
+    static var all: [Extension] { curated + CustomExtensions.shared.extensions }
+    static let curated: [Extension] = [
         // Start-Paket: was jeder braucht, der nur Claude Code hat
         Extension(id: "playwright", name: "Playwright", kind: .plugin, category: .essentials,
                   repo: "https://github.com/microsoft/playwright-mcp", stars: "Microsoft · 300k+ Installationen",
@@ -204,8 +206,10 @@ final class ExtensionStore: ObservableObject {
                 switch e.kind {
                 case .plugin:
                     if let key = e.pluginKey?.lowercased(), plugins.contains(key) || plugins.contains(where: { $0.hasPrefix(key.components(separatedBy: "@").first! + "@") }) { found.insert(e.id) }
-                case .mcp: if mcps.contains(e.id) { found.insert(e.id) }
-                case .skill: if skills.contains(where: { $0.contains(e.id.components(separatedBy: "-").first!) }) { found.insert(e.id) }
+                case .mcp: if mcps.contains(e.id) || mcps.contains(e.name.lowercased()) { found.insert(e.id) }
+                case .skill:
+                    if e.id.hasPrefix("custom:") { if skills.contains(e.name.lowercased()) { found.insert(e.id) } }
+                    else if skills.contains(where: { $0.contains(e.id.components(separatedBy: "-").first!) }) { found.insert(e.id) }
                 case .cli: if Detection.which(e.id) != nil { found.insert(e.id) }
                 case .tool: if e.install.isEmpty { found.insert(e.id) }
                 }
@@ -229,6 +233,14 @@ final class ExtensionStore: ObservableObject {
             var cmd = e.install
             if cmd.contains("@claude-plugins-official") {
                 cmd = "(claude plugin marketplace list 2>/dev/null | grep -q claude-plugins-official || claude plugin marketplace add anthropics/claude-plugins-official); " + cmd
+            }
+            // MCP-Server für alle installierten Agents eintragen, nicht nur für Claude Code
+            if let m = cmd.range(of: #"claude mcp add --scope user (\S+) -- (.+)$"#, options: .regularExpression) {
+                let tail = String(cmd[m])
+                let name = tail.components(separatedBy: " ")[5]
+                let run = tail.components(separatedBy: " -- ").dropFirst().joined(separator: " -- ")
+                cmd += "; (command -v codex >/dev/null && codex mcp add \(name) -- \(run) >/dev/null 2>&1 || true)"
+                cmd += "; (command -v gemini >/dev/null && gemini mcp add -s user \(name) \(run) >/dev/null 2>&1 || true)"
             }
             let r = Proc.zsh(cmd, in: FileManager.default.homeDirectoryForCurrentUser.path, timeout: 600)
             let logURL = Paths.root.appendingPathComponent("logs/extensions.log")
@@ -258,6 +270,7 @@ final class ExtensionStore: ObservableObject {
 
 struct ExtensionsView: View {
     @ObservedObject private var store = ExtensionStore.shared
+    @ObservedObject private var custom = CustomExtensions.shared
     @State private var filter = ""
 
     var body: some View {
@@ -272,14 +285,26 @@ struct ExtensionsView: View {
                     Toggle(isOn: Binding(get: { AutoSkills.enabled }, set: { UserDefaults.standard.set($0, forKey: "auto.skills") })) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Automatisch nutzen").font(.callout.weight(.semibold))
-                            Text("Installierte Token-Sparer (z. B. Caveman, Serena) und Context7 laufen bei jedem Auftrag mit; passende Skills und Erweiterungen werden je nach Aufgabe dazugenommen – auch beim Weitermachen und Umsetzen.")
+                            Text("Serena (Code-Navigation) und Context7 laufen bei jedem Auftrag mit, wenn sie installiert sind; passende Skills und Erweiterungen werden je nach Aufgabe dazugenommen – auch beim Weitermachen und Umsetzen.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     .toggleStyle(.switch).padding(.top, 6)
                 }
+                ExtensionSearchBar(filter: $filter)
+                if !CustomExtensions.shared.extensions.isEmpty {
+                    VStack(alignment: .leading, spacing: Grid.s) {
+                        Text("Von dir hinzugefügt").font(.title3.weight(.semibold))
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: Grid.m)], spacing: Grid.m) {
+                            ForEach(CustomExtensions.shared.extensions.filter { ExtensionSearchBar.matches($0, filter) }) { e in
+                                ExtensionCard(ext: e)
+                                    .contextMenu { Button(L("Aus „Von dir hinzugefügt“ entfernen")) { CustomExtensions.shared.remove(e.id) } }
+                            }
+                        }
+                    }
+                }
                 ForEach(Extension.Category.allCases, id: \.self) { cat in
-                    let items = ExtensionCatalog.all.filter { $0.category == cat }
+                    let items = ExtensionCatalog.curated.filter { $0.category == cat && ExtensionSearchBar.matches($0, filter) }
                     if !items.isEmpty {
                         VStack(alignment: .leading, spacing: Grid.s) {
                             Text(cat.title).font(.title3.weight(.semibold))
@@ -338,8 +363,7 @@ struct ExtensionCard: View {
         }
         .padding(Grid.m)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(ok ? Color.green.opacity(0.35) : Color.secondary.opacity(0.15)))
+        .background(ModernCardBackground(radius: 12))
     }
 }
 
@@ -821,8 +845,7 @@ struct DiscoveredSection: View {
         }
         .padding(Grid.m)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(installed ? Color.green.opacity(0.35) : Color.secondary.opacity(0.15)))
+        .background(ModernCardBackground(radius: 12))
     }
 
     private func install(_ e: DiscoveredExt, _ plugin: String) {

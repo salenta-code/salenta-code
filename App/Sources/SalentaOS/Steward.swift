@@ -30,6 +30,15 @@ struct StewardTask: Codable, Identifiable, Hashable {
     var note: String?
     var priority: Int = 2                // 1 hoch, 2 normal, 3 niedrig
     var ref: String?                     // z. B. CI-Lauf-URL – gegen Dubletten
+    var skills: [String]? = nil          // vom Betreuer gewählte Skills für diesen Helfer
+    var exts: [String]? = nil            // vom Betreuer gewählte Erweiterungen für diesen Helfer
+    var pr: Int? = nil                   // Pull Request auf GitHub, der dieses Ergebnis trägt
+    var prBranch: String? = nil          // Korrektur auf einem bestehenden PR-Branch (statt neuem PR)
+    var effort: String? = nil            // Denkstufe passend zur Aufgabe: low, medium, high
+    var prRetry: Int? = nil              // automatische Reparaturen nach gescheitertem PR
+    var order: String? = nil             // gehört zu diesem Auftrag von dir (Team-Auftrag)
+    var offlineWT: WorktreeInfo? = nil   // offline fertig geworden – wird hochgeladen, sobald Internet da ist
+    var offlineMid: String? = nil
 }
 
 struct StewardMessage: Codable, Identifiable, Hashable {
@@ -50,6 +59,20 @@ struct StewardSetup: Codable, Hashable {
     var date = Date()
 }
 
+/// Ein Auftrag von dir: der Betreuer plant ihn als Team (Hauptaufgabe + abgegrenzte Zuarbeiten), betreut ihn bis zum Schluss
+/// und meldet ein fertiges Ergebnis.
+struct StewardOrder: Codable, Identifiable, Hashable {
+    var id = String(UUID().uuidString.prefix(8))
+    var text: String
+    var lead: String? = nil               // von dir gewählter Haupt-Agent (nil = der Betreuer wählt)
+    var teamSize: Int = 1                 // wie viele verschiedene Agents höchstens mitarbeiten
+    var created = Date()
+    var planned = false
+    var finished: Date? = nil
+    var summary: String? = nil
+    var rounds: Int? = nil                // Fortsetzungsrunden: nach jeder Runde prüft der Betreuer, was noch fehlt
+}
+
 struct StewardProject: Codable, Identifiable, Hashable {
     var id: String                       // Repo-Wurzel
     var name: String
@@ -60,6 +83,7 @@ struct StewardProject: Codable, Identifiable, Hashable {
     var trust: Int = 1                   // 0 nur vorschlagen · 1 selbst starten · 2 Grünes selbst übernehmen
     var parallel: Int = 2
     var dailyRuns: Int = 8
+    var extraToday: [String: Int]? = nil  // „Heute +10“: zusätzliche Aufträge nur für diesen Tag
     var runs: [String: Int] = [:]        // Tag → gestartete Helfer
     var paused = false
     var roundHour: Int = 7
@@ -71,9 +95,35 @@ struct StewardProject: Codable, Identifiable, Hashable {
     var trustOffered = false
     var thinking: Bool? = nil
     var created = Date()
+    // Optional, damit ältere stewards.json weiter laden
+    var extensions: [String]? = nil      // ausgewählte Erweiterungen – jeder Helfer nutzt sie
+    var untilDone: Bool? = nil           // arbeitet ohne Pause weiter, bis das Ziel erreicht ist
+    var improve: Bool? = nil             // danach selbst Verbesserungen suchen
+    var goalReached: Date? = nil
+    var progress: String? = nil          // Einschätzung des Betreuers, z. B. „60 % – Checkout fehlt noch“
+    var blocked: String? = nil           // braucht dich, bevor es weitergeht
+    var idleThinks: Int? = nil           // Planungen ohne neue Aufgaben in Folge
+    var lastContinue: Date? = nil
+    // GitHub (über die GitHub CLI)
+    var github: Bool? = nil              // Ergebnisse als Pull Request liefern (nil = automatisch, wenn GitHub da ist)
+    var autoMerge: Bool? = nil           // grüne, geprüfte PRs selbst mergen (nil = wie Vertrauen „Grünes übernehmen“)
+    var mergeAll: Bool? = nil            // auch PRs von anderen mergen (Standard: nur eigene)
+    var postReviews: Bool? = nil         // Review als Kommentar auf GitHub (Standard: an)
+    var prs: [StewardPR]? = nil
+    var lastPRScan: Date? = nil
+    var prBase: String? = nil            // Ziel-Branch der Pull Requests (Standard: Haupt-Branch des Repos auf GitHub)
+
+    var orders: [StewardOrder]? = nil    // deine Aufträge: ein Prompt → ein Team → ein fertiges Ergebnis
+
+    var chosenExtensions: [Extension] { (extensions ?? []).compactMap { ExtensionCatalog.find($0) } }
+    var continuous: Bool { untilDone == true }
 
     var today: String { DateCoding.day(Date()) }
     var runsToday: Int { runs[today] ?? 0 }
+    /// 0 = kein Tagesbudget (unbegrenzt – gebremst wird dann nur durch Parallel-Grenze, Limits und Energiesparen)
+    var unlimited: Bool { dailyRuns <= 0 }
+    var budgetLeft: Bool { unlimited || runsToday < dailyRuns + (extraToday?[today] ?? 0) }
+    var budgetText: String { unlimited ? "\(runsToday) " + L("heute · ohne Budget") : "\(runsToday)/\(dailyRuns + (extraToday?[today] ?? 0)) " + L("heute") }
     func count(_ s: StewardTask.State) -> Int { tasks.filter { $0.state == s }.count }
 }
 
@@ -112,10 +162,22 @@ final class Steward: ObservableObject {
 
     func project(_ id: String) -> StewardProject? { projects.first { $0.id == id } }
 
-    private func update(_ id: String, _ change: (inout StewardProject) -> Void) {
+    func update(_ id: String, _ change: (inout StewardProject) -> Void) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
         change(&projects[i])
+        Self.dedupePRTasks(&projects[i])
         save()
+    }
+
+    /// Pro Pull Request höchstens eine offene Korrekturaufgabe (die älteste bleibt, Dubletten werden verworfen).
+    static func dedupePRTasks(_ p: inout StewardProject) {
+        var seen = Set<Int>()
+        for i in p.tasks.indices where p.tasks[i].prBranch != nil && [.queued, .idea].contains(p.tasks[i].state) {
+            guard let n = p.tasks[i].pr else { continue }
+            let busy = p.tasks.contains { $0.pr == n && $0.prBranch != nil && $0.state == .running }
+            if seen.contains(n) || busy { p.tasks[i].state = .dropped; p.tasks[i].note = L("doppelt – für diesen PR läuft schon eine Korrektur") }
+            else { seen.insert(n) }
+        }
     }
 
     func say(_ id: String, _ role: String, _ text: String) {
@@ -142,6 +204,94 @@ final class Steward: ObservableObject {
 
     func release(_ id: String) { projects.removeAll { $0.id == id }; save() }
 
+    // MARK: Aufträge von dir – ein Prompt, ein Team, ein fertiges Ergebnis
+
+    /// Übernimmt deinen Auftrag für dieses Projekt: plant ihn als Team, setzt ihn um, prüft, liefert (PR/Merge) und meldet sich am Ende.
+    @discardableResult
+    func takeOrder(_ path: String, text: String, lead: AgentKind?, teamSize: Int) -> String {
+        let id = adopt(path)
+        let order = StewardOrder(text: text, lead: lead?.rawValue, teamSize: max(1, min(teamSize, 4)))
+        update(id) { p in
+            p.orders = (p.orders ?? []) + [order]
+            if p.goal.isEmpty { p.goal = String(text.prefix(300)) }
+            if p.paused { p.paused = false }
+            p.messages.append(StewardMessage(role: "du", text: text))
+        }
+        say(id, "status", "🧭 " + (order.teamSize > 1
+            ? String(format: L("Übernommen – ich plane ein Team aus bis zu %d Agents und betreue den Auftrag bis zum fertigen Ergebnis."), order.teamSize)
+            : L("Übernommen – ich plane den Auftrag, setze ihn um und betreue ihn bis zum fertigen Ergebnis.")))
+        planOrder(id, order.id)
+        return id
+    }
+
+    private func planOrder(_ id: String, _ orderID: String, attempt: Int = 0, followUp: Bool = false) {
+        guard let p = project(id), let o = p.orders?.first(where: { $0.id == orderID }), !o.planned else { return }
+        if p.thinking == true {   // plant gerade etwas anderes → kurz danach
+            if attempt < 30 { DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.planOrder(id, orderID, attempt: attempt + 1, followUp: followUp) } }
+            return
+        }
+        if followUp {
+            let done = p.tasks.filter { $0.order == o.id && $0.state == .done }.map { "- " + $0.title }.joined(separator: "\n")
+            var f = "[[order:\(o.id)]] " + String(format: L("Fortsetzung deines Auftrags (Runde %d). Schon erledigt:"), (o.rounds ?? 0) + 1) + "\n" + done + "\n\n"
+            f += L("Prüfe gegen den ursprünglichen Auftrag, was noch fehlt, und plane nur das. Ist alles umgesetzt – oder bleibt nur, was der Nutzer selbst entscheiden muss –, plane keine Aufgaben und nenne das Offene unter „blocked“.") + "\n\"\"\"\n" + o.text + "\n\"\"\""
+            think(id, trigger: f)
+            return
+        }
+        let leadText = o.lead.flatMap { AgentKind(rawValue: $0)?.title }
+        var t = "[[order:\(o.id)]] " + L("Neuer Auftrag von dir – plane ihn als Team und setze ihn vollständig um:") + "\n\"\"\"\n" + o.text + "\n\"\"\"\n"
+        t += L("So planst du: Zerlege den Auftrag in so wenige Teilaufgaben wie nötig (1–8), die zusammen genau diesen Auftrag fertig machen – nichts darüber hinaus.") + " "
+        t += L("Die erste Teilaufgabe ist die Hauptaufgabe (Kern und Struktur, Priorität 1); weitere Teilaufgaben sind klar abgegrenzte Zuarbeiten in anderen Dateien oder Bereichen (Tests, Oberfläche, Doku, Randfälle), damit sich niemand gegenseitig in die Quere kommt.") + " "
+        t += L("Wähle für jede Teilaufgabe den Agent und das Modell, die dafür am stärksten sind, und die passenden Skills und Erweiterungen. Keine doppelte Arbeit: nie dieselbe Aufgabe an mehrere Agents.") + " "
+        if o.teamSize > 1 { t += String(format: L("Nutze höchstens %d verschiedene Agents."), o.teamSize) + " " }
+        else { t += L("Ein Agent reicht – nimm für alle Teilaufgaben denselben.") + " " }
+        if let leadText { t += String(format: L("Die Hauptaufgabe macht %@ (vom Nutzer gewählt)."), leadText) + " " }
+        t += L("Ist der Auftrag klein, ist eine einzige Teilaufgabe richtig.") + " "
+        t += L("Ist es ein Plan oder Befund mit vielen Punkten: Bereits Erledigtes überspringen, die offenen Punkte in der dort genannten Reihenfolge umsetzen – jetzt nur die erste Welle (höchstens 8 Teilaufgaben), den Rest planst du in der nächsten Runde. Punkte, die nur der Nutzer entscheiden darf, nicht umsetzen, sondern unter „blocked“ nennen.")
+        think(id, trigger: t)
+    }
+
+    /// Aufträge abschließen, sobald alle ihre Teilaufgaben erledigt sind – mit Ergebnis-Meldung.
+    func checkOrders(_ id: String) {
+        guard let p = project(id) else { return }
+        for o in p.orders ?? [] where o.planned && o.finished == nil {
+            let mine = p.tasks.filter { $0.order == o.id }
+            guard !mine.isEmpty else { continue }
+            let open = mine.filter { ![.done, .dropped].contains($0.state) }
+            guard open.isEmpty else { continue }
+            let done = mine.filter { $0.state == .done }
+            // Noch eine Runde? Der Betreuer prüft gegen den Auftrag, ob noch etwas fehlt (große Pläne in Wellen)
+            if !done.isEmpty, (o.rounds ?? 0) < 6 {
+                update(id) { q in
+                    if let i = q.orders?.firstIndex(where: { $0.id == o.id }) { q.orders?[i].rounds = (o.rounds ?? 0) + 1; q.orders?[i].planned = false }
+                }
+                planOrder(id, o.id, followUp: true)
+                continue
+            }
+            finishOrder(id, o)
+        }
+    }
+
+    private func finishOrder(_ id: String, _ o: StewardOrder) {
+        guard let p = project(id), p.orders?.first(where: { $0.id == o.id })?.finished == nil else { return }
+        let mine = p.tasks.filter { $0.order == o.id }
+        do {
+            let done = mine.filter { $0.state == .done }
+            let prs = done.compactMap(\.pr).map { "#\($0)" }
+            let agents = Set(done.compactMap { AgentKind(rawValue: $0.agent)?.title }).sorted()
+            var s = done.isEmpty ? L("Dafür war nichts umzusetzen oder es braucht erst deine Entscheidung – siehe die Antwort des Betreuers oben.")
+                : String(format: L("%d Teilaufgaben erledigt"), done.count) + (agents.isEmpty ? "" : " (" + agents.joined(separator: ", ") + ")")
+                  + (prs.isEmpty ? "" : " · " + L("Pull Requests") + " " + prs.joined(separator: ", "))
+            s += "\n" + done.map { "✓ " + $0.title }.joined(separator: "\n")
+            update(id) { q in
+                if let i = q.orders?.firstIndex(where: { $0.id == o.id }) { q.orders?[i].finished = Date(); q.orders?[i].summary = s }
+            }
+            say(id, "betreuer", "✅ " + L("Auftrag fertig:") + " " + String(o.text.prefix(120)) + "\n" + s)
+            if !done.isEmpty { Celebration.shared.fire(L("Auftrag fertig"), p.name, symbol: "checkmark.seal", tint: .green) }
+            NotifyCenter.shared.post(done.isEmpty ? .runFailed : .runDone, title: "✅ " + L("Auftrag fertig") + " – " + p.name,
+                                     body: String(o.text.prefix(140)), route: .page("steward:" + id))
+        }
+    }
+
     // MARK: Einrichten
 
     func runSetup(_ id: String) {
@@ -153,6 +303,16 @@ final class Steward: ObservableObject {
                 for k in ["dev", "test", "typecheck", "lint", "build"] { if let c = s.commands[k] { lines.append("• \(k): `\(c)`") } }
                 if !s.envFiles.isEmpty { lines.append(L("• Umgebungsdateien (bleiben lokal):") + " " + s.envFiles.joined(separator: ", ")) }
                 if s.remote == nil { lines.append(L("• Kein GitHub-Remote – CI-Wache ist aus.")) }
+                // Lokal auf einem anderen Branch mit nicht hochgeladenen Commits? Der Betreuer arbeitet trotzdem sauber vom GitHub-Stand.
+                let cur = Git.run(["rev-parse", "--abbrev-ref", "HEAD"], in: id, timeout: 10).out.trimmingCharacters(in: .whitespacesAndNewlines)
+                let ahead = Int(Git.run(["rev-list", "--count", "@{u}..HEAD"], in: id, timeout: 10).out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                if s.remote?.contains("github") == true, !cur.isEmpty, cur != s.defaultBranch {
+                    lines.append(String(format: L("• Dein Ordner steht auf Branch „%@“%@. Pull Requests des Betreuers gehen nach „%@“ und bauen auf dem Stand von GitHub auf – änderbar im Menü unter „Pull Requests gehen nach“."),
+                                        cur, ahead > 0 ? String(format: L(" mit %d nicht hochgeladenen Commits"), ahead) : "", s.defaultBranch))
+                }
+                if let w = self.githubWatcher(for: id), w.id != id {
+                    lines.append(String(format: L("• Achtung: Das ist ein weiterer Klon desselben GitHub-Repos wie „%@“. GitHub (PRs, CI) betreut nur der erste – hier laufen nur lokale Aufgaben."), w.id.replacingOccurrences(of: NSHomeDirectory(), with: "~")))
+                }
                 self.say(id, "system", lines.joined(separator: "\n"))
             }
         }
@@ -199,14 +359,14 @@ final class Steward: ObservableObject {
         return s
     }
 
-    /// Erkannte Befehle als Prüfschleife festschreiben (.salenta-os.json im Repo).
+    /// Erkannte Befehle als Prüfschleife festschreiben (in den App-Daten – nie im Code des Projekts).
     func saveVerifyConfig(_ id: String) {
         guard let s = project(id)?.setup else { return }
         var cfg = ProjectConfig.load(id) ?? ProjectConfig()
         cfg.verify = ["typecheck", "lint", "test", "build"].compactMap { s.commands[$0] }
         if cfg.dev == nil { cfg.dev = s.commands["dev"] }
         ProjectConfig.save(cfg, dir: id)
-        say(id, "system", L("Prüfschleife festgelegt in .salenta-os.json: ") + (cfg.verify ?? []).joined(separator: " · "))
+        say(id, "system", L("Prüfschleife festgelegt: ") + (cfg.verify ?? []).joined(separator: " · "))
     }
 
     // MARK: Gespräch mit dem Betreuer
@@ -215,6 +375,7 @@ final class Steward: ObservableObject {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         say(id, "du", t)
+        update(id) { p in p.blocked = nil; p.idleThinks = 0; if p.goalReached != nil, p.continuous, t.count > 12 { p.goalReached = nil } }
         think(id, trigger: t)
     }
 
@@ -222,15 +383,59 @@ final class Steward: ObservableObject {
     func think(_ id: String, trigger: String) {
         guard let p = project(id), p.thinking != true else { return }
         update(id) { $0.thinking = true }
-        let installed = AgentKind.coders.filter { OpenModels.available($0) && !AgentHealth.needsLogin($0) }
+        let installed = AgentKind.coders.filter { OpenModels.available($0) && !AgentHealth.needsLogin($0) && Billing.autoOK($0) && !Self.isBroken($0) }
         var models: [AgentKind: [String]] = [:]
         for a in installed { models[a] = ModelCatalog.shared.latest(for: a, limit: 5).map(\.value) }
         let tight = Set(installed.filter { Usage.shared.isTight($0) })
         let customerNotes: [String] = []
+        // Wissen für gute Planung: Modellhinweise, passende Skills, alle installierten Erweiterungen, Erfahrungswerte
+        var hints: [AgentKind: [String]] = [:]
+        for a in installed { hints[a] = ModelCatalog.shared.latest(for: a, limit: 5).map { $0.value + ($0.hint.isEmpty ? "" : " (" + $0.hint + ")") } }
+        let context = p.goal + " " + trigger + " " + p.tasks.filter { [.queued, .red, .idea].contains($0.state) }.map(\.title).joined(separator: " ")
+        let skills = Router.suggestSkills(context, skills: SkillCatalog.current?.skills ?? []).prefix(25)
+            .map { "- \($0.name) [\($0.source)]: \(String($0.description.prefix(120)))" }
+        let exts = ExtensionStore.shared.installedList.filter { !$0.usage.isEmpty }
+            .map { "- \($0.id) (\($0.kind.rawValue)): \($0.purpose) · when: \($0.when.prefix(6).joined(separator: ", "))" }
+        let experience = Learning.routerHint(MissionStore.shared.missions)
+        let know = Knowledge(models: hints, skills: Array(skills), extensions: exts, experience: experience, missions: MissionStore.shared.missions)
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Self.ask(p, trigger: trigger, installed: installed, models: models, tight: tight, customers: customerNotes)
-            DispatchQueue.main.async { self.apply(id, result) }
+            let result = Self.ask(p, trigger: trigger, installed: installed, models: models, tight: tight, customers: customerNotes, know: know)
+            DispatchQueue.main.async { self.apply(id, result, trigger: trigger) }
         }
+    }
+
+    private static var lastFailure = ""
+
+    // Agents, die sofort scheitern (nicht angemeldet, kaputt, kein Abo) – 6 Stunden nicht einplanen
+    private static var broken: [String: Date] = [:]
+    static func markBroken(_ k: AgentKind) { broken[k.rawValue] = Date().addingTimeInterval(6 * 3600) }
+    static func isBroken(_ k: AgentKind) -> Bool { (broken[k.rawValue] ?? .distantPast) > Date() }
+
+    /// Wie viele Tokens jeder Agent hier pro Auftrag braucht (Median, 7 Tage) – damit der Planer günstig delegiert.
+    static func tokenHint(_ missions: [MissionRecord]) -> String {
+        let since = Date().addingTimeInterval(-7 * 86400)
+        let runs = Paths.root.appendingPathComponent("logs/runs", isDirectory: true)
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: runs.path)) ?? []
+        var by: [String: [Int]] = [:]
+        for m in missions where m.started >= since && !m.isOSAgent {
+            let suffix = "-\(m.agent)-\(m.id.prefix(6)).log.json"
+            guard let f = files.first(where: { $0.hasSuffix(suffix) }),
+                  let d = try? Data(contentsOf: runs.appendingPathComponent(f)),
+                  let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let c = j["context"] as? Int, c > 0 else { continue }
+            by[m.agent, default: []].append(c)
+        }
+        let lines = by.filter { $0.value.count >= 3 }.map { a, v -> String in
+            let s = v.sorted(); return "\(a): ~\(s[s.count / 2] / 1000)k tokens per task (\(v.count) runs)"
+        }.sorted()
+        return lines.isEmpty ? "" : "\nToken use per task on this Mac (median): " + lines.joined(separator: "; ") + ". Prefer the cheaper agent when quality is similar."
+    }
+    private var failStreak: [String: Int] = [:]
+
+    static func log(_ text: String) {
+        let url = Paths.root.appendingPathComponent("logs/steward.log")
+        let entry = "\n=== \(Date())\n" + text + "\n"
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data(entry.utf8)); try? h.close() }
+        else { try? entry.write(to: url, atomically: true, encoding: .utf8) }
     }
 
     private struct Plan {
@@ -239,14 +444,19 @@ final class Steward: ObservableObject {
         var tasks: [StewardTask]
         var drop: [String]
         var learnings: [(text: String, kind: String)]
+        var reached: Bool = false
+        var progress: String?
+        var blocked: String?
     }
 
+    struct Knowledge { var models: [AgentKind: [String]]; var skills: [String]; var extensions: [String]; var experience: String; var missions: [MissionRecord] = [] }
+
     private static func ask(_ p: StewardProject, trigger: String, installed: [AgentKind], models: [AgentKind: [String]],
-                            tight: Set<AgentKind>, customers: [String]) -> Plan? {
-        guard Detection.which("claude") != nil else { return nil }
+                            tight: Set<AgentKind>, customers: [String], know: Knowledge) -> Plan? {
+        guard Detection.which("claude") != nil else { lastFailure = L("Claude Code ist nicht installiert"); return nil }
         let lang = Profile.languageCode == "de" ? "German (informal du, short and direct)" : "English"
         let agentList = installed.map { a in
-            "- \(a.rawValue) (\(a.title)): \(a.strength)" + ((models[a] ?? []).isEmpty ? "" : " · models: " + (models[a] ?? []).joined(separator: ", "))
+            "- \(a.rawValue) (\(a.title)): \(a.strength)" + ((know.models[a] ?? []).isEmpty ? "" : " · models: " + (know.models[a] ?? []).joined(separator: ", "))
                 + (tight.contains(a) ? " · NEARLY AT LIMIT, avoid" : "")
         }.joined(separator: "\n")
         let open = p.tasks.filter { [.idea, .queued, .running, .review, .red].contains($0.state) }
@@ -259,7 +469,9 @@ final class Steward: ObservableObject {
         let setup = p.setup.map { s in
             "Stack: \(s.stack.joined(separator: ", ")). Commands: " + s.commands.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ")
         } ?? "not analysed yet"
-        let capacity = max(0, p.dailyRuns - p.runsToday)
+        var know = know
+        know.experience += Self.tokenHint(know.missions)          // im Hintergrund: liest die Lauf-Statistiken
+        let capacity = p.unlimited ? 999 : max(0, p.dailyRuns + (p.extraToday?[p.today] ?? 0) - p.runsToday)
         let prompt = """
         You are the long-term STEWARD (coordinator) of the software project "\(p.name)" (\(p.id)).
         You never write code yourself. You plan, split work into small independent tasks that coding agents execute in \
@@ -270,9 +482,18 @@ final class Steward: ObservableObject {
         Setup: \(setup)
         Trust level: \(p.trust) (0 = only propose, 1 = start tasks automatically, 2 = also merge green results).
         Capacity left today: \(capacity) task runs, max \(p.parallel) in parallel.
+        Mode: \(p.continuous ? (p.goalReached != nil && p.improve == true
+            ? "GOAL REACHED – IMPROVEMENT MODE: keep the project getting better on your own: real bugs, missing tests, error handling, performance, security, accessibility, UX polish, dead code, docs. Only worthwhile, low-risk tasks; never invent features that change the product's direction."
+            : "WORK UNTIL DONE: the owner wants you to keep going without stopping until the goal is fully reached. Every time the queue is empty you are asked again: judge honestly whether the goal is reached; if not, plan the next tasks right away.")
+            : "normal (plan when asked)")
+        \(p.count(.review) > 0 && p.trust < 2 ? "\(p.count(.review)) results wait for the owner to merge – do not plan tasks that depend on those unmerged changes." : "")
+        \(p.chosenExtensions.isEmpty ? "" : "Extensions the owner chose for this project (every helper is told to use them; give tasks that need Claude plugins or skills to the agent claude):\n" + p.chosenExtensions.map { "- \($0.name): \($0.purpose)" }.joined(separator: "\n"))
 
         Open tasks:
         \(open.isEmpty ? "(none)" : open)
+
+        Open pull requests on GitHub (the GitHub watcher reviews, fixes and merges them automatically – do not duplicate that work):
+        \((p.prs ?? []).isEmpty ? "(none)" : (p.prs ?? []).map { "- #\($0.number) \($0.title) · CI \($0.ci) · \($0.mergeable)" + ($0.reviewOK.map { $0 ? " · review ok" : " · review issues" } ?? "") }.joined(separator: "\n"))
 
         Recently finished:
         \(recent.isEmpty ? "(none)" : recent)
@@ -287,7 +508,8 @@ final class Steward: ObservableObject {
         Trigger now: \(trigger)
 
         Rules:
-        - Tasks must be concrete, small enough for one agent run (≤ ~1 hour), independent where possible, with clear done criteria in "detail".
+        - Tasks must be concrete, small enough for one agent run (≤ ~1 hour), independent where possible, with clear done criteria in "detail". \
+        Done criteria describe the change itself (behaviour, affected tests) – never "full test suite green", "CI green", "PR created" or "pushed": the pipeline does that automatically afterwards.
         - Do not duplicate open tasks. Prefer fixing red tasks (re-plan them) before adding new features.
         - Pick the best agent per task from the list and a fitting model (cheap/fast for small fixes, strong for hard work).
         - Never plan work on the tool that runs you ("Salenta Code"); only on this project.
@@ -295,78 +517,234 @@ final class Steward: ObservableObject {
         - If the goal is unclear, ask ONE question in "reply" and return no tasks.
         - "drop": ids (6 chars) of open tasks that are obsolete.
         - "learnings": durable project facts worth remembering (decisions, conventions, pitfalls). Max 3.
+        - "goal_reached": true only if the goal is really fully met (verified by finished green tasks), else false.
+        - "progress": one short sentence how far the goal is, e.g. "about 60 % – payments still missing".
+        - "blocked": fill ONLY if you cannot continue without the owner (missing access, decision, account, payment, deploy); else "".
 
         Available agents:
         \(agentList)
 
+        Model choice: use the strongest model (e.g. opus) for architecture, tricky bugs, security and large refactors;
+        a mid model (sonnet) for normal features; small/fast models only for trivial edits, renames, copy changes and lint fixes.
+        Thinking effort per task ("effort"): "low" for trivial/mechanical work, "medium" for almost everything (default – strong
+        models like Opus need no more), "high" ONLY for genuinely hard debugging, security or architecture. Never use max/xhigh.
+
+        \(know.experience.isEmpty ? "" : know.experience + "\nPrefer the agent that historically succeeds for this kind of task here.")
+
+        Installed extensions (pick per task in "extensions" by id, max 2, only if clearly useful; plugins/skills only work with agent claude):
+        \(know.extensions.isEmpty ? "(none)" : know.extensions.joined(separator: "\n"))
+
+        Relevant installed skills (pick per task in "skills" by exact name, max 3, only if they clearly match):
+        \(know.skills.isEmpty ? "(none)" : know.skills.joined(separator: "\n"))
+
         Answer ONLY with JSON in \(lang):
-        {"reply":"","goal":"","tasks":[{"title":"short imperative","detail":"what + done criteria","agent":"<id>","model":"","priority":2}],"drop":[""],"learnings":[{"text":"","kind":"regel"}]}
+        {"reply":"","goal":"","tasks":[{"title":"short imperative","detail":"what + done criteria","agent":"<id>","model":"","priority":2,"effort":"medium","skills":[],"extensions":[]}],"drop":[""],"learnings":[{"text":"","kind":"regel"}],"goal_reached":false,"progress":"","blocked":""}
         """
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-steward-\(UUID().uuidString).md")
         try? prompt.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
-        let model = tight.contains(.claude) ? "haiku" : "sonnet"
-        let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns 1 --strict-mcp-config < \(Shell.quote(file.path))",
-                         in: NSTemporaryDirectory(), timeout: 240)
-        guard let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"),
-              let data = res[a...b].data(using: .utf8),
-              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        // Planen ist die wichtigste Entscheidung: im Dauerbetrieb das stärkste Modell
+        // Planen ist die wichtigste Entscheidung: im Dauerbetrieb das stärkste Modell – klappt das nicht, Sonnet
+        // Planen ist die wichtigste Entscheidung – immer das stärkste Modell (wenige, kurze Aufrufe). Im Limit Sonnet.
+        let first = tight.contains(.claude) ? "sonnet" : "opus"
+        var j: [String: Any]?
+        var why = ""
+        for model in (first == "opus" ? ["opus", "sonnet"] : ["sonnet"]) {
+            let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))",
+                             in: NSTemporaryDirectory(), timeout: 420)
+            if let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"), a < b,
+               let parsed = try? JSONSerialization.jsonObject(with: Data(res[a...b].utf8)) as? [String: Any] {
+                j = parsed; break
+            }
+            why = Verifier.claudeFailure(r.out, code: r.code)
+            Self.log("\(p.name) · \(model) · exit \(r.code) · \(why)\n\(r.out.suffix(1500))")
+            if why == L("Claude ist im Limit") || why == L("keine Internetverbindung") || why.hasPrefix(L("„Nur lokal“")) { break }
+        }
+        guard let j else { lastFailure = why; return nil }
         let tasks = ((j["tasks"] as? [[String: Any]]) ?? []).compactMap { t -> StewardTask? in
             guard let title = t["title"] as? String, !title.isEmpty, !Digest.isToolTopic(title) else { return nil }
             var agent = (t["agent"] as? String ?? "auto").lowercased()
             if AgentKind(rawValue: agent).map({ installed.contains($0) }) != true { agent = "auto" }
             var model = t["model"] as? String ?? ""
             if let k = AgentKind(rawValue: agent), !model.isEmpty, !(models[k] ?? []).contains(model) { model = "" }
+            let sk = (t["skills"] as? [String] ?? []).prefix(3).map { $0 }
+            let ex = (t["extensions"] as? [String] ?? []).filter { id in ExtensionStore.shared.installedList.contains { $0.id == id } }.prefix(2).map { $0 }
+            let eff = (t["effort"] as? String ?? "medium").lowercased()
             return StewardTask(title: title, detail: t["detail"] as? String ?? "", agent: agent, model: model,
-                               priority: t["priority"] as? Int ?? 2)
+                               priority: t["priority"] as? Int ?? 2, skills: sk.isEmpty ? nil : sk, exts: ex.isEmpty ? nil : ex,
+                               effort: ["low", "medium", "high"].contains(eff) ? eff : "medium")
         }
         let learnings = ((j["learnings"] as? [[String: Any]]) ?? []).compactMap { l -> (text: String, kind: String)? in
             guard let t = l["text"] as? String, !t.isEmpty else { return nil }
             return (t, l["kind"] as? String ?? "lernen")
         }
         let goal = (j["goal"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        func str(_ k: String) -> String? { let v = (j[k] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines); return v.isEmpty ? nil : v }
         return Plan(reply: (j["reply"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                    goal: goal.isEmpty ? nil : goal, tasks: tasks, drop: (j["drop"] as? [String]) ?? [], learnings: learnings)
+                    goal: goal.isEmpty ? nil : goal, tasks: tasks, drop: (j["drop"] as? [String]) ?? [], learnings: learnings,
+                    reached: j["goal_reached"] as? Bool ?? false, progress: str("progress"), blocked: str("blocked"))
     }
 
-    private func apply(_ id: String, _ plan: Plan?) {
+    private func apply(_ id: String, _ plan: Plan?, trigger: String = "") {
         update(id) { $0.thinking = nil }
         guard let plan else {
-            say(id, "system", L("Der Betreuer konnte gerade nicht nachdenken (Claude nicht erreichbar oder am Limit). Ich versuche es beim nächsten Signal wieder."))
+            let why = Self.lastFailure.isEmpty ? L("unbekannter Grund") : Self.lastFailure
+            let retryMin = why == L("Claude ist im Limit") ? 30 : 3
+            say(id, "system", String(format: L("Der Betreuer konnte gerade nicht nachdenken: %@. Neuer Versuch in %d Minuten."), why, retryMin))
+            // Einmal automatisch neu versuchen (nicht endlos: eine Wiederholung pro Fehlschlag in Folge)
+            if (failStreak[id] ?? 0) < 3 {
+                failStreak[id, default: 0] += 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(retryMin * 60)) { [weak self] in
+                    guard let self, let p = self.project(id), !p.paused, p.thinking != true else { return }
+                    self.think(id, trigger: trigger.isEmpty ? L("Bitte prüf den Stand und plan die nächsten Schritte.") : trigger)
+                }
+            }
             return
         }
+        failStreak[id] = 0
+        var finishedOrder: StewardOrder?
         update(id) { p in
             if let g = plan.goal, p.goal.isEmpty || plan.goal != p.goal { if p.goal.isEmpty { p.goal = g } }
             for d in plan.drop where !d.isEmpty {
                 if let i = p.tasks.firstIndex(where: { $0.id.hasPrefix(d) && $0.state != .running }) { p.tasks[i].state = .dropped; p.tasks[i].note = L("vom Betreuer verworfen") }
             }
             let known = Set(p.tasks.filter { $0.state != .dropped && $0.state != .done }.map { $0.title.lowercased() })
-            for var t in plan.tasks where !known.contains(t.title.lowercased()) {
+            let recentlyDropped = Set(p.tasks.filter { $0.state == .dropped && ($0.finished ?? $0.created) > Date().addingTimeInterval(-86400) }.map { $0.title.lowercased() })
+            // Auftrag von dir? Teilaufgaben ihm zuordnen, Team-Grenzen einhalten, Auftrag gilt als geplant
+            let orderID = trigger.range(of: #"\[\[order:([A-Za-z0-9-]+)\]\]"#, options: .regularExpression).map { String(trigger[$0].dropFirst(8).dropLast(2)) }
+            let order = orderID.flatMap { oid in p.orders?.first { $0.id == oid } }
+            var teamAgents: [String] = []
+            for (n, var t) in plan.tasks.enumerated() where !known.contains(t.title.lowercased()) && !recentlyDropped.contains(t.title.lowercased()) {
                 t.state = p.trust == 0 ? .idea : .queued
+                if let order {
+                    t.order = order.id
+                    t.source = "du"
+                    t.state = .queued        // dein Auftrag: sofort umsetzen, nicht nur vorschlagen
+                    if n == 0, let lead = order.lead { t.agent = lead; if !ModelCatalog.fits(t.model, AgentKind(rawValue: lead) ?? .claude) { t.model = "" } }
+                    if t.agent != "auto" {
+                        if !teamAgents.contains(t.agent) {
+                            if teamAgents.count < order.teamSize { teamAgents.append(t.agent) }
+                            else { t.agent = teamAgents.first ?? t.agent; t.model = "" }   // Team voll → Haupt-Agent übernimmt
+                        }
+                    }
+                }
                 p.tasks.append(t)
+            }
+            if let order, let i = p.orders?.firstIndex(where: { $0.id == order.id }) {
+                p.orders?[i].planned = true
+                if !p.tasks.contains(where: { $0.order == order.id && ![.done, .dropped].contains($0.state) }) { finishedOrder = order }
             }
         }
         if !plan.reply.isEmpty { say(id, "betreuer", plan.reply) }
+        if let o = finishedOrder { finishOrder(id, o) }   // nichts mehr zu tun → Ergebnis melden
+        afterPlan(id, plan)
         if !plan.learnings.isEmpty { ProjectMemory.add(id, plan.learnings, source: L("Projekt-Betreuer")) }
         dispatch(id)
+    }
+
+    // MARK: Dauerbetrieb – bis das Ziel erreicht ist
+
+    private func afterPlan(_ id: String, _ plan: Plan) {
+        guard let before = project(id) else { return }
+        let firstReach = plan.reached && before.goalReached == nil
+        update(id) { p in
+            if let pr = plan.progress { p.progress = pr }
+            p.blocked = plan.blocked
+            if plan.reached { if p.goalReached == nil { p.goalReached = Date() } }
+            p.idleThinks = plan.tasks.isEmpty ? (p.idleThinks ?? 0) + 1 : 0
+        }
+        guard before.continuous else { return }
+        if firstReach {
+            say(id, "betreuer", "🎯 " + L("Ziel erreicht!") + (before.improve == true ? " " + L("Ich arbeite jetzt selbst an Verbesserungen weiter (Fehler, Tests, Tempo, Sicherheit, Bedienung).") : " " + L("Ich höre hier auf. Gib mir ein neues Ziel, dann mache ich weiter.")))
+            Celebration.shared.fire(L("Ziel erreicht"), before.name, symbol: "flag.checkered", tint: .green)
+            NotifyCenter.shared.post(.runDone, title: "🎯 " + L("Ziel erreicht") + " – " + before.name, body: before.goal, route: .page("steward:" + id))
+        }
+        if let b = plan.blocked {
+            say(id, "system", "✋ " + L("Ich brauche dich, bevor es weitergeht: ") + b)
+            NotifyCenter.shared.post(.runFailed, title: "🧭 " + before.name + ": " + L("braucht dich"), body: b, route: .page("steward:" + id))
+        } else if (project(id)?.idleThinks ?? 0) >= 3, !plan.reached {
+            update(id) { $0.blocked = L("Ich finde gerade keinen sinnvollen nächsten Schritt mehr. Schreib mir, was noch fehlt.") }
+            say(id, "system", "✋ " + L("Ich finde gerade keinen sinnvollen nächsten Schritt mehr. Schreib mir, was noch fehlt."))
+        }
+    }
+
+    /// Ist alles abgearbeitet, plant der Betreuer im Dauerbetrieb sofort die nächste Runde.
+    private func continueIfIdle(_ id: String) {
+        guard let p = project(id), p.continuous, !p.paused, p.thinking != true, !p.goal.isEmpty, p.blocked == nil,
+              p.count(.running) == 0, p.count(.queued) == 0,
+              !p.tasks.contains(where: { $0.state == .review && $0.pr != nil }) else { return }   // offene PRs erst durchlaufen lassen
+        if p.goalReached != nil && p.improve != true { return }          // Ziel erreicht, Verbessern aus → Ruhe
+        if !p.budgetLeft { return }                                      // Tagesbudget aufgebraucht → morgen weiter
+        if (Usage.shared.blocked["claude"] ?? .distantPast) > Date() { return }  // Planer im Limit → später weiter
+        let wait: TimeInterval = p.goalReached != nil ? 20 * 60 : 90    // Verbessern ruhiger als Durcharbeiten
+        if let l = p.lastContinue, Date().timeIntervalSince(l) < wait { return }
+        update(id) { $0.lastContinue = Date() }
+        let trigger = p.goalReached != nil
+            ? L("Ziel ist erreicht – such selbst die nächsten lohnenden Verbesserungen und plane sie.")
+            : L("Alles abgearbeitet. Ist das Ziel jetzt vollständig erreicht? Wenn nicht: plane sofort die nächsten Aufgaben bis dorthin.")
+        think(id, trigger: trigger)
+    }
+
+    func setContinuous(_ id: String, _ on: Bool) {
+        update(id) { p in
+            p.untilDone = on
+            p.blocked = nil; p.idleThinks = 0; p.lastContinue = nil
+            if on { p.paused = false; if p.trust == 0 { p.trust = 1 } }
+        }
+        guard on, let p = project(id) else { return }
+        if p.goal.isEmpty {
+            say(id, "betreuer", L("Gern arbeite ich durch, bis alles erledigt ist. Was genau ist das Ziel? Schreib es mir in einem Satz."))
+            return
+        }
+        say(id, "system", "∞ " + L("Dauerbetrieb an: Ich arbeite weiter, bis das Ziel erreicht ist.")
+            + (p.trust < 2 ? " " + L("Tipp: Mit „Grünes selbst übernehmen“ muss ich nicht auf dich warten, bis geprüfte Ergebnisse übernommen sind.") : ""))
+        if p.count(.running) == 0, p.count(.queued) == 0 { think(id, trigger: L("Dauerbetrieb gestartet. Prüf den Stand und plane die nächsten Aufgaben bis zum Ziel.")) }
+        else { dispatch(id) }
+    }
+
+    func setImprove(_ id: String, _ on: Bool) {
+        update(id) { $0.improve = on; $0.blocked = nil; $0.idleThinks = 0 }
+        if on, project(id)?.goalReached != nil { continueIfIdle(id) }
+    }
+
+    func toggleExtension(_ id: String, _ ext: String) {
+        update(id) { p in
+            var e = p.extensions ?? []
+            if let i = e.firstIndex(of: ext) { e.remove(at: i) } else { e.append(ext) }
+            p.extensions = e
+        }
+    }
+
+    /// Gehört dieser Auftrag (oder einer seiner Vorgänger) zu einem betreuten Projekt?
+    func owner(ofMission mid: String) -> StewardProject? {
+        var ids = [mid], cur = mid, n = 0
+        while n < 10, let r = MissionStore.shared.mission(cur), let par = r.parent { ids.append(par); cur = par; n += 1 }
+        return projects.first { p in p.tasks.contains { t in t.missionID.map(ids.contains) == true } }
     }
 
     // MARK: Takt
 
     private func tick() {
+        guard Energy.due("steward", every: 120) else { return }
         for p in projects where !p.paused {
             evaluate(p.id)
+            checkOrders(p.id)
+            uploadOfflineWork(p.id)
+            // Am Akku: Ergebnisse auswerten ja, aber keine neuen Helfer, keine Rundgänge, kein Weiterplanen
+            guard Energy.backgroundAgentsOK else { continue }
             signals(p.id)
+            scanPRs(p.id)
             dispatch(p.id)
+            continueIfIdle(p.id)
         }
     }
 
     /// Helfer starten, solange Platz und Tagesbudget da sind.
     func dispatch(_ id: String) {
-        guard let agents, var p = project(id), !p.paused, p.tasks.contains(where: { $0.state == .queued }) else { return }
+        guard let agents, var p = project(id), !p.paused, Energy.backgroundAgentsOK, p.tasks.contains(where: { $0.state == .queued }) else { return }
         var running = p.count(.running)
         var launched = false
-        while running < p.parallel, p.runsToday < p.dailyRuns,
+        while running < PowerProfile.capParallel(p.parallel), p.budgetLeft,
               let i = p.tasks.indices.filter({ p.tasks[$0].state == .queued }).min(by: { p.tasks[$0].priority < p.tasks[$1].priority }) {
             launch(&p, i, agents: agents)
             running += 1
@@ -380,11 +758,20 @@ final class Steward: ObservableObject {
     private func launch(_ p: inout StewardProject, _ i: Int, agents: AgentManager) {
         var t = p.tasks[i]
         var k = AgentKind(rawValue: t.agent) ?? Router.decide(t.title + " " + t.detail, projects: projectsCatalog?.local ?? [], recent: [p.id]).target.agent ?? .claude
-        if !OpenModels.available(k) || Usage.shared.isTight(k) || AgentHealth.needsLogin(k) {
-            k = ([k] + Usage.alternatives(k)).first { OpenModels.available($0) && !Usage.shared.isTight($0) && !AgentHealth.needsLogin($0) } ?? .claude
+        let wanted = k
+        if t.source != "du", !Billing.autoOK(k) { k = .claude }   // kostet pro Nutzung → nur, wenn du es selbst willst
+        // Von dir gewählter Agent: nicht still austauschen – nur, wenn er wirklich gesperrt ist oder fehlt
+        let yours = t.source == "du" && t.agent != "auto"
+        let hardBlocked = (Usage.shared.blocked[k.rawValue] ?? .distantPast) > Date()
+        if !OpenModels.available(k) || AgentHealth.needsLogin(k) || hardBlocked || (!yours && Usage.shared.isTight(k)) {
+            k = ([k] + Usage.alternatives(k)).first { OpenModels.available($0) && !Usage.shared.isTight($0) && !AgentHealth.needsLogin($0) && ($0 != k || !hardBlocked) } ?? .claude
+        }
+        if k != wanted {
+            let why = hardBlocked ? L("im Limit") : (!OpenModels.available(wanted) || AgentHealth.needsLogin(wanted)) ? L("nicht verfügbar") : String(format: L("fast am Limit (%d %%)"), Int(Usage.shared.cachedPressure(wanted) * 100))
+            p.messages.append(StewardMessage(role: "status", text: "⇄ " + String(format: L("%@ ist %@ – diese Aufgabe übernimmt %@: %@"), wanted.title, why, k.title, t.title)))
         }
         let commands = p.setup.map { s in ["test", "typecheck", "lint", "build"].compactMap { c in s.commands[c].map { "\(c): \($0)" } }.joined(separator: " · ") } ?? ""
-        let prompt = """
+        var prompt = """
         \(t.title)
 
         \(t.detail)
@@ -395,19 +782,37 @@ final class Steward: ObservableObject {
         \(commands.isEmpty ? "" : L("Prüfe am Ende mit") + " " + commands + ".")
         \(L("Nichts deployen, nichts veröffentlichen, keine Nachrichten an Kunden. Was offen bleibt, schreib am Ende unter „Offen:“."))
         """
+        if let b = t.prBranch {
+            // Die Arbeitskopie steht schon auf dem PR-Branch (Salenta Code holt ihn vorher) – Agents in einer Sandbox
+            // haben oft kein Netz und könnten ihn selbst gar nicht holen.
+            prompt += "\n\n" + String(format: L("Wichtig: Du korrigierst den bestehenden Pull Request auf Branch „%@“. Deine Arbeitskopie steht schon auf dem aktuellen Stand dieses Branches – nichts holen, nichts zurücksetzen, nicht pushen. Nur beheben; Commit und Upload übernimmt der Betreuer."), b)
+        }
+        // Ausgewählte Erweiterungen: Plugins und Skills kennt nur Claude Code, MCP-Server und CLIs alle Agents
+        let picked = (t.exts ?? []).compactMap { ExtensionCatalog.find($0) }
+        let ext = (p.chosenExtensions + picked.filter { e in !p.chosenExtensions.contains(e) })
+            .filter { !$0.usage.isEmpty && ExtensionStore.shared.isInstalled($0) && (k == .claude || [.mcp, .cli, .tool].contains($0.kind)) }
+        if let sk = t.skills, !sk.isEmpty { prompt += "\n\n" + L("Nutze diese Skills:") + " " + sk.map { "/" + $0 }.joined(separator: " ") }
+        if !ext.isEmpty { prompt += "\n\n" + L("Nutze dafür:") + "\n" + ext.map { "- " + $0.usage }.joined(separator: "\n") }
         var model = t.model.isEmpty ? nil : t.model
+        if let m = model, !ModelCatalog.fits(m, k) { model = nil }   // nach einem Agent-Wechsel: dessen eigenes Standardmodell
         // kleine Aufgaben lokal (spart Kosten) – wenn ein lokales Modell da ist
-        if LocalFirst.shared.forSmall, LocalFirst.shared.ready, let m = LocalFirst.shared.model,
+        if LocalFirst.shared.forSmall, LocalFirst.shared.ready, ext.isEmpty, !Energy.saving, let m = LocalFirst.shared.model,
            LocalFirst.shared.localMisfit(AIRouteDecision(target: .claude, model: nil, effort: nil, directory: p.id, skills: [], reason: ""),
                                          text: t.title + " " + t.detail) == nil {
             k = .ollama; model = m
         }
-        let s = agents.start(k, in: p.id, prompt: prompt, mode: .autonom, label: "🧭 " + t.title, model: model)
+        // Codex denkt sonst mit der höchsten Stufe aus deiner Konfiguration – für Helfer reicht „medium“ (viel weniger Tokens),
+        // nur dringende/harte Aufgaben (Priorität 1) bekommen „high“.
+        let effort: String? = (k == .codex || k == .claude) ? (t.effort ?? "medium") : nil
+        // Mit GitHub: frisch vom Ziel-Branch auf GitHub aufsetzen (Korrekturen: vom PR-Branch) – nie lokale, nicht hochgeladene Commits mitnehmen
+        let baseRef: String? = t.prBranch ?? (p.viaPR ? (p.prBase ?? p.setup?.defaultBranch) : nil)
+        let s = agents.start(k, in: p.id, prompt: prompt, mode: .autonom, label: "🧭 " + t.title, model: model, effort: effort, baseRef: baseRef)
         t.state = .running
         t.started = Date()
         t.missionID = s.id.uuidString
         t.agent = k.rawValue
         p.tasks[i] = t
+        p.messages.append(StewardMessage(role: "status", text: "▶︎ " + String(format: L("Gestartet: %@ · %@"), t.title, k.title + (model.map { " " + $0 } ?? ""))))
         p.runs[p.today, default: 0] += 1
         p.runs = p.runs.filter { $0.key >= DateCoding.day(Date().addingTimeInterval(-7 * 86400)) }
     }
@@ -415,9 +820,32 @@ final class Steward: ObservableObject {
     /// Laufende Aufgaben auswerten (inkl. Prüfschleife und Korrekturrunde).
     private func evaluate(_ id: String) {
         guard let p = project(id) else { return }
+        // Zeitlimit: hängt ein Helfer (z. B. wartet endlos), wird er gestoppt statt stundenlang Tokens und Strom zu verbrauchen
+        let limit = Double(UserDefaults.standard.object(forKey: "steward.maxMinutes") as? Int ?? 90) * 60
         for t in p.tasks where t.state == .running {
+            if let st = t.started, Date().timeIntervalSince(st) > limit, let mid = t.missionID,
+               let s = agents?.sessions.first(where: { $0.id.uuidString == mid && $0.running }) {
+                agents?.close(s.id)
+                say(id, "status", "⏱ " + String(format: L("Gestoppt nach %d Minuten (hing fest): "), Int(limit / 60)) + t.title)
+            }
+        }
+        // Fertige, aber nie geprüfte Ergebnisse (Neustart während des Laufs) wieder aufnehmen: Prüfung nachholen, dann liefern
+        let unchecked = p.tasks.filter { t in
+            guard t.state == .review, t.pr == nil, let mid = t.missionID, let rec = MissionStore.shared.mission(mid) else { return false }
+            return rec.worktree != nil && rec.verify == nil
+        }.map(\.id)
+        if !unchecked.isEmpty {
+            update(id) { q in for i in q.tasks.indices where unchecked.contains(q.tasks[i].id) { q.tasks[i].state = .running } }
+        }
+        for t in (project(id)?.tasks ?? []) where t.state == .running {
             guard let r = Self.outcome(t, agents: agents) else { continue }
             var merged = false
+            if r.state == .review, p.viaPR, let mid = r.missionID, let rec = MissionStore.shared.mission(mid), let wt = rec.worktree,
+               rec.verify?.passed == true, p.trust >= 2 || t.prBranch != nil {
+                // GitHub: grünes Ergebnis als Pull Request (oder Korrektur auf den bestehenden PR-Branch) – gemergt wird nach grüner CI
+                deliverPR(id, task: t, mid: mid, wt: wt)
+                continue
+            }
             if r.state == .review, p.trust >= 2, let mid = r.missionID, let rec = MissionStore.shared.mission(mid), let wt = rec.worktree,
                rec.verify?.passed == true {
                 let (ok, msg) = Worktrees.merge(wt, message: t.title)
@@ -437,6 +865,16 @@ final class Steward: ObservableObject {
                 p.tasks[i].finished = Date()
                 if r.state == .review || merged { p.greenStreak += 1 } else if r.state == .red { p.greenStreak = 0 }
             }
+            if !merged {
+                let line: String = r.state == .review ? "✓ " + L("Fertig und geprüft: ") + t.title
+                    : r.state == .red ? "✗ " + L("Rot: ") + t.title + (r.note.map { " – " + String($0.prefix(140)) } ?? "")
+                    : "✓ " + L("Erledigt: ") + t.title
+                say(id, "status", line)
+            }
+            if r.state == .red, let st = t.started, Date().timeIntervalSince(st) < 120, let k = AgentKind(rawValue: t.agent) {
+                Self.markBroken(k)
+                say(id, "status", "⚠︎ " + String(format: L("%@ ist sofort gescheitert – wird 6 Stunden nicht eingeplant."), k.title))
+            }
             if r.state == .red {
                 // Rot nach Korrekturrunde: der Betreuer plant neu (kein Endlos-Loop: nur einmal pro Aufgabe)
                 think(id, trigger: L("Aufgabe ist rot geblieben: ") + t.title + " — " + (r.note ?? ""))
@@ -450,7 +888,7 @@ final class Steward: ObservableObject {
         }
     }
 
-    private func finishMission(_ mid: String, outcome: String) {
+    func finishMission(_ mid: String, outcome: String) {
         guard let rec = MissionStore.shared.mission(mid) else { return }
         PreviewServer.shared.stop(mid)
         MissionStore.shared.setOutcome(mid, outcome)
@@ -473,6 +911,8 @@ final class Steward: ObservableObject {
         }
         if rec.worktree != nil {
             if rec.verify == nil && Date().timeIntervalSince(ended) < 90 { return nil }
+            // Prüfung nie gelaufen (z. B. Salenta Code wurde während des Laufs neu gestartet) → jetzt nachholen statt ungeprüft liegen zu lassen
+            if rec.verify == nil, rec.ok != false { DispatchQueue.main.async { Verifier.run(cur) }; return nil }
             if let v = rec.verify, v.finished == nil { return nil }
             if rec.verify?.passed == false && (rec.fixRound ?? 0) < 1 && Date().timeIntervalSince(ended) < 150 { return nil }
         }
@@ -492,26 +932,45 @@ final class Steward: ObservableObject {
             update(id) { $0.lastRound = Date() }
             think(id, trigger: L("Täglicher Rundgang: Was ist heute für das Ziel am wichtigsten? Gibt es Liegengebliebenes oder Risiken?"))
         }
-        // CI auf GitHub (alle 15 Minuten)
-        if p.watchCI, p.setup?.remote?.contains("github") == true, (p.lastCI.map { Date().timeIntervalSince($0) > 900 } ?? true) {
+        // GitHub-Wächter: CI auf dem Haupt-Branch und Release-Workflows (alle 15 Minuten, nach einem Merge sofort)
+        if p.watchCI, p.setup?.remote?.contains("github") == true, isGitHubWatcher(id), (p.lastCI.map { Date().timeIntervalSince($0) > (Energy.saving ? 1800 : 900) } ?? true) {
             update(id) { $0.lastCI = Date() }
             let branch = p.setup?.defaultBranch ?? "main"
             DispatchQueue.global(qos: .utility).async {
-                let r = Proc.zsh("gh run list --branch \(Shell.quote(branch)) --limit 1 --json conclusion,status,displayTitle,url,workflowName", in: id, timeout: 40)
+                let r = Proc.zsh("gh run list --limit 25 --json conclusion,status,displayTitle,url,workflowName,headBranch,event", in: id, timeout: 40)
                 guard r.code == 0, let a = r.out.firstIndex(of: "["), let d = String(r.out[a...]).data(using: .utf8),
-                      let arr = try? JSONSerialization.jsonObject(with: d) as? [[String: Any]], let run = arr.first,
-                      run["conclusion"] as? String == "failure", let url = run["url"] as? String else { return }
-                let title = "\(run["workflowName"] as? String ?? "CI"): \(run["displayTitle"] as? String ?? "")"
+                      let arr = try? JSONSerialization.jsonObject(with: d) as? [[String: Any]] else { return }
+                // Haupt-Branch und Veröffentlichungen (Release, Tags wie v1.2.3): je Workflow der neueste Lauf
+                func relevant(_ run: [String: Any]) -> Bool {
+                    let hb = run["headBranch"] as? String ?? "", ev = run["event"] as? String ?? ""
+                    return hb == branch || ev == "release" || ev == "workflow_dispatch" && hb == branch
+                        || (hb.hasPrefix("v") && hb.dropFirst().first?.isNumber == true)
+                }
+                var latest: [String: [String: Any]] = [:]
+                for run in arr where relevant(run) {
+                    let w = run["workflowName"] as? String ?? "CI"
+                    if latest[w] == nil { latest[w] = run }
+                }
+                let failed = latest.values.filter { ($0["conclusion"] as? String) == "failure" && $0["url"] is String }
+                guard !failed.isEmpty else { return }
                 DispatchQueue.main.async {
-                    guard let q = self.project(id), !q.tasks.contains(where: { $0.ref == url }) else { return }
-                    self.update(id) { p in
-                        p.tasks.append(StewardTask(title: L("CI ist rot – reparieren: ") + title,
-                                                   detail: L("Der letzte CI-Lauf auf") + " \(branch) " + L("ist fehlgeschlagen") + " (\(url)). "
-                                                       + L("Lies die Logs mit `gh run view --log-failed`, finde die Ursache und behebe sie. Fertig, wenn die betroffenen Checks lokal grün sind."),
-                                                   state: p.trust == 0 ? .idea : .queued, source: "ci", priority: 1, ref: url))
+                    for run in failed {
+                        let url = run["url"] as! String
+                        let hb = run["headBranch"] as? String ?? branch
+                        let release = hb != branch || (run["event"] as? String) == "release"
+                        let title = "\(run["workflowName"] as? String ?? "CI"): \(run["displayTitle"] as? String ?? "")"
+                        guard let q = self.project(id), !q.tasks.contains(where: { $0.ref == url }) else { continue }
+                        self.update(id) { p in
+                            p.tasks.append(StewardTask(title: (release ? L("Veröffentlichung ist rot – reparieren: ") : L("CI ist rot – reparieren: ")) + title,
+                                                       detail: (release ? L("Der Release-Lauf für") + " \(hb) " : L("Der letzte CI-Lauf auf") + " \(branch) ") + L("ist fehlgeschlagen") + " (\(url)). "
+                                                           + L("Lies die Logs mit `gh run view --log-failed`, finde die Ursache und behebe sie. Fertig, wenn die betroffenen Checks lokal grün sind.")
+                                                           + (release ? " " + L("Nichts selbst veröffentlichen – nur die Ursache im Code beheben.") : ""),
+                                                       state: p.trust == 0 ? .idea : .queued, source: "ci", priority: 1, ref: url))
+                        }
+                        self.say(id, "system", "🔴 " + (release ? L("Veröffentlichung rot: ") : L("CI ist rot: ")) + title)
+                        ModStore.shared.fire(.ciFailed, rec: nil, result: title + " – " + url, directory: id)
+                        NotifyCenter.shared.post(.ciRed, title: "🔴 " + (self.project(id)?.name ?? "") + ": " + title, body: L("Der GitHub-Wächter hat eine Korrektur eingereiht."), route: .page("steward:" + id))
                     }
-                    self.say(id, "system", "🔴 " + L("CI ist rot: ") + title)
-                    ModStore.shared.fire(.ciFailed, rec: nil, result: title + " – " + url, directory: id)
                     self.dispatch(id)
                 }
             }
@@ -554,6 +1013,7 @@ final class Steward: ObservableObject {
             update(id) { p in if let i = p.tasks.firstIndex(where: { $0.id == task }) { p.tasks[i].state = accept ? .done : .dropped } }
             completion(accept ? L("Erledigt") : L("Verworfen")); return
         }
+        if accept, project(id)?.viaPR == true { deliverPR(id, task: t, mid: mid, wt: wt); completion(L("Pull Request wird erstellt …")); return }
         DispatchQueue.global(qos: .userInitiated).async {
             let (ok, msg): (Bool, String)
             if accept { (ok, msg) = Worktrees.merge(wt, message: t.title) } else { Worktrees.discard(wt, keepBranch: false); (ok, msg) = (true, L("Verworfen")) }

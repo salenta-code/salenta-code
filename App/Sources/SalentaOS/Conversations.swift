@@ -272,7 +272,7 @@ final class LogTail: ObservableObject {
     func stop() { timer?.invalidate(); timer = nil }
 
     private func load() {
-        guard !busy, !path.isEmpty else { return }
+        guard !busy, !path.isEmpty, Energy.due("transcript", every: 4) else { return }
         busy = true
         let path = self.path, known = size
         DispatchQueue.global(qos: .userInitiated).async {
@@ -378,8 +378,10 @@ struct ConversationView: View {
     @EnvironmentObject private var app: AppModel
     @ObservedObject private var store = MissionStore.shared
     @Environment(\.openWindow) private var openWindow
-    @State private var reply = ""
+    /// Entwurf als eigenes Objekt: Tippen/Einfügen aktualisiert nur das Eingabefeld, nicht den ganzen Auftrag (wichtig bei langen Texten)
+    @State private var draft = DraftBox()
     @State private var showTerminal = false
+    @State private var showLivePreview = false
     @State private var nextAgent = ""
     @State private var installedAgents: [AgentKind] = []
     @State private var modelTick = 0
@@ -418,6 +420,11 @@ struct ConversationView: View {
                 // So kann der untere Bereich das Fenster nie sprengen – Kopf, Verlauf und Eingabe bleiben sichtbar.
                 // Ergebnis in klarer Reihenfolge: 1. was gemacht wurde, 2. prüfen und übernehmen, 3. wie es weitergeht.
                 // Höchstens gut die Hälfte des Fensters, scrollbar – Verlauf und Eingabe bleiben sichtbar.
+                if rec.delegated == true, let pid = rec.parent { HelperBanner(rec: rec, parentID: pid) }
+                else if let sp = Steward.shared.owner(ofMission: rec.id) { StewardHelperBanner(projectID: sp.id, name: sp.name) }
+                if rec.plan == true, rec.group == nil, rec.archived != true, Research.enabled || Research.shared.result(rec.id) != nil {
+                    ResearchCard(missionID: rec.id, request: rec.request, directory: rec.directory).padding(.top, Grid.s)
+                }
                 if hasLowerPanel(rec) {
                     BoundedScroll(maxFraction: 0.55) {
                         VStack(spacing: Grid.s) {
@@ -430,7 +437,8 @@ struct ConversationView: View {
                             } else if rec.group != nil, rec.archived != true {
                                 ParallelCompare(rec: rec).frame(maxWidth: 780).padding(.horizontal, Grid.l)
                             }
-                            if rec.digest != nil, idle, rec.plan != true {
+                            // Helfer schlagen nichts selbst vor – das entscheidet der Hauptauftrag
+                            if rec.digest != nil, idle, rec.plan != true, rec.delegated != true, Steward.shared.owner(ofMission: rec.id) == nil {
                                 DigestCard(rec: rec, part: .next, step: rec.worktree != nil && rec.archived != true ? 2 : nil)
                             }
                         }
@@ -453,7 +461,7 @@ struct ConversationView: View {
 
     private func hasLowerPanel(_ rec: MissionRecord) -> Bool {
         let idle = session?.running != true
-        return (rec.digest != nil && idle && rec.plan != true)
+        return (rec.digest != nil && idle && rec.plan != true && rec.delegated != true && Steward.shared.owner(ofMission: rec.id) == nil)
             || (rec.plan == true && rec.ok == true && idle && rec.archived != true)
             || (rec.worktree != nil && idle && rec.archived != true)
             || (rec.group != nil && rec.archived != true)
@@ -470,9 +478,13 @@ struct ConversationView: View {
                     Label(r, systemImage: "wand.and.sparkles").font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                 }
                 if let a = rec.auto, !a.isEmpty {
-                    Label(L("Automatisch dabei: ") + a.joined(separator: ", "), systemImage: "bolt.badge.automatic")
-                        .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
-                        .help(L("Installierte Token-Sparer und passende Skills, die Salenta Code diesem Auftrag mitgegeben hat"))
+                    let parts = ToolNames.split(a)
+                    if parts.skills.isEmpty && parts.exts.isEmpty {
+                        Label(L("Automatisch dabei: ") + a.joined(separator: ", "), systemImage: "bolt.badge.automatic")
+                            .font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                    } else {
+                        ToolChips(skills: parts.skills, exts: parts.exts)
+                    }
                 }
             }
             Spacer()
@@ -487,11 +499,37 @@ struct ConversationView: View {
             if let s = session, rec.runMode == .autonom {
                 Toggle(isOn: $showTerminal) { Image(systemName: "terminal") }
                     .toggleStyle(.button).help("Rohes Terminal anzeigen")
+                if s.running, let wt = rec.worktree {
+                    // Live mitschauen: Vorschau der Arbeitskopie, lädt bei jeder Änderung des Agents neu
+                    Button {
+                        PreviewServer.shared.start(id: rec.id, dir: Worktrees.top(wt), base: wt.base, track: wt.baseBranch) { u in
+                            if u == nil { app.show(L("Kein Dev-Server gefunden – \"dev\" in .salenta-os.json eintragen")) }
+                        }
+                        showLivePreview = true
+                    } label: { Label(L("Live mitschauen"), systemImage: "play.display") }
+                        .help(L("Vorschau der Arbeitskopie öffnen – sie lädt neu, sobald der Agent eine Datei speichert"))
+                        .sheet(isPresented: $showLivePreview) { PreviewSheet(id: rec.id, title: rec.title) }
+                }
                 if s.running {
                     Button(role: .destructive) { agents.close(s.id) } label: { Image(systemName: "stop.fill") }.help("Stoppen")
                 }
             }
             Button { openWindow(id: "live") } label: { Image(systemName: "macwindow.on.rectangle") }.help("Im Live-Fenster ansehen")
+            // Auftrag an einen Projekt-Betreuer übergeben: er plant ihn als Team neu und betreut ihn bis zum Schluss
+            if Steward.shared.owner(ofMission: rec.id) == nil, !Steward.shared.projects.isEmpty, rec.archived != true {
+                Menu {
+                    ForEach(Steward.shared.projects) { sp in
+                        Button(L("An Betreuer") + " „" + sp.name + "“") {
+                            if session?.running == true, let s = session { agents.close(s.id) }
+                            let sid = Steward.shared.takeOrder(sp.id, text: rec.request, lead: AgentKind(rawValue: rec.agent), teamSize: 2)
+                            store.archive(rec.id, agents: agents, tasks: tasks)
+                            app.page = .steward(sid)
+                        }
+                    }
+                } label: { Label(L("An Betreuer"), systemImage: "safari") }
+                .menuStyle(.borderlessButton).fixedSize()
+                .help(L("Diesen Auftrag einem Projekt-Betreuer übergeben – er plant ihn als Team und betreut ihn bis zum fertigen Ergebnis"))
+            }
             if rec.archived != true {
                 Button {
                     store.archive(rec.id, agents: agents, tasks: tasks)
@@ -560,12 +598,12 @@ struct ConversationView: View {
                 guard a.runModal() == .alertFirstButtonReturn else { return }
                 let text = rec.request
                 DispatchQueue.global(qos: .userInitiated).async {
-                    let sha = rec.checkpoint ?? Git.run(["merge-base", "HEAD", wt.baseBranch], in: Worktrees.top(wt)).out
+                    let sha = rec.checkpoint ?? Worktrees.forkPoint(wt)
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     let ok = !sha.isEmpty && Checkpoints.restore(wt, to: sha)
                     DispatchQueue.main.async {
                         if ok {
-                            reply = text
+                            draft.text = text
                             app.show(L("✓ Zurückgespult – Code steht vor dieser Nachricht. Ändere sie unten und sende neu."))
                         } else {
                             app.show(L("Zurückspulen fehlgeschlagen – Stand nicht gefunden"))
@@ -638,22 +676,13 @@ struct ConversationView: View {
         let live = session?.running == true && rec.runMode == .interaktiv && !switching
         return HStack(alignment: .bottom, spacing: Grid.s) {
             agentPicker(rec)
-            TextField(live ? "Antwort an \(rec.agentTitle) …" : (switching ? L("Auftrag für den neuen Agent …")
-                      : (session?.running == true ? "Arbeitet gerade – du kannst gleich nachfragen" : "Nachfragen oder weitermachen …")),
-                      text: $reply, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...6)
-                .onSubmit { send(rec) }
-                .disabled(session?.running == true && !live && !switching)
-            MicButton { t in reply += (reply.isEmpty ? "" : " ") + t }
-            Button { send(rec) } label: { Image(systemName: "arrow.up.circle.fill").font(.title) }.help(L("Senden"))
-                .buttonStyle(.plain)
-                .foregroundStyle(reply.isEmpty ? Color.secondary : Color.accentColor)
-                .disabled(reply.trimmingCharacters(in: .whitespaces).isEmpty)
+            DraftField(draft: draft,
+                       placeholder: live ? "Antwort an \(rec.agentTitle) …" : (switching ? L("Auftrag für den neuen Agent …")
+                                    : (session?.running == true ? L("Arbeitet gerade – du kannst gleich nachfragen") : L("Nachfragen oder weitermachen …"))),
+                       disabled: session?.running == true && !live && !switching) { send(rec) }
         }
         .padding(Grid.m)
-        .background(RoundedRectangle(cornerRadius: 18).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Color.secondary.opacity(0.25)))
+        .background(ModernCardBackground(radius: 18))
         .frame(maxWidth: 780)
         .padding(Grid.l)
         .frame(maxWidth: .infinity)
@@ -673,9 +702,9 @@ struct ConversationView: View {
     }
 
     private func send(_ rec: MissionRecord) {
-        let t = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        reply = ""
+        draft.text = ""
         if let s = session, s.running, rec.runMode == .interaktiv, nextAgent.isEmpty || nextAgent == rec.agent {
             s.view.send(txt: t + "\r")
             return
@@ -863,7 +892,7 @@ struct OverviewRow: View {
             }
         }
         .padding(Grid.m)
-        .background(RoundedRectangle(cornerRadius: 12).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 12))
     }
 }
 
@@ -1087,5 +1116,97 @@ extension MissionRecord {
             if let r = n.range(of: "-[0-9a-f]{6,}$", options: .regularExpression) { return String(n[..<r.lowerBound]) }
         }
         return (d as NSString).lastPathComponent
+    }
+}
+
+
+/// Oben in einem Helfer-Auftrag: klar sagen, dass hier nichts zu tun ist und wohin das Ergebnis geht.
+struct HelperBanner: View {
+    let rec: MissionRecord
+    let parentID: String
+    @ObservedObject private var store = MissionStore.shared
+    @EnvironmentObject private var app: AppModel
+
+    var body: some View {
+        let parent = store.mission(parentID)
+        let isMod = rec.routeReason?.hasPrefix("Mod:") == true
+        HStack(alignment: .top, spacing: Grid.s) {
+            Image(systemName: "arrow.turn.up.left").foregroundStyle(.secondary).padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isMod ? L("Automatischer Zusatzschritt") : L("Helfer-Auftrag – du musst hier nichts tun")).font(.callout.weight(.semibold))
+                Text(String(format: L("Dieser Teil arbeitet für „%@“. Sein Ergebnis geht automatisch an den Hauptauftrag zurück; dort entscheidest du, wie es weitergeht."),
+                            parent?.title ?? L("den Hauptauftrag")))
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            if parent != nil {
+                Button { app.page = .chat(parentID) } label: { Label(L("Zum Hauptauftrag"), systemImage: "arrow.up.forward") }
+                    .controlSize(.small)
+            }
+        }
+        .padding(Grid.m)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.08)))
+        .frame(maxWidth: 780)
+        .padding(.horizontal, Grid.l)
+        .padding(.top, Grid.s)
+    }
+}
+
+/// Auftrag gehört zum Projekt-Betreuer: Er plant die nächsten Schritte selbst.
+struct StewardHelperBanner: View {
+    let projectID: String
+    let name: String
+    @EnvironmentObject private var app: AppModel
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Grid.s) {
+            Image(systemName: "safari").foregroundStyle(Color.accentColor).padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L("Arbeitet für den Projekt-Betreuer – du musst hier nichts tun")).font(.callout.weight(.semibold))
+                Text(String(format: L("Der Betreuer von „%@“ prüft das Ergebnis und plant die nächsten Schritte selbst. Übernehmen kannst du hier oder auf seiner Tafel."), name))
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button { app.page = .steward(projectID) } label: { Label(L("Zum Betreuer"), systemImage: "arrow.up.forward") }
+                .controlSize(.small)
+        }
+        .padding(Grid.m)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.07)))
+        .frame(maxWidth: 780)
+        .padding(.horizontal, Grid.l)
+        .padding(.top, Grid.s)
+    }
+}
+
+
+final class DraftBox: ObservableObject { @Published var text = "" }
+
+/// Eingabefeld im Auftrag: mehrzeilig, scrollt bei langen Texten; ↩ sendet bei kurzen Texten, ⌘↩ immer.
+struct DraftField: View {
+    @ObservedObject var draft: DraftBox
+    let placeholder: String
+    let disabled: Bool
+    let send: () -> Void
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: Grid.s) {
+            ZStack(alignment: .topLeading) {
+                if draft.text.isEmpty {
+                    Text(placeholder).foregroundStyle(.tertiary).padding(.top, 1).padding(.leading, 5).allowsHitTesting(false)
+                }
+                TextEditor(text: $draft.text)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 22, maxHeight: 160)
+                    .fixedSize(horizontal: false, vertical: draft.text.count < 400)
+                    .disabled(disabled)
+            }
+            MicButton { t in draft.text += (draft.text.isEmpty ? "" : " ") + t }
+            Button { send() } label: { Image(systemName: "arrow.up.circle.fill").font(.title) }.help(L("Senden (⌘↩)"))
+                .buttonStyle(.plain)
+                .foregroundStyle(draft.text.isEmpty ? Color.secondary : Color.accentColor)
+                .disabled(draft.text.trimmingCharacters(in: .whitespaces).isEmpty)
+                .keyboardShortcut(.return, modifiers: .command)
+        }
     }
 }

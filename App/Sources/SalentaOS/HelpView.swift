@@ -90,7 +90,7 @@ struct HelpView: View {
                 }
             }
             .padding(Grid.m)
-            .background(RoundedRectangle(cornerRadius: 10).fill(.background.secondary))
+            .background(ModernCardBackground(radius: 10, accent: false))
         }
     }
 

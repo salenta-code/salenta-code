@@ -212,4 +212,55 @@
       if (j && j.tag_name) $$(".ver").forEach(function (e) { e.textContent = String(j.tag_name).replace(/^v/, ""); });
     }).catch(function () {});
   } catch (e) {}
+
+  /* Weltall: Sterne in drei Ebenen, die beim Scrollen unterschiedlich schnell wandern (Parallaxe) und leise funkeln */
+  var cv = document.getElementById("space");
+  if (cv && cv.getContext) {
+    var cx = cv.getContext("2d"), stars = [], W = 0, H = 0, dpr = Math.min(window.devicePixelRatio || 1, 2), sy = 0, raf = 0;
+    var seed = 7; var rnd = function () { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    function size() {
+      W = window.innerWidth; H = window.innerHeight; cv.width = W * dpr; cv.height = H * dpr; cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      stars = []; seed = 7;
+      var n = Math.round(W * H / 5200);
+      for (var i = 0; i < n; i++) { var z = rnd(); stars.push({ x: rnd() * W, y: rnd() * H * 3, r: .3 + z * 1.3, z: .15 + z * .85, t: rnd() * 6.28, s: .6 + rnd() * 1.6 }); }
+    }
+    function draw(time) {
+      cx.clearRect(0, 0, W, H);
+      for (var i = 0; i < stars.length; i++) {
+        var s = stars[i];
+        var y = ((s.y - sy * s.z * .35) % (H * 3) + H * 3) % (H * 3);
+        if (y > H) continue;
+        var a = reduce ? .7 : .45 + .45 * Math.sin(s.t + time * .001 * s.s);
+        cx.globalAlpha = a * (.4 + s.z * .6);
+        cx.fillStyle = s.z > .8 ? "#cfe6ff" : "#ffffff";
+        cx.beginPath(); cx.arc(s.x, y, s.r, 0, 6.283); cx.fill();
+      }
+      cx.globalAlpha = 1;
+    }
+    function loop(t) { draw(t); raf = (!reduce && !document.hidden) ? requestAnimationFrame(loop) : 0; }
+    size(); draw(0);
+    window.addEventListener("resize", function () { size(); draw(0); });
+    window.addEventListener("scroll", function () { sy = window.scrollY; root.style.setProperty("--sy", sy); if (reduce || document.hidden) draw(0); }, { passive: true });
+    document.addEventListener("visibilitychange", function () { if (!document.hidden && !raf && !reduce) raf = requestAnimationFrame(loop); });
+    if (!reduce) raf = requestAnimationFrame(loop);
+  }
+
+  /* Tour: der Schritt in der Bildschirmmitte leuchtet, der Planet links zeigt Nummer und Titel */
+  var steps = $$(".tour-steps li"), stage = $(".tour-stage");
+  if (steps.length && stage) {
+    var setStep = function (li) {
+      steps.forEach(function (x) { x.classList.toggle("on", x === li); });
+      var n = +li.dataset.step;
+      stage.style.setProperty("--p", n);
+      $(".ts-num", stage).textContent = (n < 10 ? "0" : "") + n + " / " + (steps.length < 10 ? "0" : "") + steps.length;
+      var b = li.querySelector("b"); var t = b ? b.querySelector('[data-l="' + lang() + '"]') || b : null;
+      $(".ts-title", stage).textContent = t ? t.textContent : "";
+    };
+    if ("IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) setStep(e.target); }); }, { rootMargin: "-45% 0px -45% 0px" });
+      steps.forEach(function (li) { io.observe(li); });
+    }
+    setStep(steps[0]);
+    listeners.push(function () { var on = steps.filter(function (x) { return x.classList.contains("on"); })[0]; if (on) setStep(on); });
+  }
 })();

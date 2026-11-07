@@ -181,6 +181,9 @@ struct MissionComposer: View {
         return t.hasSuffix("?") || words.contains(where: { t.hasPrefix($0) })
     }
     @AppStorage("mission.parallel") private var parallel = 1
+    /// An wen geht der Auftrag? "auto" = Betreuer, wenn das Projekt einen hat · "none" = direkt an einen Agent · sonst Betreuer-ID
+    @State private var stewardPick = "auto"
+    @ObservedObject private var stewardStore = Steward.shared
     @AppStorage("local.only") private var localOnly = false
     @FocusState private var focused: Bool
 
@@ -236,6 +239,24 @@ struct MissionComposer: View {
                         Text("mittel").tag("medium")
                         Text("hoch").tag("high")
                         Text("sehr hoch").tag("xhigh")
+                    }
+                }
+                // Ein Wähler für Agent und Modell (wie bei T3 Code): ein Modell eines anderen Agents wählt diesen Agent gleich mit –
+                // so passen Agent und Modell immer zusammen.
+                let others = AgentKind.coders.filter { $0 != a && ModelCatalog.supportsModel($0) && (!system.cliChecked || system.installed($0)) && !AgentOff.isOff($0) }
+                if !others.isEmpty {
+                    Divider()
+                    Section(L("Anderer Agent")) {
+                        ForEach(others, id: \.self) { k in
+                            Menu(k.title) {
+                                Button(L("Standardmodell")) { targetRaw = MissionTarget.from(k).rawValue; ModelCatalog.select("", for: k); modelTick += 1 }
+                                ForEach(catalog.latest(for: k, limit: 6)) { o in
+                                    Button(o.hint.isEmpty ? o.label : "\(o.label) – \(o.hint)") {
+                                        targetRaw = MissionTarget.from(k).rawValue; ModelCatalog.select(o.value, for: k); modelTick += 1
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 Divider()
@@ -350,10 +371,10 @@ struct MissionComposer: View {
                     Divider()
                     Toggle(isOn: $planFirst) { Label("Erst planen, dann umsetzen", systemImage: "list.bullet.clipboard") }
                     Picker(selection: $parallel) {
-                        Text("1 Agent").tag(1)
-                        Text("2 Agents parallel").tag(2)
-                        Text("3 Agents parallel").tag(3)
-                    } label: { Label("Parallel lösen", systemImage: "square.split.3x1") }
+                        Text(L("Ein Agent")).tag(1)
+                        Text(L("Team aus bis zu 2 Agents")).tag(2)
+                        Text(L("Team aus bis zu 3 Agents")).tag(3)
+                    } label: { Label(L("Team"), systemImage: "person.3") }
                     Picker("Bereich", selection: $companyRaw) {
                         ForEach(Company.allCases) { c in Text(c.title).tag(c.rawValue) }
                     }
@@ -395,7 +416,24 @@ struct MissionComposer: View {
                     Chip(text: L("nur lokal"), symbol: "lock.laptopcomputer")
                         .help(L("Nur lokal ist an – alles läuft über das lokale Modell. Ändern: Menüleiste oder Einstellungen › Modelle"))
                 }
-                if parallel > 1 { Chip(text: "\(parallel)× " + L("parallel"), symbol: "square.split.3x1") }
+                if parallel > 1 { Chip(text: L("Team") + " ≤ \(parallel)", symbol: "person.3") }
+                if !stewardStore.projects.isEmpty {
+                    Menu {
+                        Picker("", selection: $stewardPick) {
+                            Text(L("Automatisch (wenn das Projekt einen hat)")).tag("auto")
+                            Text(L("Ohne Betreuer – direkt an einen Agent")).tag("none")
+                            Divider()
+                            ForEach(stewardStore.projects) { sp in Text(L("Betreuer") + " „" + sp.name + "“").tag(sp.id) }
+                        }
+                        .pickerStyle(.inline).labelsHidden()
+                    } label: {
+                        let name = stewardStore.project(stewardPick)?.name
+                        Label(stewardPick == "none" ? L("Ohne Betreuer") : name.map { L("Betreuer") + ": " + $0 } ?? L("Betreuer: auto"), systemImage: "safari")
+                            .font(.caption)
+                    }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .help(L("Wer den Auftrag bekommt: ein Projekt-Betreuer plant ihn als Team und betreut ihn bis zum fertigen Ergebnis"))
+                }
                 Spacer()
                 if target.hasModes && target != .auto {
                     Menu {
@@ -461,8 +499,7 @@ struct MissionComposer: View {
             return true
         }
         .padding(Grid.m)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Color.secondary.opacity(focused ? 0.45 : 0.25)))
+        .background(ModernCardBackground(radius: 20))
         .shadow(color: .black.opacity(0.06), radius: 10, y: 3)
         .onAppear { focused = true }
     }
@@ -559,7 +596,7 @@ struct MissionComposer: View {
             }
         }
         .padding(Grid.l)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .strokeBorder(focused ? Color.accentColor.opacity(0.7) : Color.secondary.opacity(0.25)))
     }
@@ -596,6 +633,16 @@ struct MissionComposer: View {
         if let p = proposal { dispatch(proposalBody, p); return }   // ⌘↩ bestätigt den Vorschlag
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty, !routing else { return }
+        // Ausdrücklich einem Betreuer zugewiesen: er übernimmt den Auftrag – plant das Team, setzt um, liefert
+        if !asking, stewardPick != "auto", stewardPick != "none", Steward.shared.project(stewardPick) != nil {
+            let full = body + Attachments.promptBlock(attachments)
+            attachments = []
+            let sid = Steward.shared.takeOrder(stewardPick, text: full, lead: target.agent, teamSize: parallel)
+            text = ""
+            stewardPick = "auto"
+            app.page = .steward(sid)
+            return
+        }
         if target == .auto {
             let fallback = decision
             // Die KI-Agentenwahl fragt ein Cloud-Modell – bei „Nur lokal“ entscheidet die App selbst
@@ -698,7 +745,20 @@ struct MissionComposer: View {
             let coding = AgentKind.coders.contains(primary)
             let ask = question && coding
             let plan = planFirst && coding && !ask
+            // Auftrag für ein Projekt: der Projekt-Betreuer übernimmt ihn – plant das Team (Haupt-Agent + Zuarbeiten,
+            // jeder mit passenden Skills und Erweiterungen), setzt um, prüft, liefert und meldet ein fertiges Ergebnis.
+            // Gibt es schon einen Betreuer für das Projekt, macht er es immer; mit „Team“ wird er bei Bedarf angelegt.
+            let root = Git.root(of: dir) ?? dir
+            let hasSteward = Steward.shared.project(root) != nil
+            let toSteward = UserDefaults.standard.object(forKey: "mission.toSteward") as? Bool ?? true
+            if stewardPick != "none", coding, !question, !(planFirst && coding), !dir.isEmpty, toSteward, Git.root(of: dir) != nil, hasSteward || parallel > 1 {
+                let sid = Steward.shared.takeOrder(dir, text: body, lead: auto ? nil : primary, teamSize: parallel)
+                app.page = .steward(sid)
+                return
+            }
             let runMode: RunMode = (ask || plan || (parallel > 1 && coding)) ? .autonom : mode
+            // Erfolgskriterium aus der Agentenwahl: der Agent prüft sich daran, der Prüfer später auch
+            if !ask, coding, let c = d.doneWhen, !body.contains(c) { body += "\n\n" + L("Fertig, wenn:") + " " + c }
             var prompt = Agents.missionPrompt(body, task: task, mode: runMode, coding: coding)
             if ask {
                 prompt = L("Das ist eine FRAGE, kein Auftrag. Ändere keine Dateien und führe nichts aus, was etwas verändert. Lies und durchsuche den betroffenen Code, bis du die Frage sicher beantworten kannst. Antworte dann: zuerst die Antwort in 1–3 Sätzen, danach die Begründung mit Dateien und Zeilen (Datei:Zeile). Wenn sinnvoll, schlag am Ende kurz vor, was man ändern könnte – aber setze es nicht um. Rufe nicht ExitPlanMode auf.") + "\n\n" + prompt
@@ -719,11 +779,15 @@ struct MissionComposer: View {
                     let s = agents.start(agent, in: dir, prompt: prompt, taskID: i == 0 ? task.id : nil, mode: runMode,
                                          label: kinds.count > 1 ? "\(title) · \(agent.title)" : title,
                                          model: ModelCatalog.selected(for: agent).isEmpty ? (agent == .claude || agent == .ollama ? model : nil) : ModelCatalog.selected(for: agent),
-                                         effort: agent == .codex ? effort : nil,
+                                         effort: (agent == .codex || agent == .claude) ? (effort ?? "medium") : nil,
                                          codingConfig: cfg, planOnly: plan || ask, question: ask)
                     if let cfg { try? FileManager.default.removeItem(at: cfg) }
                     MissionStore.shared.setMeta(s.id.uuidString, manual: !auto, tools: tools.isEmpty ? nil : tools)
-                    if plan { MissionStore.shared.setPlan(s.id.uuidString, group: nil) }
+                    if plan {
+                        MissionStore.shared.setPlan(s.id.uuidString, group: nil)
+                        // Recherche-Agent läuft parallel zum Plan: aktueller Stand, Trends, Empfehlungen zum Anhaken
+                        if Research.enabled, i == 0 { Research.shared.start(s.id.uuidString, request: request, directory: dir) }
+                    }
                     if let group { MissionStore.shared.setPlan(s.id.uuidString, group: group) }
                     let why = (i == 0 ? reason : L("Parallel-Lösung zum Vergleich")) + (plan ? " · " + L("erst Plan") : "") + (ask ? " · " + L("nur Frage, ändert nichts") : "")
                     if !why.isEmpty { MissionStore.shared.setReason(s.id.uuidString, why + (tools.isEmpty ? "" : " · Tools: " + tools.joined(separator: ", "))) }
@@ -788,6 +852,7 @@ final class ProcessScanner: ObservableObject {
     }
 
     private func scan(_ own: Set<Int32>) {
+        guard Energy.due("externalRuns", every: 60) else { return }
         DispatchQueue.global(qos: .utility).async {
             let out = Self.exec("/bin/ps", ["-axo", "pid=,ppid=,etime=,args="])
             var found: [ExternalRun] = []
@@ -883,9 +948,9 @@ struct MissionView: View {
         let done = agents.sessions.filter { !$0.running && $0.succeeded }.count
         let failed = agents.sessions.filter { !$0.running && !$0.succeeded }.count
         return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Grid.m), count: 3), spacing: Grid.m) {
-            StatTile(value: "\(running.count)", label: L("Läuft in Salenta Code"), symbol: "play.circle.fill", tint: .green)
-            StatTile(value: "\(processes.runs.count)", label: L("Außerhalb gestartet"), symbol: "macwindow.on.rectangle", tint: .blue)
-            StatTile(value: "\(done) / \(failed)", label: L("Fertig / Fehler (heute)"), symbol: "checkmark.seal.fill", tint: failed > 0 ? .orange : .teal)
+            StatTile(value: "\(running.count)", label: L("Läuft in Salenta Code"), symbol: "play.circle.fill", tint: SC.live)
+            StatTile(value: "\(processes.runs.count)", label: L("Außerhalb gestartet"), symbol: "macwindow.on.rectangle", tint: .accentColor)
+            StatTile(value: "\(done) / \(failed)", label: L("Fertig / Fehler (heute)"), symbol: "checkmark.seal.fill", tint: failed > 0 ? SC.warn : .accentColor)
         }
     }
 

@@ -247,9 +247,12 @@ final class ApprovalCenter: ObservableObject {
             }
         }
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.scan() }
-        timer?.tolerance = 0.3
+        // Melden statt abfragen: neue Freigabe-Datei → sofort prüfen. Der Takt ist nur noch Rückfallebene.
+        watcher = DirectoryWatcher(url: dir) { [weak self] in self?.scan() }
+        timer = Timer.scheduledTimer(withTimeInterval: watcher == nil ? 1 : 10, repeats: true) { [weak self] _ in self?.scan() }
+        timer?.tolerance = 2
     }
+    private var watcher: DirectoryWatcher?
 
     private let work = DispatchQueue(label: "approvals.scan", qos: .userInitiated)
     private var busy = false
@@ -287,9 +290,9 @@ final class ApprovalCenter: ObservableObject {
                 if list != self.pending { self.pending = list }
                 for r in list where !self.notified.contains(r.id) {
                     self.notified.insert(r.id)
-                    self.bridge?.notify("Agent möchte: \(r.title)")
-                    Notifier.push(L("Freigabe nötig"), r.title + (r.input.first.map { "\n" + $0.value } ?? ""), priority: 4, tags: "raised_hand")
-                    NSSound(named: "Ping")?.play()
+                    self.bridge?.app?.show("Agent möchte: \(r.title)")
+                    NotifyCenter.shared.post(.approval, title: L("Freigabe nötig") + ": " + r.title,
+                                             body: r.input.first.map { String($0.value.prefix(200)) } ?? "", route: .approval(r.id), key: r.id)
                 }
             }
         }

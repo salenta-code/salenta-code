@@ -46,6 +46,10 @@ final class Usage: ObservableObject {
     @Published private(set) var codex: [UsagePoint] = []
     @Published private(set) var codexPrimary: RateWindow?
     @Published private(set) var codexSecondary: RateWindow?
+    /// Echte Claude-Limits aus deinem Claude-Konto (nur, wenn du es einschaltest) – sonst Schätzung aus dem Verlauf
+    @Published private(set) var claudeFive: RateWindow?
+    @Published private(set) var claudeWeek: RateWindow?
+    @Published private(set) var claudeRealAt: Date?
     @Published private(set) var blocked: [String: Date] = [:]
     @Published private(set) var switches: [AgentSwitch] = []
     @Published private(set) var lastScan: Date?
@@ -102,6 +106,15 @@ final class Usage: ObservableObject {
         if let b = blocked[agent.rawValue], b > Date() { return 1.0 }
         switch agent {
         case .claude:
+            if let at = claudeRealAt, at > Date().addingTimeInterval(-20 * 60) {
+                let now = Date()
+                let p = [claudeFive, claudeWeek].compactMap { w -> Double? in
+                    guard let w else { return nil }
+                    if let r = w.resetsAt, r < now { return 0 }
+                    return w.usedPercent / 100
+                }
+                if let m = p.max() { return m }
+            }
             return max(claudeWindow(hours: 5) / budget5h, claudeWindow(hours: 24 * 7) / budgetWeek)
         case .codex:
             let now = Date()
@@ -213,6 +226,10 @@ final class Usage: ObservableObject {
     // MARK: Automatisch verteilen
 
     static func alternatives(_ a: AgentKind) -> [AgentKind] {
+        rawAlternatives(a).filter { Billing.autoOK($0) && !AgentOff.isOff($0) }
+    }
+
+    private static func rawAlternatives(_ a: AgentKind) -> [AgentKind] {
         switch a {
         case .claude: [.codex, .kimi, .cursor, .gemini, .openrouter, .opencode, .junie, .grok, .kiro, .pi]
         case .codex: [.claude, .kimi, .cursor, .gemini, .openrouter, .opencode, .junie, .grok, .kiro, .pi]
@@ -234,7 +251,7 @@ final class Usage: ObservableObject {
                let alt = Self.alternatives(a).first(where: { installed.contains($0) && pressure($0) < max(threshold - 0.2, 0.3) }) {
                 let why = blockedNow ? L("Limit erreicht") : pct(a)
                 d.target = MissionTarget.from(alt)
-                d.model = alt == .claude ? (pressure(.claude) >= 0.6 ? "sonnet" : d.model) : nil
+                d.model = alt == .claude ? (pressure(.claude) >= 0.6 ? "sonnet" : (ModelCatalog.fits(d.model ?? "", .claude) ? d.model : nil)) : nil
                 d.effort = alt == .codex ? (d.effort ?? "medium") : nil
                 d.reason += " · \(a.title) \(why) → \(alt.title)"
                 record(from: a.title, to: alt.title, why: why)
@@ -270,6 +287,7 @@ final class Usage: ObservableObject {
     private let queuedLock = NSLock()
 
     func scan() {
+        guard Energy.due("usage", every: 300) else { return }
         // Läuft schon ein Durchgang (der erste kann Minuten dauern), keinen weiteren stapeln
         queuedLock.lock(); if queued { queuedLock.unlock(); return }; queued = true; queuedLock.unlock()
         DispatchQueue.main.async { self.scanning = true }
@@ -313,7 +331,9 @@ final class Usage: ObservableObject {
                 self.scanning = false
                 self.claude = claudePts
                 self.codex = codexPts
-                if let r = latestRate { self.codexPrimary = r.1; self.codexSecondary = r.2 }
+                CostHistory.shared.merge(claude: claudePts, codex: codexPts)
+                if let r = latestRate { self.codexPrimary = r.1; self.codexSecondary = r.2; self.saveState() }
+                self.fetchClaudeReal()
                 self.lastScan = Date()
                 self.blocked = self.blocked.filter { $0.value > Date() }
                 self.refreshSnapshot()
@@ -480,11 +500,23 @@ final class Usage: ObservableObject {
             blocked = b.mapValues { Date(timeIntervalSince1970: $0) }.filter { $0.value > Date() }
         }
         calibrated5h = j["calibrated5h"] as? Double
+        // Echte Limit-Stände über Neustarts behalten (der Verlauf wird nur für neue Zeilen gelesen)
+        let dec = JSONDecoder(); dec.dateDecodingStrategy = .secondsSince1970
+        func w(_ k: String) -> RateWindow? {
+            guard let o = j[k], let d = try? JSONSerialization.data(withJSONObject: o) else { return nil }
+            return try? dec.decode(RateWindow.self, from: d)
+        }
+        codexPrimary = w("codexPrimary"); codexSecondary = w("codexSecondary")
+        claudeFive = w("claudeFive"); claudeWeek = w("claudeWeek")
     }
 
     private func saveState() {
         var j: [String: Any] = ["blocked": blocked.mapValues { $0.timeIntervalSince1970 }]
         if let c = calibrated5h { j["calibrated5h"] = c }
+        let enc = JSONEncoder(); enc.dateEncodingStrategy = .secondsSince1970
+        for (k, w) in [("codexPrimary", codexPrimary), ("codexSecondary", codexSecondary), ("claudeFive", claudeFive), ("claudeWeek", claudeWeek)] {
+            if let w, let d = try? enc.encode(w), let o = try? JSONSerialization.jsonObject(with: d) { j[k] = o }
+        }
         if let d = try? JSONSerialization.data(withJSONObject: j, options: [.prettyPrinted]) { try? d.write(to: stateURL, options: .atomic) }
     }
 }
@@ -550,7 +582,20 @@ struct UsageView: View {
                     agentCard(.codex, detail: codexDetail)
                     agentCard(.junie, detail: runsDetail(.junie))
                 }
+                Toggle(isOn: Binding(get: { Usage.claudeRealEnabled }, set: { v in
+                    UserDefaults.standard.set(v, forKey: "usage.claudeReal"); if v { usage.fetchClaudeReal(force: true) }
+                })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L("Echte Claude-Limits anzeigen")).font(.callout.weight(.medium))
+                        Text(L("Liest den Stand (5 Stunden, Woche) direkt aus deinem Claude-Konto statt zu schätzen – dann verteilt Salenta Code Aufträge nur noch, wenn Claude wirklich knapp ist. macOS fragt einmal nach Zugriff auf den Schlüsselbund-Eintrag von Claude Code; der Schlüssel wird nicht gespeichert."))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+                CostOverview()
+                ToolTrackerCard()
                 LocalSavingsCard()
+                BillingCard()
                 chartCard
                 HStack(alignment: .top, spacing: Grid.l) {
                     modelTable
@@ -606,8 +651,7 @@ struct UsageView: View {
         }
         .padding(Grid.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(pressureColor(p).opacity(p >= 0.6 ? 0.5 : 0.12)))
+        .background(ModernCardBackground(radius: 16))
     }
 
     private func statusChip(p: Double, blocked: Bool, hasData: Bool) -> some View {
@@ -620,6 +664,13 @@ struct UsageView: View {
     }
 
     private var claudeDetail: [String] {
+        if let at = usage.claudeRealAt, at > Date().addingTimeInterval(-20 * 60) {
+            var out: [String] = []
+            if let f = usage.claudeFive { out.append("5 h: \(Int(f.usedPercent)) %" + (f.resetsAt.map { " · " + L("Reset") + " " + $0.formatted(.relative(presentation: .named)) } ?? "")) }
+            if let w = usage.claudeWeek { out.append(L("Woche") + ": \(Int(w.usedPercent)) %" + (w.resetsAt.map { " · " + L("Reset") + " " + $0.formatted(.relative(presentation: .named)) } ?? "")) }
+            out.append(L("echt aus deinem Claude-Konto"))
+            return out
+        }
         let five = usage.claudeWindow(hours: 5), week = usage.claudeWindow(hours: 168)
         return [
             "5 h: \(tokens(five)) / \(tokens(usage.budget5h))",
@@ -682,7 +733,7 @@ struct UsageView: View {
             }
         }
         .padding(Grid.l)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 16))
     }
 
     private var modelTable: some View {
@@ -712,7 +763,7 @@ struct UsageView: View {
         }
         .padding(Grid.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 16))
     }
 
     /// Wie gut lief es pro Agent (30 Tage) – dieselben Zahlen nutzt die Agentenwahl.
@@ -732,7 +783,7 @@ struct UsageView: View {
         }
         .padding(Grid.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 16))
     }
 
     private var switchesCard: some View {
@@ -751,7 +802,7 @@ struct UsageView: View {
         }
         .padding(Grid.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 16))
     }
 
     private var settingsCard: some View {
@@ -775,7 +826,7 @@ struct UsageView: View {
         }
         .padding(Grid.l)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 16))
     }
 }
 
@@ -827,7 +878,7 @@ struct LocalSavingsCard: View {
             }
         }
         .padding(Grid.l)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.background.secondary))
+        .background(ModernCardBackground(radius: 16))
         .onAppear { stats = LocalStats.current }
     }
 
@@ -840,5 +891,155 @@ struct LocalSavingsCard: View {
 
     static func compact(_ n: Int) -> String {
         n >= 1_000_000 ? String(format: "%.1f Mio.", Double(n) / 1_000_000) : n >= 1000 ? "\(n / 1000)k" : "\(n)"
+    }
+}
+
+// MARK: - Kosten-Verlauf pro Tag (für die Übersicht: Heatmap, Monat, Hochrechnung)
+
+struct DayCost: Codable, Hashable {
+    var claude: Double = 0
+    var codex: Double = 0
+    var calls: Int = 0
+    var input: Int = 0
+    var cacheRead: Int = 0
+    var total: Double { claude + codex }
+}
+
+final class CostHistory: ObservableObject {
+    static let shared = CostHistory()
+    @Published private(set) var days: [String: DayCost] = [:]
+    @Published private(set) var backfilling = false
+    private var url: URL { Paths.data.appendingPathComponent("cost-days.json") }
+
+    static func key(_ d: Date) -> String {
+        let c = Calendar.current.dateComponents([.year, .month, .day], from: d)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    init() {
+        if let d = try? Data(contentsOf: url), let x = try? JSONDecoder().decode([String: DayCost].self, from: d) { days = x }
+    }
+
+    /// Die letzten Tage aus dem laufenden Verbrauchs-Scan übernehmen (überschreibt nur diese Tage).
+    func merge(claude: [UsagePoint], codex: [UsagePoint]) {
+        let fresh = Self.aggregate(claude: claude, codex: codex)
+        guard !fresh.isEmpty else { return }
+        var d = days
+        let cut = Self.key(Date().addingTimeInterval(-7 * 86400))   // der älteste Tag im Scan ist nur halb drin
+        for (k, v) in fresh where k > cut { d[k] = v }
+        days = d
+        save()
+    }
+
+    /// Einmalig den älteren Verlauf einlesen (bis 95 Tage) – im Hintergrund, mit niedriger Priorität.
+    func backfillIfNeeded() {
+        guard !backfilling, UserDefaults.standard.bool(forKey: "cost.backfilled") == false else { return }
+        backfilling = true
+        DispatchQueue.global(qos: .utility).async {
+            let (c, x) = Usage.readHistory(days: 95)
+            let agg = Self.aggregate(claude: c, codex: x)
+            DispatchQueue.main.async {
+                var d = self.days
+                for (k, v) in agg where d[k] == nil || k < Self.key(Date().addingTimeInterval(-7 * 86400)) { d[k] = v }
+                self.days = d
+                self.save()
+                self.backfilling = false
+                UserDefaults.standard.set(true, forKey: "cost.backfilled")
+            }
+        }
+    }
+
+    private static func aggregate(claude: [UsagePoint], codex: [UsagePoint]) -> [String: DayCost] {
+        let t = Prices.table
+        var out: [String: DayCost] = [:]
+        for p in claude {
+            let k = key(p.date)
+            out[k, default: DayCost()].claude += Prices.cost(p, Prices.price(p.model, t))
+            out[k, default: DayCost()].calls += 1
+            out[k, default: DayCost()].input += p.input + p.cacheWrite
+            out[k, default: DayCost()].cacheRead += p.cacheRead
+        }
+        for p in codex {
+            let k = key(p.date)
+            out[k, default: DayCost()].codex += Prices.cost(p, Prices.price(p.model.isEmpty ? "gpt" : p.model, t))
+            out[k, default: DayCost()].calls += 1
+            out[k, default: DayCost()].input += p.input + p.cacheWrite
+            out[k, default: DayCost()].cacheRead += p.cacheRead
+        }
+        return out
+    }
+
+    private func save() {
+        if let d = try? JSONEncoder().encode(days) { try? d.write(to: url, options: .atomic) }
+    }
+}
+
+extension Usage {
+    /// Liest den Verlauf ohne Zwischenspeicher (nur für das einmalige Nachladen älterer Tage).
+    static func readHistory(days: Int) -> ([UsagePoint], [UsagePoint]) {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let since = Date().addingTimeInterval(-Double(days) * 86400)
+        var claude: [UsagePoint] = [], codex: [UsagePoint] = []
+        var seen = Set<String>()
+        for url in files(under: home.appendingPathComponent(".claude/projects"), since: since) {
+            guard let s = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            for line in s.split(separator: "\n") {
+                if let p = parseClaude(String(line)).0, p.date >= since, seen.insert(p.id).inserted { claude.append(p) }
+            }
+        }
+        for url in files(under: home.appendingPathComponent(".codex/sessions"), since: since) {
+            guard let s = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            var model = ""
+            for line in s.split(separator: "\n") {
+                let (p, m, _) = parseCodex(String(line), model: model)
+                if let m { model = m }
+                if let p, p.date >= since { codex.append(p) }
+            }
+        }
+        return (claude, codex)
+    }
+}
+
+
+// MARK: - Echte Claude-Limits (wie in der Claude-App) – nur auf deinen Wunsch
+
+extension Usage {
+    static var claudeRealEnabled: Bool { UserDefaults.standard.bool(forKey: "usage.claudeReal") }
+
+    /// Liest den Stand deiner Claude-Limits (5 Stunden, Woche) direkt bei Claude ab. Der Anmelde-Schlüssel kommt aus dem
+    /// macOS-Schlüsselbund (dort legt Claude Code ihn ab), wird nur für diese eine Anfrage benutzt und nirgends gespeichert.
+    func fetchClaudeReal(force: Bool = false) {
+        guard Self.claudeRealEnabled else { return }
+        if !force, let at = claudeRealAt, at > Date().addingTimeInterval(-5 * 60) { return }
+        DispatchQueue.global(qos: .utility).async {
+            let r = Proc.zsh("/usr/bin/security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null", in: NSTemporaryDirectory(), timeout: 30)
+            guard r.code == 0, let d = r.out.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
+                  let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let o = j["claudeAiOauth"] as? [String: Any], let tok = o["accessToken"] as? String, !tok.isEmpty else { return }
+            var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!, timeoutInterval: 20)
+            req.setValue("Bearer " + tok, forHTTPHeaderField: "Authorization")
+            req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            URLSession.shared.dataTask(with: req) { data, resp, _ in
+                guard (resp as? HTTPURLResponse)?.statusCode == 200, let data,
+                      let u = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+                let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let iso2 = ISO8601DateFormatter()
+                func win(_ k: String, minutes: Int) -> RateWindow? {
+                    guard let w = u[k] as? [String: Any] else { return nil }
+                    let used = (w["utilization"] as? Double) ?? Double(w["utilization"] as? Int ?? -1)
+                    guard used >= 0 else { return nil }
+                    let s = w["resets_at"] as? String ?? ""
+                    return RateWindow(usedPercent: used, windowMinutes: minutes, resetsAt: iso.date(from: s) ?? iso2.date(from: s))
+                }
+                let five = win("five_hour", minutes: 300), week = win("seven_day", minutes: 10_080)
+                guard five != nil || week != nil else { return }
+                DispatchQueue.main.async {
+                    self.claudeFive = five; self.claudeWeek = week; self.claudeRealAt = Date()
+                    self.saveState()
+                    self.refreshSnapshot()
+                }
+            }.resume()
+        }
     }
 }

@@ -21,8 +21,7 @@ struct SCard<Content: View>: View {
         }
         .padding(Grid.l)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.separator.opacity(0.5)))
+        .background(ModernCardBackground(radius: 14))
     }
 }
 

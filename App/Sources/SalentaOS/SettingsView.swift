@@ -19,6 +19,8 @@ struct SettingsView: View {
                 .tabItem { Label("Modelle", systemImage: "cpu") }
             AwakeSettings()
                 .tabItem { Label("Wach bleiben", systemImage: "eye") }
+            PlanetPicker().padding(Grid.xl).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .tabItem { Label(L("Darstellung"), systemImage: "globe.europe.africa") }
             GeneralSettings()
                 .tabItem { Label("Allgemein", systemImage: "gearshape") }
         }
@@ -88,10 +90,32 @@ struct GeneralSettings: View {
             LabeledContent("Globales Kürzel", value: "⌃⌥ Leertaste")
             LabeledContent("Befehlspalette", value: "⌘K")
             LabeledContent("Agents-CLI", value: "bin/aos list | add | done")
+            Toggle("Erfolgsmomente zeigen (kleine Animation, wenn etwas geschafft ist)", isOn: Binding(
+                get: { UserDefaults.standard.object(forKey: "celebrate.on") as? Bool ?? true },
+                set: { UserDefaults.standard.set($0, forKey: "celebrate.on") }))
+            Toggle("Mac-Auslastung in der Menüleiste zeigen", isOn: Binding(
+                get: { UserDefaults.standard.object(forKey: "load.menubar") as? Bool ?? true },
+                set: { UserDefaults.standard.set($0, forKey: "load.menubar") }))
+            Picker("Schwere Prüfungen gleichzeitig (Typen, Tests, Build)", selection: Binding(
+                get: { UserDefaults.standard.object(forKey: "load.checks") as? Int ?? 2 },
+                set: { UserDefaults.standard.set($0, forKey: "load.checks") })) {
+                Text("1 – schont den Mac").tag(1); Text("2").tag(2); Text("3").tag(3); Text("4 – schnell, wird heiß").tag(4)
+            }
+            .help("Am Akku, bei Hitze oder über 85 % Auslastung laufen Prüfungen immer nacheinander.")
+            EnergySettings()
+            Toggle("Fertige Aufträge automatisch abschließen (bleiben im Verlauf)", isOn: Binding(
+                get: { UserDefaults.standard.object(forKey: "missions.autoClose") as? Bool ?? true },
+                set: { UserDefaults.standard.set($0, forKey: "missions.autoClose") }))
             Toggle("Tipps & Tricks zeigen", isOn: Binding(
                 get: { !UserDefaults.standard.bool(forKey: "tips.hidden") },
                 set: { UserDefaults.standard.set(!$0, forKey: "tips.hidden") }))
+            AgentConnections()
+            EfficiencySettings()
+            AgentCapabilities()
             Section("Agent- und Modellwahl") {
+                Toggle("Beim Planen im Internet recherchieren (aktueller Stand, Trends, Empfehlungen zum Anhaken)", isOn: Binding(
+                    get: { UserDefaults.standard.object(forKey: "research.onPlan") as? Bool ?? true },
+                    set: { UserDefaults.standard.set($0, forKey: "research.onPlan") }))
                 Toggle("KI wählt Agent, Modell, Projekt und Skills (Claude Haiku, ein paar Sekunden)", isOn: Binding(
                     get: { UserDefaults.standard.object(forKey: "router.ai") as? Bool ?? true },
                     set: { UserDefaults.standard.set($0, forKey: "router.ai") }))
@@ -155,6 +179,9 @@ struct GeneralSettings: View {
                 Text("Mikrofon-Knopf neben Senden oder ⌥⌘D: sprechen, nochmal drücken – der Text landet im Feld. Live schreibt Apples Spracherkennung mit (auf macOS 26+ das neue Modell).")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            IntelligenceSettings()
+            NotifySettings()
+            WatchmanSettings()
             Section("Aufs Handy") {
                 TextField("ntfy-Thema (z. B. salenta-deinname-7f3k) – leer = aus", text: Binding(
                     get: { UserDefaults.standard.string(forKey: "notify.ntfy") ?? "" }, set: { UserDefaults.standard.set($0, forKey: "notify.ntfy") }))

@@ -10,6 +10,24 @@ enum WorkPhases {
     struct Plan { var text: String; var names: [String] }
 
     /// Nur für Coding-Agents, die allein arbeiten. Nil = nichts beizutragen.
+    /// Mit GitHub-CI prüft der Helfer sparsam wie ein erfahrener Entwickler: Typen und Lint, dazu nur die Tests seiner Änderungen.
+    /// Die volle Suite und der komplette Build laufen danach ohnehin automatisch und auf GitHub – doppelt laufen lassen
+    /// kostet nur Minuten, Tokens und Hitze (und verleitet zum „Reparieren“ fremder roter Tests).
+    static func leanChecks(_ checks: [String], directory: String) -> String {
+        let heavy = ["vitest", "jest", "run test", "pytest", "cargo test", "go test", "swift test", " build", "npm ci", "npm install", "pnpm install", "yarn install", "bun install", "e2e", "playwright"]
+        let light = checks.filter { c in !heavy.contains(where: { c.contains($0) }) }
+        var runner = ""
+        if let d = FileManager.default.contents(atPath: (directory as NSString).appendingPathComponent("package.json")),
+           let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let s = (j["scripts"] as? [String: String])?["test"] { runner = s }
+        let related = runner.contains("vitest") ? "`npx vitest related <geänderte Dateien> --run`"
+            : runner.contains("jest") ? "`npx jest --findRelatedTests <geänderte Dateien>`"
+            : L("nur die Testdateien zu deinen Änderungen")
+        var t = L("Prüfe sparsam wie ein erfahrener Entwickler:") + " "
+        if !light.isEmpty { t += light.map { "`\($0)`" }.joined(separator: ", ") + " " + L("und") + " " }
+        t += String(format: L("nur die Tests, die zu deinen Änderungen gehören (%@) – nicht die ganze Testsuite und keinen kompletten Build. Die volle Prüfung läuft danach automatisch und auf GitHub. Rote Tests in Dateien, die du nicht angefasst hast, nicht reparieren – nur kurz erwähnen."), related)
+        return t
+    }
+
     static func plan(prompt: String, kind: AgentKind, directory: String?) -> Plan? {
         guard AutoSkills.enabled, AgentKind.coders.contains(kind), kind != .ollama || LocalFirst.shared.localOnly else { return nil }
         let harness = kind.harness
@@ -31,16 +49,30 @@ enum WorkPhases {
             ids.compactMap { id in
                 guard installed.contains(id), let e = ExtensionCatalog.find(id), !e.usage.isEmpty else { return nil }
                 if harness != .claude && (e.kind == .plugin || e.kind == .skill) { return nil }
+                // Slash-Befehle (z. B. /security-review) und Aufrufe anderer Agents kennt nur Claude Code selbst
+                if harness != .claude && (e.usage.contains("/" + id) || e.usage.lowercased().contains("junie") || e.usage.lowercased().contains("claude ")) { return nil }
                 if !names.contains(e.name) { names.append(e.name) }
                 return e.usage
             }
         }
         /// Höchstens ein passender eigener Skill pro Phase (ganze Wörter im Namen).
         let skills = SkillCatalog.current?.skills(for: harness) ?? []
+        // Keine Zufallstreffer: „account-plan“ ist kein Planungs-Skill für Code, „android-…“ nichts für ein Web-Projekt.
+        let platforms: Set<String> = ["android", "ios", "flutter", "kotlin", "swift", "swiftui", "rails", "django", "laravel", "shopify", "liquid",
+                                      "unity", "wordpress", "dotnet", "java", "php", "golang", "rust", "python", "react", "vue", "svelte", "angular", "nextjs"]
+        let business: Set<String> = ["account", "sales", "marketing", "seo", "brand", "deal", "pipeline", "lead", "campaign", "forecast",
+                                     "outreach", "invoice", "crm", "customer", "ads", "content", "social", "email", "newsletter"]
+        let stackText = (directory.map(AutoSkills.stackWords) ?? []).joined(separator: " ").lowercased()
+        func fits(_ name: String) -> Bool {
+            let tokens = Set(name.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted))
+            for t in tokens where platforms.contains(t) && !stackText.contains(t) && !lower.contains(t) { return false }
+            for t in tokens where business.contains(t) && !lower.contains(t) { return false }
+            return true
+        }
         func skill(_ words: [String]) -> [String] {
             guard let s = skills.first(where: { sk in
                 let tokens = Set(sk.name.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted))
-                return words.contains { tokens.contains($0) }
+                return words.contains { tokens.contains($0) } && fits(sk.name)
             }) else { return [] }
             if !names.contains(s.name) { names.append(s.name) }
             return [String(format: L("Skill %@ nutzen"), harness == .claude ? "/" + s.name : s.name)]
@@ -72,10 +104,15 @@ enum WorkPhases {
         }
         // Prüfen genau wie die CI auf GitHub
         let checks = directory.map { Verifier.checks(for: $0).map(\.command) } ?? []
-        var checkText = checks.isEmpty
+        var checkText = (directory.map(Verifier.hasCI) ?? false) && !readOnly
+            ? WorkPhases.leanChecks(checks, directory: directory!)
+            : checks.isEmpty
             ? L("Führe die Tests, den Lint und den Build des Projekts aus.")
             : L("Führe genau diese Prüfungen aus – dieselben laufen danach auch automatisch und auf GitHub:") + " " + checks.map { "`\($0)`" }.joined(separator: ", ") + "."
-        checkText += " " + (readOnly ? L("Berichte, was rot ist.") : L("Alles muss grün sein – sonst Ursache finden und beheben, nicht Tests abschwächen."))
+        let lean = (directory.map(Verifier.hasCI) ?? false) && !readOnly
+        checkText += " " + (readOnly ? L("Berichte, was rot ist.") : lean
+            ? L("Was deine Änderungen betrifft, muss grün sein – sonst Ursache finden und beheben, nicht Tests abschwächen.")
+            : L("Alles muss grün sein – sonst Ursache finden und beheben, nicht Tests abschwächen."))
         var testTools = skill(["test", "tdd", "testing"])
         if ui { testTools += ext(["playwright", "chrome-devtools"]); checkText += " " + L("Öffne die geänderte Seite im Browser und prüfe Darstellung, Klicks und Konsole.") }
         out.append(phase(&n, L("Prüfen wie die CI"), checkText, testTools))

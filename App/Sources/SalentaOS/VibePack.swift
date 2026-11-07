@@ -95,7 +95,12 @@ enum SecretScan {
             if line.hasPrefix("+++ b/") { file = String(line.dropFirst(6)); continue }
             guard line.hasPrefix("+"), !line.hasPrefix("+++") else { continue }
             if file.hasSuffix(".example") || file.contains(".env.example") || file.hasSuffix(".md") { continue }
+            let isTest = file.contains("__tests__") || file.contains("/test/") || file.contains("/tests/") || file.hasPrefix("test/")
+                || file.hasPrefix("tests/") || file.hasPrefix("e2e/") || file.contains(".test.") || file.contains(".spec.")
+                || file.contains("fixture") || file.contains("pg-test")
             for (name, p) in patterns {
+                // Test-Passwörter wie "postgres" oder "test-passwort-123" sind keine Geheimnisse – echte Schlüssel-Muster gelten weiter
+                if isTest && name == "Passwort im Code" { continue }
                 if let r = line.range(of: p, options: [.regularExpression, .caseInsensitive]) {
                     let hit = String(line[r])
                     let masked = String(hit.prefix(6)) + String(repeating: "•", count: max(0, min(hit.count - 6, 12)))
@@ -132,7 +137,7 @@ enum Checkpoints {
 
     static func list(_ wt: WorktreeInfo) -> [Point] {
         let dir = Worktrees.top(wt)
-        let base = Git.run(["merge-base", "HEAD", wt.baseBranch], in: dir).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = Worktrees.forkPoint(wt)
         guard !base.isEmpty else { return [] }
         let out = Git.run(["log", "--format=%h\t%s\t%cr", "\(base)..HEAD"], in: dir).out
         var pts = out.split(separator: "\n").compactMap { l -> Point? in
@@ -160,6 +165,8 @@ final class PreviewServer: ObservableObject {
     @Published private(set) var starting: Set<String> = []
 
     func url(_ id: String) -> String? { running[id]?.url }
+    /// Ordner der Vorschau und das Original-Repo (für Vorher/Nachher)
+    func info(_ id: String) -> (dir: String, base: String?)? { sources[id].map { ($0.dir, $0.base) } }
 
     /// Startet den Dev-Server in dir (Befehl aus .salenta-os.json "dev" oder package.json "dev") und wartet auf die Adresse.
     @Published private(set) var errors: [String: [String]] = [:]
@@ -442,6 +449,14 @@ struct PreviewSheet: View {
     @State private var blank = false
     @State private var showLog = false
     @State private var updateMessage: String?
+    /// Vorher/Nachher: links dein Projekt, rechts die Arbeitskopie – nebeneinander oder mit Schieberegler
+    @State private var compare = false
+    @State private var slider = false
+    @State private var split: CGFloat = 0.5
+    @State private var reloadBase = 0
+    /// Bei jeder gespeicherten Datei neu laden (für Seiten ohne eigenes Hot-Reload)
+    @AppStorage("preview.autoReload") private var autoReload = true
+    @State private var signature = ""
     @EnvironmentObject private var agents: AgentManager
     @EnvironmentObject private var hub: MCPHub
     @EnvironmentObject private var app: AppModel
@@ -459,7 +474,24 @@ struct PreviewSheet: View {
                     Text("Handy").tag(CGFloat(390))
                 }
                 .pickerStyle(.segmented).fixedSize()
-                Button { reload += 1 } label: { Image(systemName: "arrow.clockwise") }.help(L("Neu laden"))
+                if let base = server.info(id)?.base, !id.hasPrefix("proj:") {
+                    Toggle(isOn: Binding(get: { compare }, set: { on in
+                        compare = on
+                        if on { server.start(id: "base:" + id, dir: base) { _ in } }
+                    })) { Label(L("Vorher/Nachher"), systemImage: "rectangle.split.2x1") }
+                        .toggleStyle(.button)
+                        .help(L("Dein Projekt (vorher) und die Arbeitskopie des Agents (nachher) vergleichen"))
+                    if compare {
+                        Picker("", selection: $slider) {
+                            Image(systemName: "rectangle.split.2x1").tag(false).help(L("Nebeneinander"))
+                            Image(systemName: "slider.horizontal.below.rectangle").tag(true).help(L("Schieberegler"))
+                        }.pickerStyle(.segmented).fixedSize()
+                    }
+                }
+                Toggle(isOn: $autoReload) { Image(systemName: "bolt.horizontal.circle") }
+                    .toggleStyle(.button)
+                    .help(L("Live: neu laden, sobald der Agent eine Datei speichert"))
+                Button { reload += 1; reloadBase += 1 } label: { Image(systemName: "arrow.clockwise") }.help(L("Neu laden"))
                 if let u = server.url(id), let url = URL(string: u) {
                     Button { NSWorkspace.shared.open(url) } label: { Image(systemName: "safari") }.help(L("Im Browser öffnen"))
                 }
@@ -476,10 +508,14 @@ struct PreviewSheet: View {
             }
             if server.url(id) != nil, !(server.errors[id] ?? []).isEmpty || blank { problemBar }
             if let u = server.url(id), let url = URL(string: u) {
-                LiveWebView(url: url, reload: $reload, id: id, onBlank: { b in blank = b })
-                    .frame(width: width)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black.opacity(0.2))
+                if compare {
+                    compareView(after: url)
+                } else {
+                    LiveWebView(url: url, reload: $reload, id: id, onBlank: { b in blank = b })
+                        .frame(width: width)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.black.opacity(0.2))
+                }
             } else if server.starting.contains(id) {
                 VStack(spacing: Grid.s) {
                     ProgressView()
@@ -494,12 +530,91 @@ struct PreviewSheet: View {
             }
         }
         .frame(minWidth: 1000, idealWidth: 1360, minHeight: 700, idealHeight: 860)
+        .task(id: autoReload) { await watchChanges() }
+        .onDisappear { server.stop("base:" + id) }
         .sheet(isPresented: $showLog) {
             VStack(alignment: .leading) {
                 HStack { Text("Dev-Server-Ausgabe").font(.headline); Spacer(); Button("Schließen") { showLog = false } }
                 ScrollView { Text(server.logTail(id)).font(.system(size: 11, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
             }
             .padding().frame(width: 760, height: 480)
+        }
+    }
+
+    // MARK: Vorher/Nachher
+
+    @ViewBuilder private func compareView(after: URL) -> some View {
+        let baseID = "base:" + id
+        if let bu = server.url(baseID), let before = URL(string: bu) {
+            GeometryReader { g in
+                let w = g.size.width, h = g.size.height - 22
+                VStack(spacing: 0) {
+                    HStack {
+                        Text(L("Vorher – dein Projekt")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(L("Nachher – Arbeitskopie des Agents")).font(.caption.weight(.semibold)).foregroundStyle(.green)
+                    }
+                    .padding(.horizontal, Grid.m).frame(height: 22)
+                    if slider {
+                        ZStack(alignment: .topLeading) {
+                            LiveWebView(url: after, reload: $reload, id: id, onBlank: { b in blank = b })
+                                .frame(width: w, height: h)
+                            LiveWebView(url: before, reload: $reloadBase, id: baseID)
+                                .frame(width: w, height: h)
+                                .frame(width: max(1, w * split), height: h, alignment: .leading)
+                                .clipped()
+                            // Griff zum Verschieben
+                            Rectangle().fill(Color.accentColor).frame(width: 2, height: h)
+                                .overlay(Circle().fill(Color.accentColor).frame(width: 22, height: 22)
+                                    .overlay(Image(systemName: "arrow.left.and.right").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)))
+                                .frame(width: 24, height: h)
+                                .contentShape(Rectangle())
+                                .offset(x: w * split - 12)
+                                .gesture(DragGesture(minimumDistance: 0).onChanged { v in split = min(0.98, max(0.02, (w * split + v.translation.width) / w)) })
+                                .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+                                .help(L("Ziehen, um vorher und nachher zu vergleichen"))
+                        }
+                    } else {
+                        HStack(spacing: 2) {
+                            LiveWebView(url: before, reload: $reloadBase, id: baseID).frame(width: min(width, (w - 2) / 2), height: h)
+                                .frame(maxWidth: .infinity)
+                            LiveWebView(url: after, reload: $reload, id: id, onBlank: { b in blank = b }).frame(width: min(width, (w - 2) / 2), height: h)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .background(Color.black.opacity(0.2))
+                    }
+                }
+            }
+        } else {
+            VStack(spacing: Grid.s) {
+                ProgressView()
+                Text(L("Startet die Vorschau deines Projekts zum Vergleich …")).foregroundStyle(.secondary)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Live mitschauen: Ändert der Agent eine Datei in der Arbeitskopie, lädt die Vorschau neu (kurz gebündelt).
+    private func watchChanges() async {
+        guard autoReload, let dir = server.info(id)?.dir else { return }
+        var last = ""
+        var changedAt: Date?
+        while !Task.isCancelled && autoReload {
+            let sig = await Task.detached { () -> String in
+                // geänderte Dateien + deren Änderungszeit + letzter Commit: erkennt jedes Speichern
+                let status = Git.run(["status", "--porcelain"], in: dir, timeout: 5).out
+                let fm = FileManager.default
+                let times = status.split(separator: "\n").prefix(200).compactMap { line -> String? in
+                    let path = String(line.dropFirst(3)).components(separatedBy: " -> ").last ?? ""
+                    let full = (dir as NSString).appendingPathComponent(path)
+                    return (try? fm.attributesOfItem(atPath: full)[.modificationDate] as? Date).map { String($0.timeIntervalSince1970) }
+                }.joined(separator: ",")
+                return status + times + Git.run(["log", "-1", "--format=%H"], in: dir, timeout: 5).out
+            }.value
+            if !last.isEmpty, sig != last { changedAt = Date() }
+            // 1,5 s nach der letzten Änderung neu laden – nicht mitten in einer Folge von Schreibvorgängen
+            if let c = changedAt, Date().timeIntervalSince(c) > 1.5 { reload += 1; changedAt = nil }
+            last = sig
+            try? await Task.sleep(for: .seconds(1))
         }
     }
 
@@ -693,7 +808,8 @@ struct PlanBar: View {
     }
 
     private func go() {
-        let msg = L("Setze jetzt deinen Plan vollständig um.") + (note.isEmpty ? "" : "\n\n" + L("Änderungen am Plan:") + " " + note)
+        var msg = L("Setze jetzt deinen Plan vollständig um.") + (note.isEmpty ? "" : "\n\n" + L("Änderungen am Plan:") + " " + note)
+        if let r = Research.shared.promptBlock(rec.id) { msg += "\n\n" + r }
         Handoff.continueMission(rec, message: msg, target: rec.agent, agents: agents, hub: hub, note: L("Plan wird umgesetzt")) { s in
             app.page = .chat(s.id.uuidString)
         }

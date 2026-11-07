@@ -626,6 +626,7 @@ struct AwakeMenuLabel: View {
         } else {
             Image(nsImage: BrandImage.menuBar)
         }
+        LoadMenuLabel()
     }
 }
 

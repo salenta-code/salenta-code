@@ -24,6 +24,7 @@ struct CockpitView: View {
                 header
                 captureField
                 stats
+                ResumeCard()
                 TipsCard()
                 HStack(alignment: .top, spacing: Grid.l) {
                     // links: Coden – was dich braucht, wie es läuft, deine Projekte
@@ -31,6 +32,7 @@ struct CockpitView: View {
                         if let r = night.report, r.ended != nil || night.active { NightBriefingCard(report: r).appearSoftly() }
                         NeedsYouCard().appearSoftly()
                         AgentInsightsCard().appearSoftly(delay: 0.06)
+                        QualityCard().appearSoftly(delay: 0.09)
                         ProjectsCard().appearSoftly(delay: 0.12)
                         agentsCard.appearSoftly(delay: 0.18)
                     }
@@ -90,6 +92,8 @@ struct CockpitView: View {
                 }
             }
         }
+        .padding(.horizontal, Grid.xl).padding(.vertical, Grid.l)
+        .background(HeroBackdrop())
     }
 
     private var captureField: some View {
@@ -108,8 +112,7 @@ struct CockpitView: View {
             }
         }
         .padding(Grid.m)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.background.secondary))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(captureFocused ? Color.accentColor : Color.secondary.opacity(0.25)))
+        .background(ModernCardBackground(radius: 12))
     }
 
     private func addCapture() {
@@ -137,13 +140,13 @@ struct CockpitView: View {
         let att = Insights.attention(missions: missions.missions, sessions: agents.sessions, approvals: approvals.pending)
         let needs = att.filter { $0.kind != .ready }.count, ready = att.filter { $0.kind == .ready }.count
         return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Grid.m), count: 6), spacing: Grid.m) {
-            StatTile(value: "\(needs)", label: L("Braucht dich"), symbol: "person.crop.circle.badge.exclamationmark", tint: needs > 0 ? .orange : .secondary)
-            StatTile(value: "\(ready)", label: L("Fertig & grün"), symbol: "checkmark.seal.fill", tint: ready > 0 ? .green : .secondary)
-            StatTile(value: "\(agents.runningCount)", label: L("Agents aktiv"), symbol: "dot.radiowaves.left.and.right", tint: .purple)
+            StatTile(value: "\(needs)", label: L("Braucht dich"), symbol: "person.crop.circle.badge.exclamationmark", tint: needs > 0 ? SC.warn : .secondary)
+            StatTile(value: "\(ready)", label: L("Fertig & grün"), symbol: "checkmark.seal.fill", tint: ready > 0 ? SC.live : .secondary)
+            StatTile(value: "\(agents.runningCount)", label: L("Agents aktiv"), symbol: "dot.radiowaves.left.and.right", tint: .accentColor)
             StatTile(value: "\(tasks.focus.count)" + (overdue > 0 ? " · \(overdue)!" : ""), label: overdue > 0 ? L("Fokus · überfällig") : L("Fokus heute"),
-                     symbol: "sun.max.fill", tint: overdue > 0 ? .red : .orange)
-            StatTile(value: calendar.access == .granted ? "\(calendar.events(onDayOffset: 0).count)" : "–", label: L("Termine heute"), symbol: "calendar", tint: .blue)
-            StatTile(value: mail.unread.map { "\($0)" } ?? "–", label: L("Ungelesen (Mail)"), symbol: "envelope.fill", tint: .teal)
+                     symbol: "sun.max.fill", tint: overdue > 0 ? SC.red : .accentColor)
+            StatTile(value: calendar.access == .granted ? "\(calendar.events(onDayOffset: 0).count)" : "–", label: L("Termine heute"), symbol: "calendar", tint: .accentColor)
+            StatTile(value: mail.unread.map { "\($0)" } ?? "–", label: L("Ungelesen (Mail)"), symbol: "envelope.fill", tint: .accentColor)
         }
     }
 

@@ -78,7 +78,7 @@ enum MissionStatus {
             if let wt = rec.worktree {
                 info.isWorktree = true
                 info.baseBranch = wt.baseBranch
-                info.ahead = Int(Git.run(["rev-list", "--count", "\(wt.baseBranch)..HEAD"], in: dir, timeout: 5).out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                info.ahead = Int(Git.run(["rev-list", "--count", "\(Worktrees.baseRef(wt))..HEAD"], in: dir, timeout: 5).out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
             }
         } else {
             info.repo = (dir as NSString).lastPathComponent
