@@ -934,6 +934,7 @@ struct StewardOrderComposer: View {
                     Label(L("Neuer Auftrag"), systemImage: "plus.circle.fill").font(.callout.weight(.semibold)).foregroundStyle(Color.accentColor)
                     Spacer()
                     Button { withAnimation(.snappy) { open = false } } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
+                    .help(L("Schließen"))
                 }
                 ZStack(alignment: .topLeading) {
                     if text.isEmpty {

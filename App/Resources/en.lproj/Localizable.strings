@@ -2460,3 +2460,7 @@
 "Offline fertig und lokal gesichert – wird hochgeladen, sobald Internet da ist" = "Finished offline and saved locally – will be uploaded as soon as you're back online";
 "Offline fertig, lokal gesichert: " = "Finished offline, saved locally: ";
 "Internet wieder da – lade hoch: " = "Back online – uploading: ";
+
+"Recherche-Vorschläge auswählen" = "Select research suggestions";
+"Recherche einklappen" = "Collapse research";
+"Recherche ausklappen" = "Expand research";
