@@ -155,7 +155,9 @@ struct ResearchCard: View {
                         Button(L("Nur empfohlene")) { research.selectAll(missionID, recommendedOnly: true) }
                         Button(L("Alle")) { research.selectAll(missionID, recommendedOnly: false) }
                     } label: { Image(systemName: "checklist") }.menuStyle(.borderlessButton).fixedSize()
+                    .help(L("Recherche-Vorschläge auswählen"))
                     Button { open.toggle() } label: { Image(systemName: open ? "chevron.up" : "chevron.down") }.buttonStyle(.borderless)
+                    .help(open ? L("Recherche einklappen") : L("Recherche ausklappen"))
                 case .failed?:
                     Button(L("Erneut recherchieren")) { research.start(missionID, request: request, directory: directory) }.controlSize(.small)
                 case nil:
