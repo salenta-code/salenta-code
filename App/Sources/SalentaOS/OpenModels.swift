@@ -49,7 +49,7 @@ enum Secrets {
     }
 
     /// Beim App-Start einmal alle bekannten Schlüssel prüfen.
-    static func prime() { for a in ["openrouter", "anthropic", "openai"] { refresh(a) } }
+    static func prime() { for a in ["openrouter", "anthropic", "openai", "deepseek"] { refresh(a) } }
 
     /// Speichert (oder löscht bei leerem Wert) im Hintergrund. Lesbar für /usr/bin/security, damit Agents ihn zur Laufzeit holen können.
     static func set(_ account: String, _ value: String, done: (() -> Void)? = nil) {
@@ -79,6 +79,7 @@ enum OpenModels {
         switch k {
         case .openrouter: return Detection.which("claude") != nil && hasOpenRouter
         case .ollama: return Detection.which("claude") != nil && OllamaApp.installed
+        case .harness: return HarnessSetup.ready
         default: return Detection.which(k.command) != nil
         }
     }
@@ -162,6 +163,8 @@ struct ModelAccessSettings: View {
     @State private var hasOR = OpenModels.hasOpenRouter
     @State private var hasAN = Secrets.has("anthropic")
     @State private var hasOA = Secrets.has("openai")
+    @State private var deepseek = ""
+    @State private var hasDS = Secrets.has("deepseek")
 
     var body: some View {
         Form {
@@ -175,6 +178,17 @@ struct ModelAccessSettings: View {
                     if hasOR { Button("Entfernen", role: .destructive) { Secrets.set("openrouter", ""); hasOR = false } }
                 }
                 Link("Schlüssel erstellen: openrouter.ai/keys", destination: URL(string: "https://openrouter.ai/keys")!).font(.caption)
+            }
+            Section("Salenta Harness – unser eigener Agent") {
+                Text("Läuft mit DeepSeek, Claude, OpenAI, OpenRouter oder lokal (Ollama) – der erste vorhandene Schlüssel wird genutzt. DeepSeek ist sehr günstig und stark beim Programmieren.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    SecureField(hasDS ? L("DeepSeek-Schlüssel gespeichert") : "DeepSeek: sk-…", text: $deepseek)
+                    Button("Speichern") { Secrets.set("deepseek", deepseek); deepseek = ""; hasDS = true }.disabled(deepseek.isEmpty)
+                    if hasDS { Button("Entfernen", role: .destructive) { Secrets.set("deepseek", ""); hasDS = false } }
+                }
+                Link("Schlüssel erstellen: platform.deepseek.com", destination: URL(string: "https://platform.deepseek.com/api_keys")!).font(.caption)
+                Text(HarnessSetup.status).font(.caption).foregroundStyle(HarnessSetup.ready ? .green : .orange)
             }
             Section("Lokal mit Ollama (kostenlos, privat)") {
                 LocalSetupRow()
@@ -200,7 +214,7 @@ struct ModelAccessSettings: View {
         }
         .formStyle(.grouped)
         .onReceive(NotificationCenter.default.publisher(for: Secrets.changed)) { _ in
-            hasOR = OpenModels.hasOpenRouter; hasAN = Secrets.has("anthropic"); hasOA = Secrets.has("openai")
+            hasOR = OpenModels.hasOpenRouter; hasAN = Secrets.has("anthropic"); hasOA = Secrets.has("openai"); hasDS = Secrets.has("deepseek")
         }
     }
 }

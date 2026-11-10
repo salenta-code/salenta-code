@@ -56,6 +56,15 @@ enum CrashLog {
                     p.arguments = [String(getpid()), "4", "-mayDie", "-file", f]
                     p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
                     try? p.run()
+                    // Entwickler-Version: Kopie in den Quellordner (logs/ ist dort git-ignoriert), damit der Hänger auswertbar ist
+                    if Paths.isDevBuild {
+                        DispatchQueue.global(qos: .utility).async {
+                            p.waitUntilExit()
+                            let dst = Paths.source.appendingPathComponent("logs/" + (f as NSString).lastPathComponent)
+                            try? FileManager.default.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
+                            try? FileManager.default.copyItem(atPath: f, toPath: dst.path)
+                        }
+                    }
                 }
                 memTick += 1
                 if memTick % 150 == 0 { mark("Speicher \(residentMB()) MB") }   // alle 5 min

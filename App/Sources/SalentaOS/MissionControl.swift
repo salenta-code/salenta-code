@@ -8,7 +8,7 @@ import SwiftUI
 
 /// Wohin ein Auftrag geht.
 enum MissionTarget: String, CaseIterable, Identifiable {
-    case auto, osAgent, claude, codex, junie, cursor, opencode, gemini, grok, kiro, pi, kimi, openrouter, ollama, chatgpt, claudeWeb
+    case auto, osAgent, claude, codex, junie, cursor, opencode, gemini, grok, kiro, pi, kimi, deepseek, harness, openrouter, ollama, chatgpt, claudeWeb
 
     /// Ziel für einen Terminal-Agent.
     static func from(_ k: AgentKind) -> MissionTarget {
@@ -23,6 +23,8 @@ enum MissionTarget: String, CaseIterable, Identifiable {
         case .kiro: .kiro
         case .pi: .pi
         case .kimi: .kimi
+        case .deepseek: .deepseek
+        case .harness: .harness
         case .openrouter: .openrouter
         case .ollama: .ollama
         case .shell: .claude
@@ -45,6 +47,8 @@ enum MissionTarget: String, CaseIterable, Identifiable {
         case .kiro: "Kiro"
         case .pi: "Pi"
         case .kimi: "Kimi Code"
+        case .deepseek: "DeepSeek Harness"
+        case .harness: "Salenta Harness"
         case .openrouter: L("Open-Source-Modelle (OpenRouter)")
         case .ollama: L("Lokal (Ollama)")
         case .chatgpt: L("ChatGPT")
@@ -59,7 +63,7 @@ enum MissionTarget: String, CaseIterable, Identifiable {
         case .claude: "sparkle"
         case .codex: "chevron.left.forwardslash.chevron.right"
         case .junie: "j.square"
-        case .cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .openrouter, .ollama: agent?.symbol ?? "terminal"
+        case .cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .deepseek, .harness, .openrouter, .ollama: agent?.symbol ?? "terminal"
         case .chatgpt: "bubble.left.and.bubble.right"
         case .claudeWeb: "globe"
         }
@@ -79,6 +83,8 @@ enum MissionTarget: String, CaseIterable, Identifiable {
         case .kiro: L("AWS Kiro – spec-getriebene Entwicklung, AWS")
         case .pi: L("Pi – minimaler Coding-Agent für kleine, klare Aufgaben")
         case .kimi: L("Kimi Code von Moonshot – starke, günstige Kimi-Modelle, lange Aufgaben, Frontend")
+        case .harness: L("Salenta Harness – unser eigener Agent: plant, verteilt Recherche an parallele Unteragents, hält die Zugriffsstufe ein und prüft immer vor dem Abschluss")
+        case .deepseek: L("DeepSeek Harness – DeepSeeks eigener Agent, günstig, teilt große Aufgaben auf Unteragents auf (pro Nutzung über die DeepSeek-API)")
         case .openrouter: L("Claude Code mit Qwen, DeepSeek, Kimi, GLM … über OpenRouter – günstig, pro Nutzung bezahlt")
         case .ollama: L("Claude Code mit einem Open-Source-Modell lokal auf deinem Mac – kostenlos und privat")
         case .chatgpt: L("Öffnet ChatGPT und setzt den Auftrag ein")
@@ -98,6 +104,8 @@ enum MissionTarget: String, CaseIterable, Identifiable {
         case .kiro: .kiro
         case .pi: .pi
         case .kimi: .kimi
+        case .deepseek: .deepseek
+        case .harness: .harness
         case .openrouter: .openrouter
         case .ollama: .ollama
         case .auto, .chatgpt, .claudeWeb: nil
@@ -164,6 +172,8 @@ struct MissionComposer: View {
     @AppStorage("mission.planFirst") private var planFirst = false
     /// Fragen-Modus: der Agent liest und erklärt nur – er ändert keine Datei.
     @AppStorage("mission.ask") private var askMode = false
+    /// Zugriff pro Auftrag: read = nur lesen, project = im Projekt arbeiten (Standard), full = voller Zugriff
+    @AppStorage("mission.access") private var access = "project"
     /// Eingabe sieht wie eine Frage aus (Fragezeichen am Ende oder Fragewort vorn, kein Bau-Auftrag).
     private var looksLikeQuestion: Bool { Self.isQuestion(text) }
     /// „Bauen“ bewusst gewählt, obwohl der Text wie eine Frage aussieht.
@@ -359,122 +369,29 @@ struct MissionComposer: View {
                     .focused($focused)
                     .frame(minHeight: 70, maxHeight: 220)
             }
-            HStack(spacing: Grid.s) {
-                Menu {
-                    Button { showProjects = true } label: { Label(directory.isEmpty ? L("Projekt wählen …") : L("Projekt: ") + dirName, systemImage: "arrow.triangle.branch") }
-                    Button { showSkills = true } label: { Label(skills.isEmpty ? "Skills wählen" : "\(skills.count) Skills", systemImage: "wand.and.stars") }
-                    Divider()
-                    Button { if let u = Attachments.fromPasteboard() { attachments.append(u) } else { app.show(L("Kein Bild in der Zwischenablage")) } } label: {
-                        Label("Screenshot aus Zwischenablage", systemImage: "photo.on.rectangle")
-                    }.keyboardShortcut("v", modifiers: [.command, .shift])
-                    Button { attachments += Attachments.choose() } label: { Label("Dateien anhängen …", systemImage: "paperclip") }
-                    Divider()
-                    Toggle(isOn: $planFirst) { Label("Erst planen, dann umsetzen", systemImage: "list.bullet.clipboard") }
-                    Picker(selection: $parallel) {
-                        Text(L("Ein Agent")).tag(1)
-                        Text(L("Team aus bis zu 2 Agents")).tag(2)
-                        Text(L("Team aus bis zu 3 Agents")).tag(3)
-                    } label: { Label(L("Team"), systemImage: "person.3") }
-                    Picker("Bereich", selection: $companyRaw) {
-                        ForEach(Company.allCases) { c in Text(c.title).tag(c.rawValue) }
+            // Eine Leiste, die nie umbricht: passt die volle Fassung nicht, nimmt sie die kompakte (nur Symbole), dann die schlanke.
+            ViewThatFits(in: .horizontal) {
+                composerBar(.full)
+                composerBar(.compact)
+                composerBar(.slim)
+            }
+            .popover(isPresented: $showProjects) { ProjectPicker(selection: Binding(get: { directory }, set: { directory = $0 })) }
+            .background(EmptyView().popover(isPresented: $showSkills) { SkillPicker(agent: target.agent, selected: $skills) })
+            if hasStatusChips {
+                FlowLayout(spacing: 6) {
+                    if !skills.isEmpty { Chip(text: "\(skills.count) Skills", symbol: "wand.and.stars") }
+                    if planFirst && !asking { Chip(text: L("erst Plan"), symbol: "list.bullet.clipboard") }
+                    if asking {
+                        Chip(text: looksLikeQuestion && !askMode ? L("Frage erkannt – ändert nichts") : L("Frage – ändert nichts"), symbol: "eye")
+                            .help(L("Schreib einen Bau-Auftrag (z. B. „Bau …“), wenn er etwas ändern soll."))
                     }
-                } label: { Image(systemName: "plus").font(.body.weight(.medium)) }.help(L("Hinzufügen: Dateien, Projekt, Skills und Optionen"))
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    .popover(isPresented: $showProjects) { ProjectPicker(selection: Binding(get: { directory }, set: { directory = $0 })) }
-                    .background(EmptyView().popover(isPresented: $showSkills) { SkillPicker(agent: target.agent, selected: $skills) })
-                if !directory.isEmpty {
-                    // gewähltes Projekt – mit × wieder lösen
-                    HStack(spacing: 4) {
-                        Button { showProjects = true } label: { Label(dirName, systemImage: "folder") }.buttonStyle(.plain)
-                            .help(directory.replacingOccurrences(of: Paths.home.path, with: "~") + " – " + L("klicken zum Wechseln"))
-                        Button { directory = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain)
-                            .help(L("Projekt lösen – dann wählt Salenta Code passend zum Auftrag"))
+                    if localOnly {
+                        Chip(text: L("nur lokal"), symbol: "lock.laptopcomputer")
+                            .help(L("Nur lokal ist an – alles läuft über das lokale Modell. Ändern: Menüleiste oder Einstellungen › Modelle"))
                     }
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Capsule().fill(Color.secondary.opacity(0.1)))
-                } else if let a = target.agent, AgentKind.coders.contains(a) {
-                    Button { showProjects = true } label: { Label(L("Projekt wählen"), systemImage: "folder.badge.plus") }
-                        .buttonStyle(.plain).font(.caption).foregroundStyle(.orange)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Capsule().strokeBorder(Color.orange.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3])))
+                    if parallel > 1 { Chip(text: L("Team") + " ≤ \(parallel)", symbol: "person.3") }
+                    if target.hasModes && target != .auto && mode == .interaktiv { Chip(text: L("Im Dialog"), symbol: "bubble.left.and.text.bubble.right") }
                 }
-                if !skills.isEmpty { Chip(text: "\(skills.count) Skills", symbol: "wand.and.stars") }
-                if planFirst && !asking { Chip(text: L("erst Plan"), symbol: "list.bullet.clipboard") }
-                // Bauen oder nur fragen – sichtbar umschaltbar; erkennt Fragen auch von selbst.
-                Picker("", selection: Binding(get: { asking }, set: { if $0 { askMode = true; forceBuild = false } else { askMode = false; forceBuild = looksLikeQuestion } })) {
-                    Label(L("Bauen"), systemImage: "hammer").tag(false)
-                    Label(L("Fragen"), systemImage: "questionmark.bubble").tag(true)
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                .help(L("Fragen: Der Agent liest den Code und antwortet – er ändert nichts. Bauen: Er setzt den Auftrag um."))
-                if asking {
-                    Chip(text: looksLikeQuestion && !askMode ? L("Frage erkannt – ändert nichts") : L("Frage – ändert nichts"), symbol: "eye")
-                        .help(L("Schreib einen Bau-Auftrag (z. B. „Bau …“), wenn er etwas ändern soll."))
-                }
-                if localOnly {
-                    Chip(text: L("nur lokal"), symbol: "lock.laptopcomputer")
-                        .help(L("Nur lokal ist an – alles läuft über das lokale Modell. Ändern: Menüleiste oder Einstellungen › Modelle"))
-                }
-                if parallel > 1 { Chip(text: L("Team") + " ≤ \(parallel)", symbol: "person.3") }
-                if !stewardStore.projects.isEmpty {
-                    Menu {
-                        Picker("", selection: $stewardPick) {
-                            Text(L("Automatisch (wenn das Projekt einen hat)")).tag("auto")
-                            Text(L("Ohne Betreuer – direkt an einen Agent")).tag("none")
-                            Divider()
-                            ForEach(stewardStore.projects) { sp in Text(L("Betreuer") + " „" + sp.name + "“").tag(sp.id) }
-                        }
-                        .pickerStyle(.inline).labelsHidden()
-                    } label: {
-                        let name = stewardStore.project(stewardPick)?.name
-                        Label(stewardPick == "none" ? L("Ohne Betreuer") : name.map { L("Betreuer") + ": " + $0 } ?? L("Betreuer: auto"), systemImage: "safari")
-                            .font(.caption)
-                    }
-                    .menuStyle(.borderlessButton).fixedSize()
-                    .help(L("Wer den Auftrag bekommt: ein Projekt-Betreuer plant ihn als Team und betreut ihn bis zum fertigen Ergebnis"))
-                }
-                Spacer()
-                if target.hasModes && target != .auto {
-                    Menu {
-                        Button { modeRaw = RunMode.autonom.rawValue } label: { Label("Selbstständig – arbeitet allein bis zum Ergebnis", systemImage: "bolt.fill") }
-                        Button { modeRaw = RunMode.interaktiv.rawValue } label: { Label("Im Dialog – du sprichst mit dem Agent", systemImage: "bubble.left.and.text.bubble.right") }
-                    } label: {
-                        Text(mode == .autonom ? "Selbstständig" : "Im Dialog").font(.callout)
-                    }
-                    .menuStyle(.borderlessButton).fixedSize()
-                }
-                Menu {
-                    ForEach(visibleTargets) { t in
-                        let available = t.agent.map { !system.cliChecked || system.installed($0) } ?? true
-                        Button { targetRaw = t.rawValue } label: { Label("\(t.title) – \(t.hint)", systemImage: t.symbol) }
-                            .disabled(!available)
-                    }
-                } label: {
-                    if target == .auto && !text.trimmingCharacters(in: .whitespaces).isEmpty {
-                        Label("→ \(decision.target.title)\(decision.projectName.map { " · \($0)" } ?? "")", systemImage: decision.target.symbol)
-                            .font(.callout)
-                    } else {
-                        Label(target.title, systemImage: target.symbol).font(.callout)
-                    }
-                }
-                .menuStyle(.borderlessButton).fixedSize()
-                .help(target == .auto ? decision.reason : target.hint)
-                modelMenu
-                MicButton { t in text += (text.isEmpty || text.hasSuffix(" ") || text.hasSuffix("\n") ? "" : " ") + t; focused = true }
-                Button { launch() } label: {
-                    if routing {
-                        ProgressView().controlSize(.small).frame(width: 30, height: 30)
-                    } else {
-                    Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.secondary.opacity(0.4) : Color.orange))
-                    }
-                }
-                .help(routing ? L("Wählt den besten Agent und das Modell …") : L("Starten (⌘↩)"))
-                .buttonStyle(.plain)
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             DictationStrip()
             AttachmentChips(items: $attachments)
@@ -502,6 +419,183 @@ struct MissionComposer: View {
         .background(ModernCardBackground(radius: 20))
         .shadow(color: .black.opacity(0.06), radius: 10, y: 3)
         .onAppear { focused = true }
+    }
+
+
+    private enum BarFit { case full, compact, slim }
+
+    private var hasStatusChips: Bool {
+        !skills.isEmpty || (planFirst && !asking) || asking || localOnly || parallel > 1
+            || (target.hasModes && target != .auto && mode == .interaktiv)
+    }
+
+    /// Untere Leiste der Eingabe. Links: was mitkommt (Projekt, Zugriff, Betreuer). Rechts: wie und womit gearbeitet wird.
+    @ViewBuilder private func composerBar(_ fit: BarFit) -> some View {
+        let small = fit != .full
+        HStack(spacing: small ? 6 : Grid.s) {
+            plusMenu
+            projectChip(small: small)
+            accessMenu
+            if fit != .slim, !stewardStore.projects.isEmpty { stewardMenu(small: small) }
+            Spacer(minLength: Grid.s)
+            Picker("", selection: Binding(get: { asking }, set: { if $0 { askMode = true; forceBuild = false } else { askMode = false; forceBuild = looksLikeQuestion } })) {
+                if small {
+                    Image(systemName: "hammer").help(L("Bauen")).tag(false)
+                    Image(systemName: "questionmark.bubble").help(L("Fragen")).tag(true)
+                } else {
+                    Text(L("Bauen")).tag(false)
+                    Text(L("Fragen")).tag(true)
+                }
+            }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            .help(L("Fragen: Der Agent liest den Code und antwortet – er ändert nichts. Bauen: Er setzt den Auftrag um."))
+            agentMenu(small: small)
+            if fit != .slim { modelMenu }
+            MicButton { t in text += (text.isEmpty || text.hasSuffix(" ") || text.hasSuffix("\n") ? "" : " ") + t; focused = true }
+            sendButton
+        }
+        .lineLimit(1)
+    }
+
+    private var plusMenu: some View {
+        Menu {
+            Button { showProjects = true } label: { Label(directory.isEmpty ? L("Projekt wählen …") : L("Projekt: ") + dirName, systemImage: "folder") }
+            Button { showSkills = true } label: { Label(skills.isEmpty ? "Skills wählen" : "\(skills.count) Skills", systemImage: "wand.and.stars") }
+            Divider()
+            Button { if let u = Attachments.fromPasteboard() { attachments.append(u) } else { app.show(L("Kein Bild in der Zwischenablage")) } } label: {
+                Label("Screenshot aus Zwischenablage", systemImage: "photo.on.rectangle")
+            }.keyboardShortcut("v", modifiers: [.command, .shift])
+            Button { attachments += Attachments.choose() } label: { Label("Dateien anhängen …", systemImage: "paperclip") }
+            Divider()
+            Toggle(isOn: $planFirst) { Label("Erst planen, dann umsetzen", systemImage: "list.bullet.clipboard") }
+            if target.hasModes && target != .auto {
+                Picker(selection: $modeRaw) {
+                    Text(L("Selbstständig – arbeitet allein bis zum Ergebnis")).tag(RunMode.autonom.rawValue)
+                    Text(L("Im Dialog – du sprichst mit dem Agent")).tag(RunMode.interaktiv.rawValue)
+                } label: { Label(L("Arbeitsweise"), systemImage: "bolt") }
+            }
+            Picker(selection: $parallel) {
+                Text(L("Ein Agent")).tag(1)
+                Text(L("Team aus bis zu 2 Agents")).tag(2)
+                Text(L("Team aus bis zu 3 Agents")).tag(3)
+            } label: { Label(L("Team"), systemImage: "person.3") }
+            if !stewardStore.projects.isEmpty {
+                Picker(selection: $stewardPick) {
+                    Text(L("Automatisch (wenn das Projekt einen hat)")).tag("auto")
+                    Text(L("Ohne Betreuer – direkt an einen Agent")).tag("none")
+                    ForEach(stewardStore.projects) { sp in Text(L("Betreuer") + " „" + sp.name + "“").tag(sp.id) }
+                } label: { Label(L("Betreuer"), systemImage: "safari") }
+            }
+            Picker("Bereich", selection: $companyRaw) {
+                ForEach(Company.allCases) { c in Text(c.title).tag(c.rawValue) }
+            }
+        } label: { Image(systemName: "plus").font(.body.weight(.medium)) }
+            .help(L("Hinzufügen: Dateien, Projekt, Skills und Optionen"))
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+    }
+
+    @ViewBuilder private func projectChip(small: Bool) -> some View {
+        if !directory.isEmpty {
+            HStack(spacing: 4) {
+                Button { showProjects = true } label: {
+                    HStack(spacing: 4) { Image(systemName: "folder"); Text(dirName).truncationMode(.middle) }
+                }.buttonStyle(.plain)
+                    .help(directory.replacingOccurrences(of: Paths.home.path, with: "~") + " – " + L("klicken zum Wechseln"))
+                Button { directory = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain)
+                    .help(L("Projekt lösen – dann wählt Salenta Code passend zum Auftrag"))
+            }
+            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            .frame(maxWidth: small ? 120 : 200)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Capsule().fill(Color.secondary.opacity(0.1)))
+            .layoutPriority(1)
+        } else if let a = target.agent, AgentKind.coders.contains(a) {
+            Button { showProjects = true } label: {
+                if small { Image(systemName: "folder.badge.plus") } else { Label(L("Projekt wählen"), systemImage: "folder.badge.plus") }
+            }
+            .buttonStyle(.plain).font(.caption).foregroundStyle(.orange)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Capsule().strokeBorder(Color.orange.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3])))
+            .fixedSize()
+            .help(L("Projekt wählen"))
+        }
+    }
+
+    private var accessMenu: some View {
+        // Zugriff pro Auftrag – wird über die Optionen der Agents erzwungen (Claude: plan/acceptEdits/bypass, Codex: read-only/workspace/voll)
+        Menu {
+            Picker(selection: $access) {
+                Label(L("Nur lesen"), systemImage: "eye").tag("read")
+                Label(L("Im Projekt arbeiten"), systemImage: "folder").tag("project")
+                Label(L("Voller Zugriff"), systemImage: "exclamationmark.shield").tag("full")
+            } label: { EmptyView() }.pickerStyle(.inline)
+        } label: {
+            Image(systemName: access == "read" ? "eye" : access == "full" ? "exclamationmark.shield" : "lock.open")
+                .font(.caption).foregroundStyle(access == "full" ? .orange : .secondary)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help(L("Zugriff für diesen Auftrag: Nur lesen (ändert nichts) · Im Projekt arbeiten (Standard, heikle Befehle fragen) · Voller Zugriff (keine Rückfragen, keine Sandbox)"))
+    }
+
+    private func stewardMenu(small: Bool) -> some View {
+        Menu {
+            Picker("", selection: $stewardPick) {
+                Text(L("Automatisch (wenn das Projekt einen hat)")).tag("auto")
+                Text(L("Ohne Betreuer – direkt an einen Agent")).tag("none")
+                Divider()
+                ForEach(stewardStore.projects) { sp in Text(L("Betreuer") + " „" + sp.name + "“").tag(sp.id) }
+            }
+            .pickerStyle(.inline).labelsHidden()
+        } label: {
+            let name = stewardStore.project(stewardPick)?.name
+            if small {
+                Image(systemName: stewardPick == "none" ? "person.crop.circle.badge.xmark" : "safari").font(.caption)
+            } else {
+                Label(stewardPick == "none" ? L("Ohne Betreuer") : name.map { L("Betreuer") + ": " + $0 } ?? L("Betreuer: auto"), systemImage: "safari")
+                    .font(.caption)
+            }
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .help(L("Wer den Auftrag bekommt: ein Projekt-Betreuer plant ihn als Team und betreut ihn bis zum fertigen Ergebnis"))
+    }
+
+    private func agentMenu(small: Bool) -> some View {
+        Menu {
+            ForEach(visibleTargets) { t in
+                let available = t.agent.map { !system.cliChecked || system.installed($0) } ?? true
+                Button { targetRaw = t.rawValue } label: { Label("\(t.title) – \(t.hint)", systemImage: t.symbol) }
+                    .disabled(!available)
+            }
+        } label: {
+            let auto = target == .auto && !text.trimmingCharacters(in: .whitespaces).isEmpty
+            let t = auto ? decision.target : target
+            if small {
+                Image(systemName: t.symbol).font(.callout)
+            } else if auto {
+                Label("→ \(decision.target.title)", systemImage: decision.target.symbol).font(.callout)
+            } else {
+                Label(target.title, systemImage: target.symbol).font(.callout)
+            }
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .help(target == .auto ? decision.reason + (decision.projectName.map { " · " + $0 } ?? "") : target.title + " – " + target.hint)
+    }
+
+    private var sendButton: some View {
+        Button { launch() } label: {
+            if routing {
+                ProgressView().controlSize(.small).frame(width: 30, height: 30)
+            } else {
+                Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.secondary.opacity(0.4) : Color.orange))
+            }
+        }
+        .help(routing ? L("Wählt den besten Agent und das Modell …") : L("Starten (⌘↩)"))
+        .buttonStyle(.plain)
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     private var cardBody: some View {
@@ -618,9 +712,11 @@ struct MissionComposer: View {
         var x = d
         x.directory = directory
         if d.target == .osAgent || d.target == .auto {
-            x.target = .claude
-            x.model = AIRouter.defaultModel(for: .claude, text: text)
-            x.reason = String(format: L("Im Projekt %@ – Claude Code arbeitet direkt im Repo"), (directory as NSString).lastPathComponent)
+            // Claude pausiert oder nicht verfügbar? Dann gleich der Ersatz – sichtbar, statt still Claude zu starten
+            let k: AgentKind = AgentManager.claudeOff ? (AgentManager.claudeStandIn(osAgent: false) ?? .claude) : .claude
+            x.target = MissionTarget.from(k)
+            x.model = k == .claude ? AIRouter.defaultModel(for: .claude, text: text) : nil
+            x.reason = String(format: L("Im Projekt %@ – %@ arbeitet direkt im Repo"), (directory as NSString).lastPathComponent, k.title)
         }
         return x
     }
@@ -646,7 +742,7 @@ struct MissionComposer: View {
         if target == .auto {
             let fallback = decision
             // Die KI-Agentenwahl fragt ein Cloud-Modell – bei „Nur lokal“ entscheidet die App selbst
-            if AIRouter.enabled && LocalFirst.shared.isOnline && !LocalFirst.shared.localOnly {
+            if AIRouter.enabled && LocalFirst.shared.isOnline && !LocalFirst.shared.localOnly && !Router.named(body) {
                 routing = true
                 let installed = Set(AgentKind.allCases.filter { !system.cliChecked || system.installed($0) })
                 AIRouter.decide(body, projects: projects.local, skills: skillCatalog.skills, installed: installed,
@@ -699,7 +795,8 @@ struct MissionComposer: View {
         var dir = self.dir
         if let p = d.directory, !p.isEmpty, directory.isEmpty || auto { dir = p }   // Vorschlag (auch im Vorschlag geändert)
         // Code-Agents brauchen ein Projekt – nie still im zuletzt benutzten Ordner arbeiten
-        if dir.isEmpty, let a = target.agent, AgentKind.coders.contains(a) {
+        // (Der OS-Agent arbeitet ohne Projekt – er nutzt deine verbundenen Tools, nicht ein Repo.)
+        if dir.isEmpty, target != .osAgent, let a = target.agent, AgentKind.coders.contains(a) {
             app.show(L("Für diesen Auftrag bitte zuerst ein Projekt wählen"))
             proposal = nil
             showProjects = true
@@ -740,7 +837,7 @@ struct MissionComposer: View {
                 agents.selected = s.id
                 app.page = .chat(s.id.uuidString)
             }
-        case .claude, .codex, .junie, .cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .openrouter, .ollama:
+        case .claude, .codex, .junie, .cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .deepseek, .harness, .openrouter, .ollama:
             guard let primary = target.agent else { return }
             let coding = AgentKind.coders.contains(primary)
             let ask = question && coding
@@ -751,7 +848,7 @@ struct MissionComposer: View {
             let root = Git.root(of: dir) ?? dir
             let hasSteward = Steward.shared.project(root) != nil
             let toSteward = UserDefaults.standard.object(forKey: "mission.toSteward") as? Bool ?? true
-            if stewardPick != "none", coding, !question, !(planFirst && coding), !dir.isEmpty, toSteward, Git.root(of: dir) != nil, hasSteward || parallel > 1 {
+            if stewardPick != "none", coding, !question, access != "read", !(planFirst && coding), !dir.isEmpty, toSteward, Git.root(of: dir) != nil, hasSteward || parallel > 1 {
                 let sid = Steward.shared.takeOrder(dir, text: body, lead: auto ? nil : primary, teamSize: parallel)
                 app.page = .steward(sid)
                 return
@@ -780,7 +877,7 @@ struct MissionComposer: View {
                                          label: kinds.count > 1 ? "\(title) · \(agent.title)" : title,
                                          model: ModelCatalog.selected(for: agent).isEmpty ? (agent == .claude || agent == .ollama ? model : nil) : ModelCatalog.selected(for: agent),
                                          effort: (agent == .codex || agent == .claude) ? (effort ?? "medium") : nil,
-                                         codingConfig: cfg, planOnly: plan || ask, question: ask)
+                                         codingConfig: cfg, planOnly: plan || ask || access == "read", fullAccess: access == "full", question: ask)
                     if let cfg { try? FileManager.default.removeItem(at: cfg) }
                     MissionStore.shared.setMeta(s.id.uuidString, manual: !auto, tools: tools.isEmpty ? nil : tools)
                     if plan {

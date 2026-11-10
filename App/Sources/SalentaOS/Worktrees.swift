@@ -9,10 +9,38 @@ enum Git {
     /// Ist in git kein Name/keine E-Mail eingerichtet, scheitern Commits („Author identity unknown“).
     /// Dann nur für diesen Befehl eine Identität mitgeben – an deiner Git-Konfiguration ändert sich nichts.
     static func identity(_ dir: String) -> [String] {
-        hasIdentity(dir) ? [] : ["-c", "user.name=\(fallbackName)", "-c", "user.email=\(fallbackEmail)"]
+        if hasIdentity(dir) { return [] }
+        let gh = githubIdentity
+        return ["-c", "user.name=\(gh?.name ?? fallbackName)", "-c", "user.email=\(gh?.email ?? fallbackEmail)"]
     }
     static var fallbackName: String { Profile.name.isEmpty ? "Salenta Code" : Profile.name }
     static let fallbackEmail = "salenta-os@localhost"
+    /// Ohne git-Identität: die GitHub-Noreply-Adresse des angemeldeten Kontos. Damit ordnet GitHub die Commits dem Konto zu –
+    /// sonst blockieren z. B. Vercel-Vorschauen den PR („couldn't verify an account for commit“).
+    /// Nie blockierend: liefert den gemerkten Wert; beim ersten Zugriff wird im Hintergrund nachgeschlagen
+    /// (ein `gh api`-Aufruf kann Sekunden dauern – auf dem Hauptthread würde das Fenster einfrieren).
+    private static var ghIdentityCache: (name: String, email: String)??
+    private static var ghIdentityLoading = false
+    private static let ghLock = NSLock()
+    static var githubIdentity: (name: String, email: String)? {
+        ghLock.lock(); let c = ghIdentityCache; let loading = ghIdentityLoading; if c == nil { ghIdentityLoading = true }; ghLock.unlock()
+        if let c { return c }
+        if !loading {
+            DispatchQueue.global(qos: .utility).async {
+                var result: (name: String, email: String)? = nil
+                if Detection.which("gh") != nil {
+                    let out = Proc.zsh("gh api user --jq '[.id, .login, .name] | @tsv' 2>/dev/null", in: NSTemporaryDirectory(), timeout: 15).out
+                        .trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                    if out.count >= 2, let id = Int(out[0]), !out[1].isEmpty {
+                        result = (out.count >= 3 && !out[2].isEmpty ? out[2] : out[1], "\(id)+\(out[1])@users.noreply.github.com")
+                    }
+                }
+                ghLock.lock(); ghIdentityCache = .some(result); ghIdentityLoading = false; ghLock.unlock()
+            }
+        }
+        return nil
+    }
+    static func primeIdentity() { _ = githubIdentity }
     private static var identityCache: Bool?
     static func hasIdentity(_ dir: String) -> Bool {
         if let c = identityCache { return c }
@@ -72,7 +100,7 @@ enum Worktrees {
     /// Legt eine Arbeitskopie an. nil = kein Git-Repo, ausgeschaltet oder fehlgeschlagen (dann im Original arbeiten).
     /// `from`: auf dem aktuellen Stand dieses Branches von GitHub aufsetzen (z. B. „main“) statt auf dem lokal ausgecheckten –
     /// sonst landen nicht hochgeladene lokale Commits mit im Pull Request.
-    static func create(for dir: String, id: String, from remoteBranch: String? = nil) -> WorktreeInfo? {
+    static func create(for dir: String, id: String, from remoteBranch: String? = nil, mergeIn: String? = nil) -> WorktreeInfo? {
         guard enabled, !isWorktree(dir), let repo = Git.root(of: dir) else { return nil }
         var baseBranch = Git.run(["rev-parse", "--abbrev-ref", "HEAD"], in: repo).out.trimmingCharacters(in: .whitespacesAndNewlines)
         var startPoint = "HEAD"
@@ -87,6 +115,13 @@ enum Worktrees {
         let r = Git.run(["worktree", "add", "-b", branch, path, startPoint], in: repo)
         guard r.code == 0 else { return nil }
         prepare(worktree: path, from: repo)
+        // PR-Korrektur: den neuesten Stand des Ziel-Branches gleich hier einmischen. Helfer arbeiten oft ohne Netz und
+        // könnten ihn selbst nie holen – Konflikte bleiben als Konfliktmarker stehen und der Helfer löst sie auf.
+        if let base = mergeIn, !base.isEmpty, base != remoteBranch,
+           Git.run(["fetch", "--quiet", "origin", "+refs/heads/\(base):refs/remotes/origin/\(base)"], in: repo, timeout: 120).code == 0 {
+            _ = Git.run(["-c", "user.name=Salenta Code", "-c", "user.email=noreply@salenta.local",
+                         "merge", "--no-edit", "--no-ff", "origin/" + base], in: path, timeout: 120)
+        }
         // Unterordner beibehalten (Auftrag galt z. B. für repo/app)
         let rel = String(dir.dropFirst(repo.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let work = rel.isEmpty ? path : (path as NSString).appendingPathComponent(rel)
@@ -134,7 +169,8 @@ enum Worktrees {
             let src = (repo as NSString).appendingPathComponent(rel), dst = (worktree as NSString).appendingPathComponent(rel)
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: src, isDirectory: &isDir), isDir.boolValue, !fm.fileExists(atPath: dst),
-                  fm.fileExists(atPath: (dst as NSString).deletingLastPathComponent) else { continue }
+                  fm.fileExists(atPath: (dst as NSString).deletingLastPathComponent),
+                  ((try? fm.contentsOfDirectory(atPath: src)) ?? []).contains(where: { !$0.hasPrefix(".") }) else { continue }
             try? fm.createSymbolicLink(atPath: dst, withDestinationPath: src)
         }
     }
@@ -143,7 +179,10 @@ enum Worktrees {
     /// Was Agenten-Werkzeuge nebenbei in der Arbeitskopie umschreiben (z. B. Lern-Plugins, die Skills anpassen),
     /// gehört nicht zum Auftrag: kommt weder in den Diff, die Prüfung, das Review noch den Pull Request.
     static let toolNoise = [":(exclude,glob).agents/skills/**", ":(exclude,glob).claude/skills/**", ":(exclude,glob).cursor/skills/**",
-                            ":(exclude,glob).codex/skills/**"]
+                            ":(exclude,glob).codex/skills/**",
+                            // Ablagen von Prüfwerkzeugen (Screenshots, Konsolen-Logs) – nie Teil der Änderung
+                            ":(exclude,glob).playwright-mcp/**", ":(exclude,glob)playwright-report/**", ":(exclude,glob)**/.playwright-mcp/**",
+                            ":(exclude,glob).aos-*", ":(exclude,glob)**/*.aos-tmp"]
     static let addSpec = [".", ":(exclude)node_modules", ":(exclude,glob)**/node_modules"] + toolNoise
 
     static func top(_ wt: WorktreeInfo) -> String { Git.root(of: wt.path) ?? wt.path }
@@ -194,11 +233,18 @@ enum Worktrees {
         return Git.run(args, in: dir).out
     }
 
+    /// Ablagen von Prüfwerkzeugen, die nie ins Repo gehören – auch nicht, wenn ein Helfer sie versehentlich schon committet hat
+    static let debugDirs = [".playwright-mcp", "playwright-report"]
+
     static func commitAll(_ wt: WorktreeInfo, message: String) {
         let dir = top(wt)
         Git.run(["add", "-A", "--"] + Self.addSpec, in: dir)
+        // schon committete Debug-Ablagen aus dem Index nehmen (wird als Löschung Teil des Commits)
+        Git.run(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"] + Self.debugDirs, in: dir)
         let staged = Git.run(["diff", "--cached", "--quiet"], in: dir).code != 0
-        if staged { Git.run(Git.identity(dir) + ["commit", "-m", message], in: dir) }
+        // Eingemischter Ziel-Branch (PR-Korrektur): den Merge immer abschließen, auch wenn sonst nichts geändert wurde
+        let merging = Git.run(["rev-parse", "-q", "--verify", "MERGE_HEAD"], in: dir).code == 0
+        if staged || merging { Git.run(Git.identity(dir) + ["commit", "--no-edit", "-m", message], in: dir) }
     }
 
     /// In den Ausgangs-Branch übernehmen. Bei Konflikt wird abgebrochen und nichts verändert.

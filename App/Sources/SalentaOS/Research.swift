@@ -106,7 +106,7 @@ final class Research: ObservableObject {
             let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-research-\(UUID().uuidString).md")
             try? prompt.write(to: file, atomically: true, encoding: .utf8)
             defer { try? FileManager.default.removeItem(at: file) }
-            let r = Proc.zsh("claude -p --model sonnet --output-format json --max-turns 20 --strict-mcp-config --allowedTools WebSearch,WebFetch < \(Shell.quote(file.path))",
+            let r = Proc.zsh(HelperLLM.command(model: "sonnet", maxTurns: 20, file: file.path, extra: "--allowedTools WebSearch,WebFetch", web: true),
                              in: NSTemporaryDirectory(), timeout: 600)
             var out = ResearchResult(state: .failed)
             if let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"), a < b,
@@ -154,8 +154,8 @@ struct ResearchCard: View {
                     Menu {
                         Button(L("Nur empfohlene")) { research.selectAll(missionID, recommendedOnly: true) }
                         Button(L("Alle")) { research.selectAll(missionID, recommendedOnly: false) }
-                    } label: { Image(systemName: "checklist") }.menuStyle(.borderlessButton).fixedSize()
-                    Button { open.toggle() } label: { Image(systemName: open ? "chevron.up" : "chevron.down") }.buttonStyle(.borderless)
+                    } label: { Image(systemName: "checklist") }.menuStyle(.borderlessButton).fixedSize().help(L("Vorschläge auswählen: nur empfohlene oder alle"))
+                    Button { open.toggle() } label: { Image(systemName: open ? "chevron.up" : "chevron.down") }.buttonStyle(.borderless).help(open ? L("Vorschläge einklappen") : L("Vorschläge ausklappen"))
                 case .failed?:
                     Button(L("Erneut recherchieren")) { research.start(missionID, request: request, directory: directory) }.controlSize(.small)
                 case nil:

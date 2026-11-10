@@ -136,7 +136,8 @@ sed -e "s|__BUILD__|$(date +%Y%m%d%H%M)|" -e "s|__BUNDLE_ID__|$bundle_id|" -e "s
     "$here/Info.plist.in" > "$app/Contents/Info.plist"
 # Werkzeuge für die Agents mitliefern (die fertige App legt sie beim Start bereit)
 mkdir -p "$app/Contents/Resources/bin"
-cp "$root/bin/aos" "$root/bin/aos-mcp" "$root/bin/aos-live" "$app/Contents/Resources/bin/" 2>/dev/null || true
+cp "$root/bin/aos" "$root/bin/aos-mcp" "$root/bin/aos-live" "$root/bin/aos-setup" "$root/bin/timeout" "$root/bin/salenta-harness" "$root/bin/aos-ask" "$app/Contents/Resources/bin/" 2>/dev/null || true
+rm -rf "$app/Contents/Resources/bin/harness"; cp -R "$root/bin/harness" "$app/Contents/Resources/bin/harness" 2>/dev/null || true; rm -rf "$app/Contents/Resources/bin/harness/test"
 # Übersetzungen (en, de)
 for l in "$here/Resources"/*.lproj(N); do cp -R "$l" "$app/Contents/Resources/"; done
 [[ -f "$here/Resources/AppIcon.icns" ]] && cp "$here/Resources/AppIcon.icns" "$app/Contents/Resources/"

@@ -146,7 +146,7 @@ final class ModelCatalog: ObservableObject {
             let base = discovered[agent.rawValue] ?? []
             let defaults = ["kimi-code/kimi-for-coding"]
             return (base + defaults.filter { !base.contains($0) }).map { ModelOption(value: $0, label: $0, hint: $0 == "kimi-code/kimi-for-coding" ? L("Kimi-Abo (Standard)") : "") }
-        case .cursor, .opencode, .kiro, .pi, .openrouter:
+        case .cursor, .opencode, .kiro, .pi, .openrouter, .deepseek, .harness:
             return (discovered[agent.rawValue] ?? []).map { ModelOption(value: $0, label: $0, hint: $0.hasSuffix(":free") ? L("kostenlos") : "") }
         case .ollama:
             let local = discovered[agent.rawValue] ?? []

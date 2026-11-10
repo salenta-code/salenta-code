@@ -24,6 +24,8 @@ struct MissionRecord: Codable, Identifiable, Hashable {
     var archived: Bool? = nil
     /// Gewähltes Modell (für die Anzeige) und warum dieser Agent gewählt wurde.
     var model: String? = nil
+    /// Denkstufe (low/medium/high) – getrennt vom Modell, damit Übergaben sie behalten
+    var effort: String? = nil
     var routeReason: String? = nil
     /// Arbeitskopie bei Coding-Aufträgen (bis du übernimmst oder verwirfst).
     var worktree: WorktreeInfo? = nil
@@ -51,6 +53,9 @@ struct MissionRecord: Codable, Identifiable, Hashable {
     var checkpoint: String? = nil
 
     var agentKind: AgentKind { AgentKind(rawValue: agent) ?? .claude }
+    /// Ältere Einträge haben die Denkstufe im Modell-Feld gespeichert („medium“) – die zählt nicht als Modell.
+    var cleanModel: String? { model.flatMap { ["low", "medium", "high", "xhigh", "minimal"].contains($0) ? nil : $0 } }
+    var legacyEffort: String? { model.flatMap { ["low", "medium", "high"].contains($0) ? $0 : nil } }
     var isOSAgent: Bool { agent == "os" }
     var agentTitle: String { isOSAgent ? "OS-Agent" : agentKind.title }
     var agentSymbol: String { isOSAgent ? "sparkles" : agentKind.symbol }
@@ -91,7 +96,7 @@ final class MissionStore: ObservableObject {
         let request = prompt.components(separatedBy: "\n\n---\n").first ?? prompt
         missions.append(MissionRecord(id: s.id.uuidString, title: Self.tidy(s.label), request: request, agent: s.isOSAgent ? "os" : s.kind.rawValue,
                                       mode: s.mode.rawValue, directory: s.directory.path, started: s.startedAt,
-                                      log: s.logFile.path, taskID: s.taskID, model: s.model ?? s.effort, worktree: s.worktree))
+                                      log: s.logFile.path, taskID: s.taskID, model: s.model, effort: s.effort, worktree: s.worktree))
         save()
     }
 
@@ -130,6 +135,14 @@ final class MissionStore: ObservableObject {
     func setDigest(_ id: String, _ d: MissionDigest) {
         guard let i = missions.firstIndex(where: { $0.id == id }) else { return }
         missions[i].digest = d
+        save()
+    }
+
+    /// Gestoppt: als beendet und nicht erfolgreich markieren (sonst gälte der Lauf später als „fertig“ und würde geprüft und geliefert).
+    func markStopped(_ id: String) {
+        guard let i = missions.firstIndex(where: { $0.id == id }) else { return }
+        if missions[i].ended == nil { missions[i].ended = Date() }
+        missions[i].ok = false
         save()
     }
 
@@ -228,7 +241,8 @@ final class MissionStore: ObservableObject {
         save()
     }
 
-    func mission(_ id: String) -> MissionRecord? { missions.first { $0.id == id } }
+    /// Neueste stehen hinten – von hinten suchen (die Ansicht fragt das für jede laufende Zeile oft ab)
+    func mission(_ id: String) -> MissionRecord? { missions.last { $0.id == id } }
 
     var recent: [MissionRecord] { missions.sorted { $0.started > $1.started } }
 }
@@ -387,6 +401,8 @@ struct ConversationView: View {
     @State private var modelTick = 0
     @StateObject private var tail = LogTail()
     @ObservedObject private var catalog = ModelCatalog.shared
+    /// Arbeitsbereich rechts (Dateien, Vorschau, Diff, Verlauf) – bleibt eingeschaltet, bis du ihn zuklappst
+    @AppStorage("chat.workspace") private var showWorkspace = true
 
     static let handoffAgents: [(String, String, String)] = [
         ("os", "OS-Agent", "sparkles"), ("claude", "Claude Code", "sparkle"),
@@ -402,6 +418,8 @@ struct ConversationView: View {
                 header(rec)
                 MissionStatusBar(rec: rec, session: session).id(rec.id)
                 Divider()
+                HStack(spacing: 0) {
+                VStack(spacing: 0) {
                 if rec.runMode == .interaktiv, !showTerminal, let t = rec.transcript {
                     DialogChat(path: t, session: session)
                 } else if let s = session, rec.runMode == .interaktiv || showTerminal {
@@ -446,6 +464,14 @@ struct ConversationView: View {
                     }
                 }
                 composer(rec)
+                if rec.runMode == .autonom { LiveStatsBar(rec: rec, session: session, blocks: tail.blocks) }
+                }
+                if showWorkspace, rec.runMode == .autonom || rec.worktree != nil {
+                    Divider()
+                    WorkspacePanel(rec: rec, running: session?.running == true, blocks: tail.blocks)
+                        .frame(minWidth: 280, idealWidth: 340, maxWidth: 420)
+                }
+                }
             }
             .navigationTitle(rec.title)
             .task(id: rec.id) { await findTranscript(rec) }
@@ -511,8 +537,12 @@ struct ConversationView: View {
                         .sheet(isPresented: $showLivePreview) { PreviewSheet(id: rec.id, title: rec.title) }
                 }
                 if s.running {
-                    Button(role: .destructive) { agents.close(s.id) } label: { Image(systemName: "stop.fill") }.help("Stoppen")
+                    Button(role: .destructive) { agents.stop(s.id) } label: { Image(systemName: "stop.fill") }.help("Stoppen")
                 }
+            }
+            if rec.runMode == .autonom || rec.worktree != nil {
+                Toggle(isOn: $showWorkspace) { Image(systemName: "sidebar.right") }
+                    .toggleStyle(.button).help(L("Arbeitsbereich: geänderte Dateien mit Vorschau und Diff, Verlauf als Zeitleiste"))
             }
             Button { openWindow(id: "live") } label: { Image(systemName: "macwindow.on.rectangle") }.help("Im Live-Fenster ansehen")
             // Auftrag an einen Projekt-Betreuer übergeben: er plant ihn als Team neu und betreut ihn bis zum Schluss
@@ -804,9 +834,10 @@ struct HomeView: View {
                 }
                 MissionComposer(style: .claude, seed: $seed)
                     .frame(maxWidth: 760)
-                HStack(spacing: Grid.m) {
-                    if Focus.isOn { Label("Fokus aktiv – nur Freigaben, fertige Aufträge und dringende Mails melden sich", systemImage: "moon.fill").font(.caption).foregroundStyle(.purple) }
-                    Spacer(); UsageMini(); FocusButton(); AwakeButton(); AutoModeButton()
+                // Statusleiste: ausgeschrieben, wenn Platz ist – sonst nur Symbole (nie umbrechen)
+                ViewThatFits(in: .horizontal) {
+                    statusRow(icons: false)
+                    statusRow(icons: true)
                 }.frame(maxWidth: 760).padding(.top, -Grid.l)
                 suggestions.frame(maxWidth: 760)
                 running.frame(maxWidth: 760)
@@ -818,19 +849,38 @@ struct HomeView: View {
         .navigationTitle("")
     }
 
+    private func statusRow(icons: Bool) -> some View {
+        HStack(spacing: Grid.m) {
+            if Focus.isOn { Image(systemName: "moon.fill").foregroundStyle(.purple).help(L("Fokus aktiv – nur Freigaben, fertige Aufträge und dringende Mails melden sich")) }
+            Spacer(minLength: 0)
+            UsageMini()
+            Group { FocusButton(); AwakeButton(); ControlButton(); AutoModeButton() }
+                .labelStyle(icons ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
+        }
+        .lineLimit(1)
+    }
+
     private var suggestions: some View {
-        let items = Array(tasks.focus.prefix(3))
+        ViewThatFits(in: .horizontal) {
+            suggestionRow(3)
+            suggestionRow(2)
+            suggestionRow(1)
+        }
+    }
+
+    private func suggestionRow(_ n: Int) -> some View {
+        let items = Array(tasks.focus.prefix(n))
         return HStack(spacing: Grid.s) {
             ForEach(items) { t in
                 Button { seed = t.title + (t.notes.isEmpty ? "" : "\n\n" + t.notes) } label: {
-                    Label(t.title, systemImage: "checklist").lineLimit(1)
-                        .font(.callout)
+                    Label(t.title, systemImage: "checklist").lineLimit(1).truncationMode(.tail)
+                        .font(.callout).frame(maxWidth: 260)
                         .padding(.horizontal, Grid.m).padding(.vertical, 7)
                         .background(Capsule().strokeBorder(Color.secondary.opacity(0.3)))
                 }
                 .buttonStyle(.plain)
             }
-            if let next = calendar.next {
+            if n == 3, let next = calendar.next {
                 Label("\(next.start.timeString) \(next.title)", systemImage: "calendar").lineLimit(1)
                     .font(.callout).foregroundStyle(.secondary)
                     .padding(.horizontal, Grid.m).padding(.vertical, 7)
@@ -918,9 +968,17 @@ struct MissionRow: View {
                         .background(Capsule().fill(Color.secondary.opacity(0.15)))
                         .help(String(format: L("%d Helfer"), helpers))
                 }
+                Text(Self.age(rec.started)).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                    .help(rec.started.formatted(date: .abbreviated, time: .shortened))
                 PhaseBadge(phase: ph)
             }
         }
+    }
+
+    /// Kurzes Alter: 5m, 3h, 2d
+    static func age(_ d: Date) -> String {
+        let s = Int(max(0, Date().timeIntervalSince(d)))
+        return s < 3600 ? "\(max(1, s / 60))m" : s < 86400 ? "\(s / 3600)h" : "\(s / 86400)d"
     }
 }
 
@@ -1208,5 +1266,15 @@ struct DraftField: View {
                 .disabled(draft.text.trimmingCharacters(in: .whitespaces).isEmpty)
                 .keyboardShortcut(.return, modifiers: .command)
         }
+    }
+}
+
+/// Umschaltbarer Label-Stil: ausgeschrieben oder nur Symbol (für Leisten, die nie umbrechen sollen).
+struct AnyLabelStyle: LabelStyle {
+    private let iconOnly: Bool
+    init(_ s: IconOnlyLabelStyle) { iconOnly = true }
+    init(_ s: TitleAndIconLabelStyle) { iconOnly = false }
+    func makeBody(configuration: Configuration) -> some View {
+        if iconOnly { configuration.icon } else { HStack(spacing: 4) { configuration.icon; configuration.title } }
     }
 }

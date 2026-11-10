@@ -501,7 +501,7 @@ struct ProposalCard: View {
             }
 
             HStack {
-                Button(L("Ohne Vorschläge – normal mit Claude")) { plain() }
+                Button(AgentManager.claudeOff ? L("Ohne Vorschläge – direkt mit Codex") : L("Ohne Vorschläge – normal mit Claude")) { plain() }
                     .buttonStyle(.link).font(.caption)
                     .help(L("Startet Claude Code im Dialog, ohne Skills, Erweiterungen oder automatische Modellwahl"))
                 Spacer()

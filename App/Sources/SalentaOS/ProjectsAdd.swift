@@ -43,7 +43,7 @@ struct AddProjectSheet: View {
             if let error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.red).lineLimit(3) }
         }
         .padding(Grid.l)
-        .frame(width: 640, height: 560)
+        .frame(minWidth: 640, idealWidth: 760, maxWidth: 1000, minHeight: 560, idealHeight: 760, maxHeight: 1100)
         .onAppear { essentials.check(); catalog.loadGitHub() }
     }
 
@@ -138,6 +138,7 @@ struct AddProjectSheet: View {
                     }
                 }
                 .listStyle(.inset)
+                .frame(minHeight: 260)
             }
         }
         .task {
@@ -239,24 +240,21 @@ final class Essentials: ObservableObject {
         }
     }
 
+    private static var setupScript: String { Shell.quote(Paths.root.appendingPathComponent("bin/aos-setup").path) }
+
     func install(_ t: Tool) {
         if t == .ollama { LocalSetup.shared.run(manual: true); return }   // ohne Terminal – Salenta Code macht das selbst
-        Detection.runInTerminal(t.install + " ; echo; echo '✓ Fertig – zurück zu Salenta Code und „Erneut prüfen“.'")
+        // Ein Skript für alles: wartet auf Apples Command-Line-Tools-Dialog, installiert Homebrew ohne Rückfragen, dann das Werkzeug
+        Detection.runInTerminal("/bin/bash " + Self.setupScript + " " + (t == .brew ? "brew" : t.rawValue))
     }
 
-    /// Alles Fehlende in einem Rutsch (Terminal zeigt jeden Schritt).
+    /// Alles Fehlende in einem Rutsch (Terminal zeigt jeden Schritt) – in der richtigen Reihenfolge:
+    /// erst Apples Werkzeuge (mit Warten auf den Dialog), dann Homebrew, dann Pakete, dann Claude Code, dann GitHub-Anmeldung.
     func installMissing() {
-        let missing = Tool.allCases.filter { found[$0] == false && $0 != .codex && $0 != .ollama }
-        guard !missing.isEmpty else { return }
-        var steps: [String] = []
-        if missing.contains(.brew) { steps.append(Tool.brew.install + " && eval \"$(/opt/homebrew/bin/brew shellenv)\"") }
-        if missing.contains(.git) { steps.append("(xcode-select -p >/dev/null 2>&1 || xcode-select --install)") }
-        let pkgNames: [Tool: String] = [.gh: "gh", .node: "node", .tmux: "tmux"]
-        let brewPkgs = missing.compactMap { pkgNames[$0] }
-        if !brewPkgs.isEmpty { steps.append("brew install " + brewPkgs.joined(separator: " ")) }
-        if missing.contains(.claude) { steps.append(Tool.claude.install) }
-        if missing.contains(.gh) || !ghLoggedIn { steps.append("gh auth login --web --git-protocol https") }
-        Detection.runInTerminal(steps.joined(separator: " && ") + " ; echo; echo '✓ Fertig – zurück zu Salenta Code und „Erneut prüfen“.'")
+        var steps = Tool.allCases.filter { found[$0] == false && $0 != .codex && $0 != .ollama }.map { $0 == .brew ? "brew" : $0.rawValue }
+        if found[.gh] == false || !ghLoggedIn { steps.append("gh-login") }
+        guard !steps.isEmpty else { return }
+        Detection.runInTerminal("/bin/bash " + Self.setupScript + " " + steps.joined(separator: " "))
     }
 
     func loginGitHub() { Detection.runInTerminal("gh auth login --web --git-protocol https && gh auth setup-git ; echo '✓ Verbunden – zurück zu Salenta Code.'") }

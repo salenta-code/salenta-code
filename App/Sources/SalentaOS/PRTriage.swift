@@ -142,7 +142,7 @@ final class PRTriage: ObservableObject {
         defer { try? FileManager.default.removeItem(at: file) }
         var verdicts: [Int: (String, String)] = [:]
         for model in ["opus", "sonnet"] {
-            let r = Proc.zsh("claude -p --model \(model) --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))",
+            let r = Proc.zsh(HelperLLM.command(model: model, maxTurns: 3, file: file.path),
                              in: NSTemporaryDirectory(), timeout: 600)
             if let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"), a < b,
                let j = try? JSONSerialization.jsonObject(with: Data(res[a...b].utf8)) as? [String: Any],

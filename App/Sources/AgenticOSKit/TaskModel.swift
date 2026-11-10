@@ -140,6 +140,10 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case claude, codex, junie, shell
     // Weitere Coding-Agents: Cursor, OpenCode, Gemini, Grok Build, Kiro, Pi
     case cursor, opencode, gemini, grok, kiro, pi, kimi
+    // DeepSeek Harness (CLI „dsh“) – DeepSeeks eigener Agent mit DeepSeek-Modellen
+    case deepseek
+    // Salenta Harness – der eigene Agent von Salenta Code (bin/salenta-harness), mit DeepSeek, Claude, OpenAI, OpenRouter oder lokal
+    case harness
     // Open-Source-Modelle (Qwen, DeepSeek, Kimi, GLM …) mit Claude Code als Werkzeug: über OpenRouter oder lokal mit Ollama
     case openrouter, ollama
 
@@ -155,7 +159,7 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 
     /// Agents, die selbstständig in einem Repo programmieren können.
-    public static let coders: [AgentKind] = [.claude, .codex, .junie, .cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .openrouter, .ollama]
+    public static let coders: [AgentKind] = [.claude, .codex, .junie, .cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .deepseek, .harness, .openrouter, .ollama]
 
     public var title: String {
         switch self {
@@ -170,6 +174,8 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .kiro: "Kiro"
         case .pi: "Pi"
         case .kimi: "Kimi Code"
+        case .deepseek: "DeepSeek Harness"
+        case .harness: "Salenta Harness"
         case .openrouter: "OpenRouter"
         case .ollama: "Ollama (lokal)"
         }
@@ -189,6 +195,8 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .kiro: "kiro-cli"
         case .pi: "pi"
         case .kimi: "kimi"
+        case .deepseek: "dsh"
+        case .harness: "salenta-harness"
         case .openrouter: "claude"
         case .ollama: "ollama"
         }
@@ -207,6 +215,8 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .kiro: "k.square"
         case .pi: "p.square"
         case .kimi: "moon.stars"
+        case .deepseek: "water.waves"
+        case .harness: "bolt.horizontal.circle"
         case .openrouter: "globe"
         case .ollama: "desktopcomputer"
         }
@@ -225,6 +235,8 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .kiro: "curl -fsSL https://cli.kiro.dev/install | bash"
         case .pi: "npm i -g @mariozechner/pi-coding-agent"
         case .kimi: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
+        case .deepseek: "npm i -g @deepseek-ai/dsh"
+        case .harness: "Mitgeliefert – braucht Node.js (brew install node) und einen Modell-Schlüssel (Einstellungen › Modelle) oder Ollama"
         case .openrouter: "Schlüssel von openrouter.ai/keys in Einstellungen › Modelle eintragen"
         case .ollama: "brew install ollama && ollama pull qwen3-coder"
         }
@@ -243,6 +255,8 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .kiro: "kiro-cli login"
         case .pi: "pi → /login"
         case .kimi: "kimi → /login"
+        case .deepseek: "dsh web → Einstellungen › Modelle (DeepSeek-Schlüssel)"
+        case .harness: "Einstellungen › Modelle: DeepSeek-, Anthropic-, OpenAI- oder OpenRouter-Schlüssel eintragen"
         default: ""
         }
     }
@@ -260,6 +274,8 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .kiro: "AWS Kiro – spec-driven development, AWS/infrastructure work"
         case .pi: "minimal agent, small focused tasks"
         case .kimi: "Moonshot Kimi Code – strong, inexpensive agentic coding with Kimi models, long tasks, frontend and visual coding; good fallback when Claude/Codex are at their limit"
+        case .deepseek: "DeepSeek Harness – DeepSeek's own agent with DeepSeek models; inexpensive, good at coding and long multi-step tasks, can split work into sub-agents; pay per use via DeepSeek API"
+        case .harness: "Salenta Harness – Salenta's own agent: plans, delegates read-only research to parallel sub-agents, enforces access levels, always runs the project checks before finishing; runs on DeepSeek, Claude, OpenAI, OpenRouter or a local model"
         case .openrouter: "Claude Code with open-source models via OpenRouter (Qwen, DeepSeek, Kimi, GLM) – pay per use, cheap, good when subscriptions are at their limit"
         case .ollama: "Claude Code with a local open-source model (Ollama) – free and private, but slower and weaker; small tasks only"
         case .shell: ""

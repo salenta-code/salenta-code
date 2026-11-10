@@ -22,6 +22,8 @@ prerelease=""; [[ "$version" == *-* ]] && prerelease="--prerelease"
 
 echo "→ Datenschutz-Prüfung (keine Schlüssel, keine persönlichen Daten)"
 "$here/scripts/privacy-check.sh"
+echo "→ Oberflächen-Prüfung (jeder Symbol-Knopf hat einen Hinweis) – dieselbe wie in der CI"
+(cd "$here" && python3 scripts/check-tooltips.py)
 
 echo "$version" > "$here/VERSION"
 dist="$here/dist/$version"; rm -rf "$dist"; mkdir -p "$dist"

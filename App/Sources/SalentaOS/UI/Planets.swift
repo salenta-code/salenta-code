@@ -71,7 +71,8 @@ enum Look {
 struct PlanetSphere: View {
     let planet: Planet
     var size: CGFloat = 64
-    var animate = true
+    // Standard: ruhend. Die Dauer-Drehung (18 s, endlos) ließ WindowServer ständig neu zeichnen – spürbar auf dem ganzen Mac.
+    var animate = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.controlActiveState) private var windowState
     @State private var turn = false

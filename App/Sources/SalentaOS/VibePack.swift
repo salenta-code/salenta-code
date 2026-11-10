@@ -86,6 +86,23 @@ enum SecretScan {
         ("Passwort im Code", "(password|passwort|passwd|secret|api_key|apikey|token)\\s*[:=]\\s*['\"][^'\"\\s]{8,}['\"]"),
     ]
 
+    /// Wert zwischen den Anführungszeichen eines Treffers.
+    static func quoted(_ hit: String) -> String {
+        guard let q = hit.firstIndex(where: { $0 == "'" || $0 == "\"" }) else { return hit }
+        return String(hit[hit.index(after: q)...].dropLast())
+    }
+
+    /// Sieht der Wert wie ein echtes Geheimnis aus (zufällig, lang, gemischt) statt wie ein Wort, Platzhalter oder Testwert?
+    static func looksSecret(_ v: String) -> Bool {
+        let l = v.lowercased()
+        if v.count < 12 { return false }
+        let fake = ["example", "placeholder", "changeme", "your", "dummy", "test", "mock", "fake", "sample", "secret", "password", "passwort",
+                    "token", "postgres", "localhost", "xxxx", "****", "${", "{{", "<", "process.env", "env.", "todo", "redacted"]
+        if fake.contains(where: { l.contains($0) }) { return false }
+        let letters = v.contains { $0.isLetter }, digits = v.contains { $0.isNumber }
+        return letters && digits && Set(v).count >= 8
+    }
+
     /// Sucht nur in hinzugefügten Zeilen des Diffs. Liefert Fundstellen (maskiert).
     static func scan(_ diff: String) -> [String] {
         var file = ""
@@ -103,6 +120,8 @@ enum SecretScan {
                 if isTest && name == "Passwort im Code" { continue }
                 if let r = line.range(of: p, options: [.regularExpression, .caseInsensitive]) {
                     let hit = String(line[r])
+                    // „password: 'postgres'“, „token: 'mock-token'“, Beschriftungen oder Platzhalter sind keine Geheimnisse
+                    if name == "Passwort im Code", !looksSecret(quoted(hit)) { continue }
                     let masked = String(hit.prefix(6)) + String(repeating: "•", count: max(0, min(hit.count - 6, 12)))
                     hits.append("\(file): \(name) – \(masked)")
                     break
@@ -131,7 +150,7 @@ enum Checkpoints {
         let dir = Worktrees.top(wt)
         Git.run(["add", "-A", "--"] + Worktrees.addSpec, in: dir)
         if Git.run(["diff", "--cached", "--quiet"], in: dir).code != 0 {
-            Git.run(["-c", "user.name=Salenta Code", "-c", "user.email=salenta-os@localhost", "commit", "-q", "-m", "Checkpoint: \(label)"], in: dir)
+            Git.run(Git.identity(dir) + ["commit", "-q", "-m", "Checkpoint: \(label)"], in: dir)
         }
     }
 
@@ -257,9 +276,9 @@ final class PreviewServer: ObservableObject {
                 if let t = Self.target(dir: dir, track: src.track) {
                     Git.run(["add", "-A", "--"] + Worktrees.addSpec, in: dir)
                     if Git.run(["diff", "--cached", "--quiet"], in: dir).code != 0 {
-                        Git.run(["-c", "user.name=Salenta Code", "-c", "user.email=salenta-os@localhost", "commit", "-q", "-m", "Checkpoint: vor dem Aktualisieren"], in: dir)
+                        Git.run(Git.identity(dir) + ["commit", "-q", "-m", "Checkpoint: vor dem Aktualisieren"], in: dir)
                     }
-                    let r = Git.run(["-c", "user.name=Salenta Code", "-c", "user.email=salenta-os@localhost", "merge", "--no-edit", t], in: dir, timeout: 60)
+                    let r = Git.run(Git.identity(dir) + ["merge", "--no-edit", t], in: dir, timeout: 60)
                     if r.code == 0 { ok = true; msg = L("Auf aktuellen Stand gebracht: ") + t }
                     else { Git.run(["merge", "--abort"], in: dir); msg = L("Konflikt mit dem neuen Stand – nichts geändert. Bitte den Agent, die Änderungen von main zu übernehmen.") }
                 } else { msg = L("Kein Vergleichsstand gefunden") }

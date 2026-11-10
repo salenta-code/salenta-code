@@ -25,6 +25,12 @@ enum Router {
         "n8n workflow", "webhook", "vorschläge", "falsch generiert", "wird nicht angezeigt", "klappt nicht", "funktioniert nicht",
     ]
 
+    /// Änderungs-Verben: zusammen mit einem genannten Projekt eindeutig ein Code-Auftrag.
+    static let changeWords = [
+        "ändere", "änder ", "baue", "bau ", "füge", "hinzufügen", "entferne", "verschieb", "passe ", "pass ", "ersetze", "verbesser",
+        "optimier", "aktualisier", "update", "gestalte", "erweitere", "mach ", "mache ", "beschleunig", "ladezeit", "umbenenn",
+    ]
+
     /// Fehlersuche → Junie.
     static let debugWords = [
         "debug", "bug", "fehler finden", "fehlersuche", "warum geht", "warum funktioniert", "funktioniert nicht",
@@ -43,6 +49,19 @@ enum Router {
         }
     }
 
+    /// Steht `phrase` als eigenes Wort im Text? („mit pi“ trifft nicht „mit pizza“, „pi soll“ nicht „api soll“.)
+    static func mentions(_ t: String, _ phrase: String) -> Bool {
+        let p = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: phrase) + "(?![\\p{L}\\p{N}])"
+        return t.range(of: p, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// Hast du einen Agent ausdrücklich genannt? Dann gilt genau der – die KI-Agentenwahl entscheidet nicht darüber.
+    static func named(_ raw: String) -> Bool {
+        let t = raw.lowercased()
+        if ["@codex", "mit codex", "codex soll", "@junie", "mit junie", "junie soll", "@claude", "claude code"].contains(where: { t.contains($0) }) { return true }
+        return AgentKind.coders.contains { k in mentions(t, "@" + k.rawValue) || mentions(t, "mit " + k.title.lowercased()) || mentions(t, k.title.lowercased() + " soll") }
+    }
+
     static func decide(_ raw: String, projects: [Project], recent: [String]) -> RouteDecision {
         let t = raw.lowercased()
         func has(_ w: String) -> Bool { t.contains(w) }
@@ -52,10 +71,24 @@ enum Router {
         if has("@junie") || has("mit junie") || has("junie soll") { return pick(.junie, t, projects, recent, "Du hast Junie genannt") }
         if has("@claude") || has("claude code") { return pick(.claude, t, projects, recent, "Du hast Claude Code genannt") }
         if has("chatgpt") { return RouteDecision(target: .chatgpt, reason: L("Du hast ChatGPT genannt")) }
+        // Jeder weitere Coding-Agent: „@name“, „mit <Name>“ oder „<Name> soll“
+        for k in AgentKind.coders where ![.codex, .junie, .claude].contains(k) {
+            let title = k.title.lowercased()
+            if mentions(t, "@" + k.rawValue) || mentions(t, "mit " + title) || mentions(t, title + " soll") {
+                return pick(MissionTarget.from(k), t, projects, recent, String(format: L("Du hast %@ genannt"), k.title))
+            }
+        }
 
-        let coding = codingWords.contains { has($0) }
         let debugging = debugWords.contains { has($0) }
         let review = reviewWords.contains { has($0) }
+        // Projekt steht wörtlich im Auftrag und es geht um eine Änderung oder um die Oberfläche („Ändere die Farbe vom Button im shop“)
+        // – das ist Arbeit am Code, auch ohne Fachwort.
+        let namesProject = projects.contains { p in
+            let n = (p.path as NSString).lastPathComponent.lowercased(), m = p.name.lowercased()
+            return (n.count >= 4 && t.contains(n)) || (m.count >= 4 && t.contains(m))
+        }
+        let coding = codingWords.contains { has($0) }
+            || (namesProject && (WorkPhases.isUI(t) || changeWords.contains { has($0) }))
         if (coding || debugging || review), let p = project(for: t, projects: projects) {
             if review {
                 return RouteDecision(target: .codex, directory: p.path, projectName: p.name,
@@ -127,13 +160,22 @@ enum Router {
         return scored.filter { $0.1 >= 3 }.sorted { $0.1 > $1.1 }.map(\.0).filter { seen.insert($0.name).inserted }
     }
 
-    static func project(for t: String, projects: [Project]) -> Project? {
-        // 1. Projektname steht wörtlich im Auftrag – das ist eindeutiger als ein Bereich
-        let named = projects.filter { p in
-            let n = (p.path as NSString).lastPathComponent.lowercased(), m = p.name.lowercased()
-            return (n.count >= 3 && t.contains(n)) || (m.count >= 3 && t.contains(m))
+    static func project(for raw: String, projects: [Project]) -> Project? {
+        // Agent-Namen zählen nicht als Projekt („mit Salenta Harness“ ist kein Hinweis auf das Projekt „salenta“)
+        var t = raw.lowercased()
+        // Nur als eigenes Wort entfernen – „Pi“ darf aus „rezept-api“ nichts herausschneiden.
+        for k in AgentKind.allCases {
+            let p = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: k.title.lowercased()) + "(?![\\p{L}\\p{N}-])"
+            t = t.replacingOccurrences(of: p, with: " ", options: .regularExpression)
         }
-        if let best = named.first(where: \.isGit) ?? named.first { return best }
+        // 1. Projektname steht wörtlich im Auftrag – das ist eindeutiger als ein Bereich. Der längste Treffer gewinnt
+        //    („betreuer-testprojekt“ schlägt ein zufällig enthaltenes kürzeres Wort).
+        func hit(_ p: Project) -> Int {
+            let n = (p.path as NSString).lastPathComponent.lowercased(), m = p.name.lowercased()
+            return max(n.count >= 3 && t.contains(n) ? n.count : 0, m.count >= 3 && t.contains(m) ? m.count : 0)
+        }
+        let named = projects.filter { hit($0) > 0 }.sorted { (hit($0), $0.isGit ? 1 : 0) > (hit($1), $1.isGit ? 1 : 0) }
+        if let best = named.first { return best }
         // 2. über deine Bereiche (Stichwörter)
         for h in projectHints where h.words.contains(where: { t.contains($0) }) {
             // Git-Repos bevorzugen, dann zuletzt genutzt (Reihenfolge der Liste)
@@ -264,7 +306,7 @@ enum AIRouter {
             installed.contains(.codex) ? "codex – OpenAI Codex: code review, double-checking a diff, writing tests, second opinion" : nil,
             "os – OS Agent (runs on Claude): everything that is not coding – mail, calendar, CRM/integrations (MCP), research, browser tasks, writing texts, planning; can also delegate coding itself when a task mixes both",
         ].compactMap { $0 }
-            + [AgentKind.cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .openrouter, .ollama].filter { installed.contains($0) }.map { "\($0.rawValue) – \($0.title): \($0.strength)" })
+            + [AgentKind.cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .deepseek, .harness, .openrouter, .ollama].filter { installed.contains($0) }.map { "\($0.rawValue) – \($0.title): \($0.strength)" })
             .joined(separator: "\n")
 
         let ext = ExtensionStore.shared
@@ -338,7 +380,7 @@ enum AIRouter {
             defer { try? FileManager.default.removeItem(at: file) }
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            p.arguments = ["-lc", LocalFirst.cliEnv() + "claude -p --model haiku --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))"]
+            p.arguments = ["-l", "-i", "-c", HelperLLM.command(model: "haiku", maxTurns: 3, file: file.path)]   // -i: PATH aus .zshrc (claude, codex)
             p.currentDirectoryURL = Paths.support
             var env = ProcessInfo.processInfo.environment
             env["AOS_SOURCE"] = "router"

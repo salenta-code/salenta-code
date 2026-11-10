@@ -101,9 +101,35 @@ final class Usage: ObservableObject {
         return claude.filter { $0.date >= from }.reduce(0) { $0 + $1.weighted }
     }
 
+    // MARK: Von dir pausiert (z. B. Kontingent fast leer → lieber über Codex arbeiten)
+
+    private static func pauseKey(_ a: AgentKind) -> String { "agent.pausedUntil.\(a.rawValue)" }
+    /// Bis wann pausiert (distantFuture = bis du ihn wieder freigibst). Thread-sicher.
+    static func pausedUntil(_ a: AgentKind) -> Date? {
+        let t = UserDefaults.standard.double(forKey: pauseKey(a))
+        guard t > 0 else { return nil }
+        let d = Date(timeIntervalSince1970: t)
+        return d > Date() ? d : nil
+    }
+    static func isPaused(_ a: AgentKind) -> Bool { pausedUntil(a) != nil }
+    /// Helfer-Arbeit geht an andere Agents; Planen und Prüfen (wenig Verbrauch) laufen weiter.
+    static let pausedNote = Notification.Name("agent.paused")
+    func pause(_ a: AgentKind, until: Date?) {
+        UserDefaults.standard.set((until ?? .distantFuture).timeIntervalSince1970, forKey: Self.pauseKey(a))
+        objectWillChange.send(); refreshSnapshot()
+        NotificationCenter.default.post(name: Self.pausedNote, object: a.rawValue)   // laufende Aufgaben übergeben
+    }
+    func resume(_ a: AgentKind) {
+        UserDefaults.standard.removeObject(forKey: Self.pauseKey(a))
+        objectWillChange.send(); refreshSnapshot()
+    }
+
     /// 0…1 (oder mehr): wie nah der Agent am Limit ist.
     func pressure(_ agent: AgentKind) -> Double {
+        if Self.isPaused(agent) { return 1.0 }
         if let b = blocked[agent.rawValue], b > Date() { return 1.0 }
+        // Zusatz-Abo aktiv: dessen Verbrauch kennen wir nicht – frei, bis es ein Limit meldet
+        if Accounts.shared.activeAccount(agent) != nil { return 0 }
         switch agent {
         case .claude:
             if let at = claudeRealAt, at > Date().addingTimeInterval(-20 * 60) {
@@ -156,6 +182,13 @@ final class Usage: ObservableObject {
     private func refreshSnapshot() {
         var s: [AgentKind: Double] = [:]
         for a in [AgentKind.claude, .codex, .junie] { s[a] = pressure(a) }
+        // Hauptkonto fast voll und ein weiteres Abo frei → schon jetzt wechseln, nicht erst beim harten Limit
+        if Thread.isMainThread {
+            for a in Accounts.supported where (s[a] ?? 0) >= threshold && !Self.isPaused(a) && Accounts.shared.activeAccount(a) == nil
+                && (blocked[a.rawValue] ?? .distantPast) <= Date() && Accounts.shared.hasFreeAlternative(a) {
+                if Accounts.shared.rotate(a, limitedUntil: resetDate(a) ?? Date().addingTimeInterval(5 * 3600)) { s[a] = 0 }
+            }
+        }
         lock.lock(); snapPressure = s; lock.unlock()
     }
 
@@ -163,16 +196,21 @@ final class Usage: ObservableObject {
 
     static let limitPatterns = ["usage limit", "rate limit", "rate_limit", "limit reached", "hit your limit", "you've hit your",
                                 "you have hit your", "quota exceeded", "exceeded your", "too many requests", "5-hour limit",
-                                "weekly limit", "credit balance is too low", "insufficient_quota", "overloaded_error"]
+                                "weekly limit", "credit balance is too low", "insufficient_quota", "overloaded_error",
+                                "does not have access to", "upgrade your plan", "regain access on"]
 
     /// Prüft eine Agent-Ausgabe auf "Limit erreicht". true = erkannt (Agent wird bis zum Reset gemieden).
     @discardableResult
     func noteOutput(_ agent: AgentKind, text: String) -> Bool {
         let t = text.lowercased()
         guard Self.limitPatterns.contains(where: { t.contains($0) }) else { return false }
-        let until = Self.parseReset(text) ?? Date().addingTimeInterval(3600)
-        DispatchQueue.main.async {
-            self.blocked[agent.rawValue] = until
+        // Abo-/Monatsgrenze ohne auswertbare Zeit: einen Tag meiden statt jede Stunde erneut zu scheitern
+        let longBlock = ["does not have access to", "upgrade your plan", "regain access on"].contains { t.contains($0) }
+        let until = Self.parseReset(text) ?? Date().addingTimeInterval(longBlock ? 86400 : 3600)
+        let apply = {
+            // Weiteres Abo desselben Anbieters frei? Dann damit weiterarbeiten statt den Anbieter zu sperren
+            if Accounts.shared.rotate(agent, limitedUntil: until) { self.refreshSnapshot(); return }
+            self.blocked[agent.rawValue] = max(until, self.blocked[agent.rawValue] ?? .distantPast)
             if agent == .claude {
                 // Kalibrieren: so viel ging in 5 Stunden, bevor das Limit kam.
                 let used = self.claudeWindow(hours: 5)
@@ -181,6 +219,8 @@ final class Usage: ObservableObject {
             self.refreshSnapshot()
             self.saveState()
         }
+        // Auf dem Hauptthread sofort – damit eine Übergabe direkt danach schon das neue Abo nutzt
+        if Thread.isMainThread { apply() } else { DispatchQueue.main.async(execute: apply) }
         return true
     }
 
@@ -189,6 +229,12 @@ final class Usage: ObservableObject {
         if let r = text.range(of: "\\|([0-9]{10})", options: .regularExpression),
            let t = Double(text[r].dropFirst()) { return Date(timeIntervalSince1970: t) }
         let lower = text.lowercased()
+        // "regain access on 2026-12-01 at 00:00 UTC"
+        if let r = lower.range(of: "on (20[0-9]{2}-[0-9]{2}-[0-9]{2})", options: .regularExpression) {
+            let day = String(lower[r].dropFirst(3))
+            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.timeZone = TimeZone(identifier: "UTC")
+            if let d = f.date(from: day), d > Date() { return d }
+        }
         // "try again in 37 minutes" / "in 2 hours"
         if let r = lower.range(of: "in ([0-9]+) ?(seconds?|secs?|minutes?|mins?|hours?|hrs?|h)\\b", options: .regularExpression) {
             let part = String(lower[r])
@@ -231,8 +277,8 @@ final class Usage: ObservableObject {
 
     private static func rawAlternatives(_ a: AgentKind) -> [AgentKind] {
         switch a {
-        case .claude: [.codex, .kimi, .cursor, .gemini, .openrouter, .opencode, .junie, .grok, .kiro, .pi]
-        case .codex: [.claude, .kimi, .cursor, .gemini, .openrouter, .opencode, .junie, .grok, .kiro, .pi]
+        case .claude: [.codex, .kimi, .cursor, .gemini, .harness, .deepseek, .openrouter, .opencode, .junie, .grok, .kiro, .pi]
+        case .codex: [.claude, .kimi, .cursor, .gemini, .harness, .deepseek, .openrouter, .opencode, .junie, .grok, .kiro, .pi]
         case .junie: [.claude, .codex, .cursor, .gemini, .opencode]
         case .shell: []
         default: [.claude, .codex, .gemini, .opencode]
@@ -643,8 +689,25 @@ struct UsageView: View {
                     if let r = usage.resetDate(a), hasData || blocked {
                         Text("Reset \(r, style: .relative)").font(.caption.weight(.medium))
                     }
+                    if Accounts.supported.contains(a) { AccountsSection(agent: a) }
                     if blocked {
                         Button("Wieder freigeben") { usage.unblock(a) }.buttonStyle(.link).font(.caption)
+                            .help(L("Limit-Sperre aufheben – der Agent wird wieder eingeplant"))
+                    }
+                    if let until = Usage.pausedUntil(a) {
+                        Text(until == .distantFuture ? L("Pausiert – bis du ihn freigibst") : L("Pausiert bis") + " " + until.formatted(date: .omitted, time: .shortened))
+                            .font(.caption.weight(.medium)).foregroundStyle(.orange)
+                        Button(L("Fortsetzen")) { usage.resume(a) }.buttonStyle(.link).font(.caption)
+                            .help(L("Pause beenden – Helfer dürfen diesen Anbieter wieder nutzen"))
+                    } else {
+                        Menu(L("Pausieren")) {
+                            Button(L("1 Stunde")) { usage.pause(a, until: Date().addingTimeInterval(3600)) }
+                            Button(L("Bis morgen früh")) { usage.pause(a, until: Calendar.current.date(bySettingHour: 7, minute: 0, second: 0, of: Date().addingTimeInterval(86400))) }
+                            Button(L("Eine Woche")) { usage.pause(a, until: Date().addingTimeInterval(7 * 86400)) }
+                            Button(L("Bis ich ihn freigebe")) { usage.pause(a, until: nil) }
+                        }
+                        .menuStyle(.borderlessButton).fixedSize().font(.caption)
+                        .help(L("Diesen Anbieter für Helfer-Arbeit pausieren – Aufgaben gehen dann an andere Agents (z. B. Codex statt Claude)"))
                     }
                 }
             }
@@ -655,7 +718,7 @@ struct UsageView: View {
     }
 
     private func statusChip(p: Double, blocked: Bool, hasData: Bool) -> some View {
-        let (text, color): (String, Color) = blocked ? (L("Limit"), .red)
+        let (text, color): (String, Color) = blocked ? (L("Limit oder pausiert"), .red)
             : !hasData ? (L("keine Daten"), .secondary)
             : p >= threshold ? (L("wird eng"), .orange) : (L("frei"), .green)
         return Text(text).font(.caption2.weight(.semibold))

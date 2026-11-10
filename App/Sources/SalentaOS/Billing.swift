@@ -7,7 +7,7 @@ import SwiftUI
 
 enum Billing {
     /// Ab Werk pro Nutzung: Junie (JetBrains-Guthaben/API) und OpenRouter (Guthaben).
-    static let defaultMetered: Set<AgentKind> = [.junie, .openrouter]
+    static let defaultMetered: Set<AgentKind> = [.junie, .openrouter, .deepseek, .harness]   // DeepSeek Harness rechnet über die API ab
     static let d = UserDefaults.standard
 
     static func isMetered(_ a: AgentKind) -> Bool {

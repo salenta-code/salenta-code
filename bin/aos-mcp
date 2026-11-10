@@ -162,15 +162,14 @@ def needs_approval(tool, inp):
         return bash_needs_approval((inp or {}).get("command", ""))
     if tool.startswith("mcp__salenta-os__") and name not in ("agent_starten",):
         return False
-    if tool.startswith("mcp__browser__"):
-        # Klicks und Tippen sind normale Arbeit – außer es geht ums Absenden, Kaufen, Bezahlen, Löschen, Posten.
-        if any(k in name for k in ("file_upload", "evaluate", "run_code", "install")):
+    if control_scope(tool):
+        # Steuerung ist freigegeben (siehe freigabe): Schauen, Klicken und Tippen sind normale Arbeit –
+        # außer es geht ums Absenden, Kaufen, Bezahlen, Löschen, Posten.
+        if any(k in name for k in ("file_upload", "evaluate", "run_code", "install", "javascript")):
             return True
         what = " ".join(str(v) for v in (inp or {}).values()).lower()
-        risky = ("senden", "send", "absenden", "submit", "kaufen", "bestellen", "buy", "order", "bezahlen", "zahlen", "pay",
-                 "checkout", "kasse", "löschen", "loeschen", "delete", "posten", "post", "veröffentlichen", "publish",
-                 "bestätigen", "confirm", "abschließen", "vertrag")
-        if (name.endswith("click") or name.endswith("press_key") or name.endswith("fill_form")) and any(k in what for k in risky):
+        acts = ("click", "press", "key", "type", "fill", "form", "submit", "computer", "batch")
+        if any(a in name for a in acts) and any(k in what for k in RISKY_WORDS):
             return True
         return False
     if name.startswith(("get", "list", "search", "read", "find", "fetch", "query", "lookup", "describe")):
@@ -209,7 +208,10 @@ def load_block_rules():
 def rule_check(tool, inp):
     """('block'|'ask'|None, Grund) – greift auch im Auto-Modus."""
     import re
-    text = (tool + " " + json.dumps(inp or {}, ensure_ascii=False)).lower()
+    if tool == "Bash" and isinstance(inp, dict):
+        text = ("bash " + str(inp.get("command", ""))).lower()
+    else:
+        text = (tool + " " + json.dumps(inp or {}, ensure_ascii=False)).lower()
     for r in load_block_rules():
         pat = (r.get("muster") or "").strip()
         if not pat:
@@ -224,6 +226,38 @@ def rule_check(tool, inp):
             continue
         return ("ask" if r.get("fragen") else "block"), (r.get("grund") or pat)
     return None, ""
+
+
+BROWSER_SERVERS = ("browser", "playwright", "chrome", "puppeteer", "browserbase", "stagehand")
+COMPUTER_SERVERS = ("computer", "desktop-control", "mac-control", "macos-control")
+
+
+def control_scope(tool):
+    """'browser' oder 'computer', wenn das Tool deinen Browser bzw. deinen Mac steuert – sonst None."""
+    parts = tool.split("__")
+    if len(parts) < 3 or parts[0] != "mcp":
+        return None
+    server = parts[1].lower()
+    if any(k in server for k in COMPUTER_SERVERS):
+        return "computer"
+    if any(k in server for k in BROWSER_SERVERS):
+        return "browser"
+    return None
+
+
+def grant_active(scope):
+    """Hast du die Steuerung (Browser/Computer) gerade freigegeben? data/approvals/grants.json, gesetzt von der App."""
+    try:
+        with open(os.path.join(DATA, "approvals", "grants.json"), encoding="utf-8") as f:
+            g = json.load(f)
+        return time.time() < float(g.get(scope) or 0)
+    except Exception:
+        return False
+
+
+RISKY_WORDS = ("senden", "send", "absenden", "submit", "kaufen", "bestellen", "buy", "order", "bezahlen", "zahlen", "pay",
+               "checkout", "kasse", "löschen", "loeschen", "delete", "posten", "post", "veröffentlichen", "publish",
+               "bestätigen", "confirm", "abschließen", "vertrag", "passwort", "password", "überweis", "transfer")
 
 
 def auto_mode():
@@ -385,6 +419,13 @@ def call(name, a):
             if ok:
                 return {"behavior": "allow", "updatedInput": inp}
             return {"behavior": "deny", "message": msg or "Abgelehnt."}
+        # Browser- oder Computer-Steuerung: einmal fragen, für wie lange (15 Min., 1 Stunde, ganzer Tag) – gilt auch im Auto-Modus
+        scope = control_scope(tool)
+        if scope and not grant_active(scope):
+            ok, msg = ask_user(tool, dict(inp, _zugriff=scope) if isinstance(inp, dict) else {"_zugriff": scope})
+            if not ok or not grant_active(scope):
+                return {"behavior": "deny", "message": msg or ("Browser-Steuerung nicht freigegeben. Mach ohne Browser weiter und nenne den Schritt am Ende."
+                        if scope == "browser" else "Computer-Steuerung nicht freigegeben. Mach ohne sie weiter und nenne den Schritt am Ende.")}
         if needs_approval(tool, inp) and auto_mode():
             log_auto(tool, inp)
             return {"behavior": "allow", "updatedInput": inp}

@@ -143,6 +143,7 @@ enum Proc {
         env["CI"] = "1"
         env["FORCE_COLOR"] = "0"
         env["NO_COLOR"] = "1"
+        for (k, v) in Accounts.shared.env() where env[k] == nil { env[k] = v }   // aktives Zusatz-Abo
         for (k, v) in extra { env[k] = v }
         p.environment = env
         p.standardInput = FileHandle.nullDevice
@@ -150,6 +151,8 @@ enum Proc {
         p.standardOutput = pipe
         p.standardError = pipe
         do { try p.run() } catch { return ("Start fehlgeschlagen: \(error.localizedDescription)", -1) }
+        // Prüfungen, Tests und Hilfsaufrufe laufen mit niedrigerer Priorität: die Oberfläche bleibt auch unter Volllast flüssig
+        setpriority(PRIO_PROCESS, id_t(p.processIdentifier), 10)
         if let tag { runLock.lock(); running[tag] = p; runLock.unlock() }
         defer { if let tag { runLock.lock(); if running[tag] === p { running[tag] = nil }; runLock.unlock() } }
         var data = Data()
@@ -290,11 +293,49 @@ enum Verifier {
         return String(format: L("Nicht blockierend: Rot sind nur Tests, die dieser Auftrag nicht anfasst (%@). Lokal meist Zeitlimit oder fehlende Umgebung – die GitHub-CI prüft das vor dem Merge."), files.sorted().prefix(4).joined(separator: ", "))
     }
 
+    // MARK: Ausgangsstand
+
+    private static var baseCache: [String: (code: Int32, out: String)] = [:]
+    private static let baseLock = NSLock()
+
+    /// Fehlerzeilen einer Prüfausgabe (für den Vergleich vorher/nachher).
+    static func errorCount(_ out: String) -> Int {
+        out.split(separator: "\n").filter { l in
+            let t = l.lowercased()
+            return t.contains("error") || t.contains("fehler") || t.contains("✗") || t.hasPrefix("fail") || t.contains(" fail ")
+        }.count
+    }
+
+    /// War die Prüfung schon vor dem Auftrag genauso rot? Dann ist sie kein Fehler dieses Auftrags.
+    /// Mehr Fehler als vorher bleiben rot – der Auftrag darf nichts verschlechtern.
+    static func preexisting(baseCode: Int32, baseOut: String, out: String) -> Bool {
+        baseCode != 0 && baseCode != 124 && errorCount(out) <= max(errorCount(baseOut), 1)
+    }
+
+    /// Führt dieselbe Prüfung auf dem Ausgangsstand aus (eigene, saubere Arbeitskopie; Abhängigkeiten verlinkt). Ergebnis je Stand zwischengespeichert.
+    static func baseline(_ command: String, dir: String, fork: String, tag: String) -> (code: Int32, out: String)? {
+        guard !fork.isEmpty else { return nil }
+        let key = fork + "\u{1}" + command
+        baseLock.lock(); if let c = baseCache[key] { baseLock.unlock(); return c }; baseLock.unlock()
+        let tmp = (NSTemporaryDirectory() as NSString).appendingPathComponent("salenta-base-" + String(fork.prefix(12)) + "-" + String(UUID().uuidString.prefix(6)))
+        guard Git.run(["worktree", "add", "--detach", tmp, fork], in: dir, timeout: 120).code == 0 else { return nil }
+        defer { _ = Git.run(["worktree", "remove", "--force", tmp], in: dir, timeout: 60); try? FileManager.default.removeItem(atPath: tmp) }
+        for dep in ["node_modules", ".venv", "venv", "vendor", "Pods"] {
+            let src = (dir as NSString).appendingPathComponent(dep)
+            if FileManager.default.fileExists(atPath: src) { try? FileManager.default.createSymbolicLink(atPath: (tmp as NSString).appendingPathComponent(dep), withDestinationPath: src) }
+        }
+        let r = Proc.zsh("exec \(PowerProfile.shellPrefix)nice -n 15 /bin/zsh -c " + Shell.quote(command), in: tmp, timeout: 900, tag: tag)
+        let res = (code: r.code, out: String(r.out.suffix(6000)))
+        baseLock.lock(); baseCache[key] = res; baseLock.unlock()
+        return res
+    }
+
     // MARK: Prüfen
 
     /// Führt die Prüfung für einen Auftrag mit Arbeitskopie aus (im Hintergrund, Fortschritt live im Auftrag).
     static func run(_ id: String, completion: ((VerifyReport) -> Void)? = nil) {
-        guard let rec = MissionStore.shared.mission(id), let wt = rec.worktree, !runningIDs.contains(id) else { return }
+        guard let rec = MissionStore.shared.mission(id), let wt = rec.worktree, !runningIDs.contains(id),
+              rec.outcome != "stopped" else { return }   // gestoppte Läufe werden nie geprüft
         runningIDs.insert(id)
         cancelLock.lock(); cancelled.remove(id); cancelLock.unlock()
         var report = VerifyReport()
@@ -343,7 +384,14 @@ enum Verifier {
                 // damit du weiterarbeiten kannst und der Mac nicht durchglüht.
                 guard CheckGate.enter(cancelled: { isCancelled(id) }) else { break }
                 let t0 = Date()
-                let r = Proc.zsh("exec \(PowerProfile.shellPrefix)nice -n 10 /bin/zsh -c " + Shell.quote(c.command), in: dir, timeout: 600, tag: "verify-" + id)
+                var r = Proc.zsh("exec \(PowerProfile.shellPrefix)nice -n 10 /bin/zsh -c " + Shell.quote(c.command), in: dir, timeout: 600, tag: "verify-" + id)
+                // Zeitüberschreitung ist oft kein Fehler im Code: unter Volllast und mit niedriger Priorität brauchen große Test-Suites
+                // länger. Einmal mit mehr Zeit wiederholen – erst wenn es dann immer noch hängt, gilt die Prüfung als rot.
+                if r.code == 124, !isCancelled(id) {
+                    report.checks[report.checks.count - 1].output = L("Zeitüberschreitung nach 10 Minuten – wird mit mehr Zeit wiederholt …")
+                    publish()
+                    r = Proc.zsh("exec \(PowerProfile.shellPrefix)nice -n 5 /bin/zsh -c " + Shell.quote(c.command), in: dir, timeout: 1800, tag: "verify-" + id)
+                }
                 CheckGate.leave()
                 let i = report.checks.count - 1
                 report.checks[i].ok = r.code == 0
@@ -352,6 +400,17 @@ enum Verifier {
                 if r.code != 0, let note = unrelatedTestFailure(name: isTestRun ? L("Tests") : c.name, output: r.out, dir: dir, changed: changes.map(\.path)) {
                     report.checks[i].ok = nil
                     report.checks[i].output = note + "\n\n" + report.checks[i].output
+                } else if r.code != 0, r.code != 124, c.name != L("Installieren"), scopedCmd == c0.command, !isCancelled(id) {
+                    // Schon vor dem Auftrag rot? Dann nicht dem Auftrag anlasten (und nicht endlos „reparieren“ lassen).
+                    report.checks[i].output = L("Rot – prüfe, ob das schon vor dem Auftrag so war …") + "\n\n" + report.checks[i].output
+                    publish()
+                    if let b = baseline(c.command, dir: dir, fork: fork, tag: "verify-" + id), preexisting(baseCode: b.code, baseOut: b.out, out: r.out) {
+                        report.checks[i].ok = nil
+                        report.checks[i].output = String(format: L("Nicht blockierend: war schon vor diesem Auftrag rot (Ausgangsstand %@), die Änderung macht es nicht schlimmer."), String(fork.prefix(7)))
+                            + "\n\n" + String(r.out.suffix(6000))
+                    } else {
+                        report.checks[i].output = String(r.out.suffix(6000))
+                    }
                 }
                 publish()
                 if r.code != 0 && c.name == L("Installieren") { break }
@@ -364,6 +423,14 @@ enum Verifier {
                 publish()
                 DispatchQueue.main.async { runningIDs.remove(id); completion?(report) }
                 return
+            }
+            // Übrig gebliebene Konfliktmarker (nach einem eingemischten Ziel-Branch) dürfen nie durchgehen
+            let added = Worktrees.diff(wt).split(separator: "\n")
+            // „=======“ allein kann eine Markdown-Unterstreichung sein – nur zusammen mit echten Anfangs-/Endmarkern zählen
+            if added.contains(where: { $0.hasPrefix("+<<<<<<< ") }) && added.contains(where: { $0.hasPrefix("+>>>>>>> ") }) {
+                report.checks.append(VerifyCheck(name: L("Konflikte"), command: L("Suche nach Konfliktmarkern"), ok: false,
+                                                 output: L("Ungelöste Konfliktmarker gefunden – erst auflösen.")))
+                publish()
             }
             // Geheimnisse (API-Keys, Tokens, .env) dürfen nicht ins Repo
             let secrets = SecretScan.scan(Worktrees.diff(wt))
@@ -469,18 +536,20 @@ enum Verifier {
 
     /// Wer prüft: nie derselbe Agent, der gebaut hat – und möglichst einer mit freiem Kontingent.
     static func reviewer(for agent: String) -> AgentKind {
-        let codexOK = Detection.which("codex") != nil && !Usage.shared.isTight(.codex)
-        let claudeOK = Detection.which("claude") != nil && !Usage.shared.isTight(.claude)
-        if agent == "codex" { return claudeOK || !codexOK ? .claude : .codex }
-        if codexOK { return .codex }
-        return .claude
+        // Ein Review kostet wenig (Claude nimmt am Limit Sonnet) – lieber knapp am Limit als derselbe Agent prüft sich selbst.
+        func usable(_ k: AgentKind) -> Bool {
+            Detection.which(k.command) != nil && (Usage.shared.blocked[k.rawValue] ?? .distantPast) < Date() && !AgentHealth.needsLogin(k) && !Usage.isPaused(k)
+        }
+        if agent == "codex" { return usable(.claude) || !usable(.codex) ? .claude : .codex }
+        if agent == "claude" { return usable(.codex) ? .codex : .claude }
+        return usable(.codex) && !Usage.shared.isTight(.codex) ? .codex : (usable(.claude) ? .claude : .codex)
     }
 
     private static func review(rec: MissionRecord, diff: String, checks: [VerifyCheck], dir: String) -> VerifyReview? {
         // Nur lokal / offline: das Review macht das lokale Modell (über den Claude-Weg), nicht Codex in der Cloud
         let who = LocalFirst.shared.useLocal || LocalFirst.shared.localOnly ? AgentKind.claude : reviewer(for: rec.agent)
         let lang = Profile.languageCode == "de" ? "German" : "English"
-        let checkText = checks.isEmpty ? "(no automatic checks)" : checks.map { "- \($0.name) `\($0.command)`: \($0.ok == true ? "passed" : $0.ok == false ? "FAILED" : ($0.output.hasPrefix(L("Nicht blockierend")) ? "not blocking – only tests in files this change doesn't touch failed locally; CI runs the full suite" : "skipped"))" }.joined(separator: "\n")
+        let checkText = checks.isEmpty ? "(no automatic checks)" : checks.map { "- \($0.name) `\($0.command)`: \($0.ok == true ? "passed" : $0.ok == false ? "FAILED" : ($0.output.hasPrefix(L("Nicht blockierend")) ? "not blocking – it already failed before this change, or only tests in files this change doesn't touch failed locally; CI runs the full suite" : "skipped"))" }.joined(separator: "\n")
         let rules = (ProjectConfig.load(dir)?.rules ?? []) + Rules.global
         let prompt = """
         You are a strict senior reviewer. Another AI agent (\(rec.agentTitle)) made the changes below for this task.
@@ -490,6 +559,10 @@ enum Verifier {
         never fail a change because a full test run, CI result, push or PR is not shown here; only the affected tests run locally.
         Only flag real problems: bugs, regressions, missing parts of the task,
         security issues, broken rules, leftover debug code. Ignore style preferences.
+        Agents never receive API keys, passwords, tokens or hosting/deployment settings, and must not deploy. If something can only be \
+        finished by the owner (e.g. adding an API key in the hosting environment, logging in to a service, buying a domain, a live \
+        delivery test against a real account), do NOT fail the change for it – set ok to true if the code side is done correctly and \
+        list those items under "owner".
 
         Task:
         \"\"\"\(rec.request.prefix(3000))\"\"\"
@@ -502,7 +575,7 @@ enum Verifier {
         \(diff.prefix(70_000))
         ```
 
-        Answer ONLY with JSON: {"ok": true|false, "summary": "one sentence in \(lang)", "issues": ["file:line – problem (in \(lang))"]}
+        Answer ONLY with JSON: {"ok": true|false, "summary": "one sentence in \(lang)", "issues": ["file:line – problem (in \(lang))"], "owner": ["what only the owner can do (in \(lang))"]}
         """
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-review-\(UUID().uuidString).md")
         try? prompt.write(to: file, atomically: true, encoding: .utf8)
@@ -524,7 +597,12 @@ enum Verifier {
             }
         } else {
             let model = Usage.shared.isTight(.claude) ? "sonnet" : "opus"
-            let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns 4 --allowedTools Read,Grep,Glob --strict-mcp-config < \(Shell.quote(file.path))", in: dir, timeout: 600)
+            // 4 Runden reichten bei großen Änderungen nicht („maximum number of turns“) – dann lief alles ungeprüft durch.
+            // Jetzt 12 Runden; scheitert es trotzdem, ein zweiter Versuch nur mit dem Diff im Prompt (ohne Werkzeuge).
+            var r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns 12 --allowedTools Read,Grep,Glob --strict-mcp-config < \(Shell.quote(file.path))", in: dir, timeout: 600)
+            if claudeResult(r.out) == nil {
+                r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns 2 --strict-mcp-config < \(Shell.quote(file.path))", in: dir, timeout: 420)
+            }
             if let res = claudeResult(r.out) {
                 answer = res
             } else {
@@ -536,9 +614,12 @@ enum Verifier {
               let j = try? JSONSerialization.jsonObject(with: Data(answer[s...e].utf8)) as? [String: Any] else {
             return VerifyReview(agent: who.title, ok: true, summary: String(answer.prefix(300)), issues: [])
         }
+        // Was nur du erledigen kannst (Schlüssel, Anmeldung, Live-Test) – sichtbar im Ergebnis, aber kein Grund für eine Korrekturrunde
+        let owner = (j["owner"] as? [String] ?? []).filter { !$0.isEmpty }
+        let summary = (j["summary"] as? String) ?? ""
         return VerifyReview(agent: who == .codex ? "Codex" : "Claude",
                             ok: j["ok"] as? Bool ?? true,
-                            summary: (j["summary"] as? String) ?? "",
+                            summary: owner.isEmpty ? summary : summary + " · " + L("Braucht dich:") + " " + owner.joined(separator: "; "),
                             issues: (j["issues"] as? [String]) ?? [])
     }
 
@@ -664,7 +745,7 @@ enum Verifier {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-diag-\(UUID().uuidString).md")
         try? prompt.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
-        let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model haiku --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))", in: dir, timeout: 120)
+        let r = Proc.zsh(HelperLLM.command(model: "haiku", maxTurns: 3, file: file.path), in: dir, timeout: 120)
         guard let res = claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"),
               let j = try? JSONSerialization.jsonObject(with: Data(res[a...b].utf8)) as? [String: Any],
               let why = j["why"] as? String, let fix = j["fix"] as? String else { return nil }
@@ -708,7 +789,7 @@ enum Verifier {
 
 enum Handoff {
     static func continueMission(_ rec: MissionRecord, message: String, target: String, agents: AgentManager, hub: MCPHub,
-                                note: String? = nil, model forcedModel: String? = nil, completion: @escaping (AgentSession) -> Void) {
+                                note: String? = nil, model forcedModel: String? = nil, defaultModel: Bool = false, completion: @escaping (AgentSession) -> Void) {
         var before = (try? String(contentsOfFile: rec.log, encoding: .utf8))?
             .replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression) ?? ""
         if before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let tr = rec.transcript {
@@ -762,19 +843,21 @@ enum Handoff {
             return
         }
         let kind = AgentKind(rawValue: target) ?? rec.agentKind
-        let chosen = forcedModel ?? ModelCatalog.selected(for: kind)
+        let chosen = defaultModel ? "" : (forcedModel ?? ModelCatalog.selected(for: kind))
+        let inherited: String? = defaultModel ? nil : rec.cleanModel
         // Gleicher Agent (Claude) und Sitzung bekannt: dieselbe Sitzung fortsetzen – nur die neue Nachricht und der Prüfstand,
         // kein erneutes Einlesen von Verlauf, Regeln und Projektwissen (spart viele Tokens, Kontext bleibt vollständig).
         if SessionReuse.enabled, kind == .claude, target == rec.agent, !rec.isOSAgent, let sid = SessionReuse.id(for: rec) {
             let short = message + (state.isEmpty ? "" : "\n\n---" + state)
             let s = agents.start(kind, in: rec.directory, prompt: short, taskID: rec.taskID, mode: .autonom, label: rec.title,
-                                 model: chosen.isEmpty ? rec.model : chosen, continueSession: sid)
+                                 model: chosen.isEmpty ? inherited : chosen, effort: rec.effort, continueSession: sid)
             done(s)
             return
         }
         let s = agents.start(kind, in: rec.isOSAgent ? (agents.directories.first ?? rec.directory) : rec.directory,
                              prompt: prompt, taskID: rec.taskID, mode: .autonom, label: rec.title,
-                             model: chosen.isEmpty ? (kind.rawValue == rec.agent ? rec.model : nil) : chosen)
+                             model: chosen.isEmpty ? (kind.rawValue == rec.agent ? inherited : nil) : chosen,
+                             effort: (kind == .codex || kind == .claude) ? (rec.effort ?? rec.legacyEffort) : nil)
         done(s)
     }
 }

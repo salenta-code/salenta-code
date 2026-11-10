@@ -56,6 +56,14 @@ enum EfficiencyAudit {
             row["reason"] = String((m.routeReason ?? "").prefix(120))
             row["plan"] = m.plan == true
             row["resumed"] = FileManager.default.fileExists(atPath: m.log + ".sid")
+            // Nicht grün? Dann das Ende des Protokolls (ohne Schlüssel) – so lässt sich die Ursache ohne die Rohdaten finden
+            if m.ok != true, let text = try? String(contentsOfFile: m.log, encoding: .utf8) {
+                let clean = text.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+                row["tail"] = clean.split(separator: "\n").suffix(30).map { String($0.prefix(300)) }.joined(separator: "\n")
+                    .replacingOccurrences(of: #"(sk-[A-Za-z0-9_-]{8})[A-Za-z0-9_-]+|(gh[pousr]_)[A-Za-z0-9]+|(Bearer )\S+"#, with: "$1$2$3•••", options: .regularExpression)
+                row["directory"] = (m.directory as NSString).lastPathComponent
+                row["worktree"] = m.worktree != nil
+            }
             missions.append(row)
         }
 
@@ -73,6 +81,9 @@ enum EfficiencyAudit {
             st["folder"] = (p.id as NSString).deletingLastPathComponent.components(separatedBy: "/").last ?? ""
             st["trust"] = p.trust; st["parallel"] = p.parallel; st["dailyRuns"] = p.dailyRuns; st["continuous"] = p.continuous
             st["tasksByState"] = byState; st["agentsUsed"] = byAgent; st["duplicateTitles"] = Array(dupTitles.prefix(15))
+            // Warum Aufgaben verworfen wurden (Notiz-Anfang) – zeigt, ob der Betreuer zu viel plant oder nur aufräumt
+            st["droppedWhy"] = Dictionary(grouping: p.tasks.filter { $0.state == .dropped }, by: { String(($0.note ?? "–").prefix(40)) }).mapValues(\.count)
+            st["sources"] = Dictionary(grouping: p.tasks, by: { $0.source }).mapValues(\.count)
             st["plannerReplies"] = planner; st["plannerFailures"] = fails; st["prReviewsPosted"] = reviews
             let prs: [StewardPR] = p.prs ?? []
             st["openPRs"] = prs.count
@@ -105,6 +116,27 @@ enum EfficiencyAudit {
             "missions": missions, "stewards": stewards,
         ]
         report["logs"] = logs
+        // Betreuer-Dateien: ob sie sich laden lassen (nur Dateiname, Größe, Zeit, Anzahl, Namen und Fehlerstelle – keine Inhalte)
+        var stewardFiles: [[String: Any]] = []
+        let dataDir = Paths.data
+        let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
+        for name in ((try? FileManager.default.contentsOfDirectory(atPath: dataDir.path)) ?? []).filter({ $0.hasPrefix("stewards") }).sorted() {
+            let u = dataDir.appendingPathComponent(name)
+            var f: [String: Any] = ["name": name]
+            let attrs = try? FileManager.default.attributesOfItem(atPath: u.path)
+            f["bytes"] = attrs?[.size] as? Int ?? 0
+            f["modified"] = (attrs?[.modificationDate] as? Date).map { ISO8601DateFormatter().string(from: $0) } ?? ""
+            if let d = try? Data(contentsOf: u) {
+                let raw = (try? JSONSerialization.jsonObject(with: d) as? [[String: Any]]) ?? []
+                f["items"] = raw.count
+                f["names"] = raw.compactMap { $0["name"] as? String }
+                do { _ = try dec.decode([StewardProject].self, from: d); f["decodes"] = true }
+                catch { f["decodes"] = false; f["error"] = String(String(describing: error).prefix(600)) }
+            }
+            stewardFiles.append(f)
+        }
+        report["stewardFiles"] = stewardFiles
+        report["stewardsLoaded"] = Steward.shared.projects.count
         let dir = Paths.source.appendingPathComponent("logs", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("efficiency.json")

@@ -220,8 +220,10 @@ final class Watchman: ObservableObject {
         DispatchQueue.main.async { self.triageModel = model }
         var r = URLRequest(url: url, timeoutInterval: 25)
         r.httpMethod = "POST"
-        r.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model, "prompt": prompt, "stream": false,
-                                                                 "options": ["temperature": 0, "num_predict": 8], "keep_alive": "10m"])
+        // Dieselbe Modell-Variante wie die Helfer – sonst lädt Ollama dasselbe Modell zweimal in den Speicher.
+        // Kurz im Speicher halten: Mail-Einordnung kommt selten, der Speicher fehlt sonst dem ganzen Mac.
+        r.httpBody = try? JSONSerialization.data(withJSONObject: ["model": LocalFirst.contextVariant(model), "prompt": prompt, "stream": false,
+                                                                 "options": ["temperature": 0, "num_predict": 8], "keep_alive": "2m"])
         let sem = DispatchSemaphore(value: 0)
         var out: String?
         URLSession.shared.dataTask(with: r) { data, _, _ in

@@ -23,6 +23,7 @@
     <nav class="nav" id="nav" aria-label="Sections">
       <a href="#coding"><span data-l="en">Coding</span><span data-l="de">Coden</span></a>
       <a href="#steward"><span data-l="en">Steward</span><span data-l="de">Betreuer</span></a>
+      <a href="#harness"><span data-l="en">New</span><span data-l="de">Neu</span></a>
       <a href="#intelligence">Intelligence</a>
       <a href="#costs"><span data-l="en">Costs</span><span data-l="de">Kosten</span></a>
       <a href="#ship">Pull Requests</a>
@@ -337,6 +338,43 @@
   </div>
 </section>
 
+<!-- NEW IN 0.3.1 -->
+<section class="blk wrap" id="harness">
+  <div class="eyebrow"><span data-l="en">New in 0.3.1</span><span data-l="de">Neu in 0.3.1</span></div>
+  <h2><span data-l="en">Your own agent. <span class="dim">And never stuck on one provider.</span></span><span data-l="de">Ein eigener Agent. <span class="dim">Und nie an einem Anbieter festhängen.</span></span></h2>
+  <p class="sub"><span data-l="en">Salenta Code now ships its own coding agent, hands work over when a provider runs out, and keeps your Mac cool and responsive under full load.</span><span data-l="de">Salenta Code bringt jetzt einen eigenen Coding-Agent mit, gibt Arbeit weiter, wenn ein Anbieter ausgeht, und hält deinen Mac auch unter Volllast kühl und flüssig.</span></p>
+  <div class="bento">
+    <div class="card w3 rv">
+      <h3>Salenta Harness</h3>
+      <p><span data-l="en">A built-in coding agent that works with DeepSeek, Claude, OpenAI, OpenRouter or a local model. Access levels are enforced, not just suggested; it splits work into parallel sub-agents, resumes sessions and checks its own result before it says done.</span><span data-l="de">Ein eingebauter Coding-Agent, der mit DeepSeek, Claude, OpenAI, OpenRouter oder einem lokalen Modell arbeitet. Zugriffsstufen werden erzwungen, nicht nur erbeten; er teilt Arbeit auf parallele Unteragents auf, setzt Sitzungen fort und prüft sein Ergebnis, bevor er „fertig“ sagt.</span></p>
+    </div>
+    <div class="card w3 rv">
+      <h3><span data-l="en">Pause a provider</span><span data-l="de">Anbieter pausieren</span></h3>
+      <p><span data-l="en">Out of quota? Pause Claude, Codex or any other agent for an hour, until tomorrow or until you resume it. Running tasks move to the next agent and are finished there – planning and reviews switch too.</span><span data-l="de">Kontingent aufgebraucht? Pausiere Claude, Codex oder einen anderen Agent für eine Stunde, bis morgen oder bis du ihn freigibst. Laufende Aufträge gehen an den nächsten Agent und werden dort fertig – Planung und Reviews wechseln mit.</span></p>
+    </div>
+    <div class="card w2 rv">
+      <h3><span data-l="en">Several subscriptions</span><span data-l="de">Mehrere Abos</span></h3>
+      <p><span data-l="en">Add more than one Claude or Codex account. When one hits its limit, work continues on the next – no logging out.</span><span data-l="de">Hinterlege mehr als ein Claude- oder Codex-Konto. Ist eins im Limit, geht es mit dem nächsten weiter – ohne Abmelden.</span></p>
+    </div>
+    <div class="card w2 rv">
+      <h3><span data-l="en">Workspace next to the chat</span><span data-l="de">Arbeitsbereich neben dem Chat</span></h3>
+      <p><span data-l="en">Changed and new files with a live preview and diff, every step on a timeline, and a quiet status line with steps, tool calls and duration.</span><span data-l="de">Geänderte und neue Dateien mit Vorschau und Diff, jeder Schritt auf einer Zeitleiste und eine ruhige Statuszeile mit Schritten, Werkzeugaufrufen und Dauer.</span></p>
+    </div>
+    <div class="card w2 rv">
+      <h3><span data-l="en">Access per task</span><span data-l="de">Zugriff pro Auftrag</span></h3>
+      <p><span data-l="en">Read only, work in the project, or full access – chosen for each task and enforced through the agent's own options.</span><span data-l="de">Nur lesen, im Projekt arbeiten oder voller Zugriff – für jeden Auftrag gewählt und über die Optionen des Agents erzwungen.</span></p>
+    </div>
+    <div class="card w3 rv">
+      <h3><span data-l="en">Cool under full load</span><span data-l="de">Kühl unter Volllast</span></h3>
+      <p><span data-l="en">Helpers, tests and checks run at lower priority, so the app stays smooth. When the Mac gets warm they move to the efficiency cores; with little free memory or a busy CPU, fewer helpers start.</span><span data-l="de">Helfer, Tests und Prüfungen laufen mit niedrigerer Priorität, die App bleibt flüssig. Wird der Mac warm, wechseln sie auf die Effizienzkerne; bei wenig freiem Speicher oder voller CPU starten weniger Helfer.</span></p>
+    </div>
+    <div class="card w3 rv">
+      <h3><span data-l="en">Pull requests that get done</span><span data-l="de">Pull Requests, die fertig werden</span></h3>
+      <p><span data-l="en">Before fixing a pull request, the latest main branch is merged in so conflicts are really solved. Look-changing PRs are never merged automatically – you decide.</span><span data-l="de">Bevor ein Pull Request nachgebessert wird, kommt der neueste Haupt-Branch hinein, damit Konflikte wirklich gelöst werden. PRs, die das Aussehen ändern, werden nie automatisch gemergt – du entscheidest.</span></p>
+    </div>
+  </div>
+</section>
+
 <!-- COSTS -->
 <section class="blk wrap" id="costs">
   <div class="eyebrow"><span data-l="en">Cost &amp; efficiency</span><span data-l="de">Kosten &amp; Effizienz</span></div>
@@ -540,7 +578,7 @@
     <details><summary><span data-l="en">Is it really free?</span><span data-l="de">Ist es wirklich kostenlos?</span></summary><p><span data-l="en">Yes. Salenta Code is open source under the Apache 2.0 license. You only pay for the agent subscriptions you already use; local models cost nothing.</span><span data-l="de">Ja. Salenta Code ist Open Source unter der Apache-2.0-Lizenz. Du zahlst nur die Agent-Abos, die du ohnehin nutzt; lokale Modelle kosten nichts.</span></p></details>
     <details><summary><span data-l="en">Which Macs are supported?</span><span data-l="de">Welche Macs werden unterstützt?</span></summary><p><span data-l="en">Any Mac with macOS 14 Sonoma or newer. The download is one universal app that runs natively on Apple Silicon (M1 and later) and on Intel.</span><span data-l="de">Jeder Mac mit macOS 14 Sonoma oder neuer. Der Download ist eine Universal-App und läuft nativ auf Apple Silicon (ab M1) und auf Intel.</span></p></details>
     <details><summary><span data-l="en">How do I install it?</span><span data-l="de">Wie installiere ich es?</span></summary><p><span data-l="en">Open <code>Salenta-Code.dmg</code> and drag the app into Applications. On first launch, setup checks for Git, the GitHub CLI, Node and your agents and installs what's missing if you want.</span><span data-l="de">Öffne <code>Salenta-Code.dmg</code> und zieh die App in den Programme-Ordner. Beim ersten Start prüft die Einrichtung Git, GitHub CLI, Node und deine Agents und installiert auf Wunsch, was fehlt.</span></p></details>
-    <details><summary><span data-l="en">Which agents do I need?</span><span data-l="de">Welche Agents brauche ich?</span></summary><p><span data-l="en">At least one: Claude Code, Codex, Cursor, Gemini CLI, Junie or a local model through Ollama. The more you have, the more options routing has.</span><span data-l="de">Mindestens einen: Claude Code, Codex, Cursor, Gemini CLI, Junie oder ein lokales Modell über Ollama. Je mehr du hast, desto mehr Möglichkeiten hat die Verteilung.</span></p></details>
+    <details><summary><span data-l="en">Which agents do I need?</span><span data-l="de">Welche Agents brauche ich?</span></summary><p><span data-l="en">At least one: Claude Code, Codex, Cursor, Gemini CLI, Junie, a local model through Ollama – or the built-in Salenta Harness with an API key of your choice. The more you have, the more options routing has.</span><span data-l="de">Mindestens einen: Claude Code, Codex, Cursor, Gemini CLI, Junie, ein lokales Modell über Ollama – oder den eingebauten Salenta Harness mit einem API-Schlüssel deiner Wahl. Je mehr du hast, desto mehr Möglichkeiten hat die Verteilung.</span></p></details>
     <details><summary><span data-l="en">Does my code go to Salenta?</span><span data-l="de">Geht mein Code an Salenta?</span></summary><p><span data-l="en">No. Salenta Code runs on your Mac and has no server of its own. Your code goes only to the agents you choose – or nowhere, in offline mode.</span><span data-l="de">Nein. Salenta Code läuft auf deinem Mac und hat keinen eigenen Server. Dein Code geht nur an die Agents, die du wählst – im Offline-Modus nirgendwohin.</span></p></details>
     <details><summary><span data-l="en">How do updates work?</span><span data-l="de">Wie funktionieren Updates?</span></summary><p><span data-l="en">The app checks GitHub releases itself and installs a new version only when no agent is running and the new build passes its self-test. The previous version is kept.</span><span data-l="de">Die App prüft die GitHub-Releases selbst und installiert eine neue Version nur, wenn kein Agent läuft und der neue Build seinen Selbsttest besteht. Die vorige Version bleibt erhalten.</span></p></details>
     <details><summary><span data-l="en">Windows or Linux?</span><span data-l="de">Windows oder Linux?</span></summary><p><span data-l="en">Not right now. Salenta Code is a native Mac app built with SwiftUI.</span><span data-l="de">Im Moment nicht. Salenta Code ist eine native Mac-App mit SwiftUI.</span></p></details>

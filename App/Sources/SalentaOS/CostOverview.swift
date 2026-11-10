@@ -286,6 +286,7 @@ struct CostOverview: View {
             Provider(id: "cursor", name: "Cursor Agent", found: has(".cursor") || has(".local/share/cursor-agent"), cost: nil, note: L("Abrechnung bei Cursor")),
             Provider(id: "gemini", name: "Gemini CLI", found: has(".gemini"), cost: nil, note: ""),
             Provider(id: "kimi", name: "Kimi Code", found: has(".kimi") || has(".kimi-code"), cost: nil, note: ""),
+            Provider(id: "deepseek", name: "DeepSeek Harness", found: has(".dsh"), cost: nil, note: L("pro Nutzung (API)")),
             Provider(id: "grok", name: "Grok", found: has(".grokbot"), cost: nil, note: ""),
             Provider(id: "junie", name: "Junie", found: has(".junie"), cost: nil, note: L("pro Nutzung (API)")),
             Provider(id: "ollama", name: L("Lokal (Ollama)"), found: has(".ollama"), cost: 0, note: L("kostenlos, nur Strom")),

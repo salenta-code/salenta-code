@@ -462,20 +462,14 @@ struct ProjectsView: View {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Projekte").font(.largeTitle.weight(.semibold))
-                        Text("Wo es brennt, was offen ist, was die Agents gerade tun – pro Repo.").foregroundStyle(.secondary)
+                        Text("Wo es brennt, was offen ist, was die Agents gerade tun – pro Repo.").foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer()
                     if board.loading { ProgressView().controlSize(.small) }
-                    if !board.hidden.isEmpty {
-                        Button { board.showHidden.toggle(); refresh() } label: {
-                            Label(board.showHidden ? L("Ausgeblendete verbergen") : String(format: L("Ausgeblendete zeigen (%d)"), board.hidden.count),
-                                  systemImage: board.showHidden ? "eye.slash" : "eye")
-                        }
-                        .help(L("Ausgeblendete Projekte anzeigen, um sie wieder einzublenden"))
+                    ViewThatFits(in: .horizontal) {
+                        projectActions(small: false)
+                        projectActions(small: true)
                     }
-                    Button { globalRules = true } label: { Label("Regeln für alle", systemImage: "shield.lefthalf.filled") }
-                    Button { adding = true } label: { Label("Projekt hinzufügen", systemImage: "plus") }
-                        .buttonStyle(.borderedProminent)
                 }
                 TipsCard()
                 LazyVGrid(columns: columns, alignment: .leading, spacing: Grid.l) {
@@ -517,6 +511,27 @@ struct ProjectsView: View {
         .sheet(item: Binding(get: { previewFor.map { IdentifiedPath(path: $0) } }, set: { previewFor = $0?.path })) { p in
             PreviewSheet(id: "proj:" + p.path, title: (p.path as NSString).lastPathComponent)
         }
+    }
+
+    @ViewBuilder private func projectActions(small: Bool) -> some View {
+        HStack(spacing: Grid.s) {
+            if !board.hidden.isEmpty {
+                Button { board.showHidden.toggle(); refresh() } label: {
+                    if small { Image(systemName: board.showHidden ? "eye.slash" : "eye") }
+                    else { Label(board.showHidden ? L("Ausgeblendete verbergen") : String(format: L("Ausgeblendete zeigen (%d)"), board.hidden.count),
+                                 systemImage: board.showHidden ? "eye.slash" : "eye") }
+                }
+                .help(L("Ausgeblendete Projekte anzeigen, um sie wieder einzublenden"))
+            }
+            Button { globalRules = true } label: {
+                if small { Image(systemName: "shield.lefthalf.filled") } else { Label("Regeln für alle", systemImage: "shield.lefthalf.filled") }
+            }.help(L("Regeln für alle"))
+            Button { adding = true } label: {
+                if small { Image(systemName: "plus") } else { Label("Projekt hinzufügen", systemImage: "plus") }
+            }
+            .buttonStyle(.borderedProminent).help(L("Projekt hinzufügen"))
+        }
+        .lineLimit(1).fixedSize()
     }
 
     struct IdentifiedPath: Identifiable { var id: String { path }; let path: String }
@@ -762,8 +777,15 @@ struct ProjectsView: View {
                     app.draft = ctx
                     app.draftDir = p.path
                     app.page = .home
-                } label: { Label("Weiterarbeiten", systemImage: "play.fill") }
-                    .buttonStyle(.borderedProminent)
+                } label: {
+                    // ausgeschrieben, wenn Platz ist – sonst nur das Symbol (nie abgeschnitten)
+                    ViewThatFits(in: .horizontal) {
+                        Label("Weiterarbeiten", systemImage: "play.fill").lineLimit(1).fixedSize()
+                        Label("Weiter", systemImage: "play.fill").lineLimit(1).fixedSize()
+                        Image(systemName: "play.fill")
+                    }
+                }
+                    .buttonStyle(.borderedProminent).help(L("Weiterarbeiten"))
                 Button {
                     PreviewServer.shared.start(id: "proj:" + p.path, dir: p.path) { u in if u == nil { app.show(L("Kein Dev-Server gefunden – \"dev\" in .salenta-os.json eintragen")) } }
                     previewFor = p.path
@@ -975,11 +997,36 @@ enum GitSync {
             // ausgecheckt: nur ohne eigene Änderungen und nur vorspulen
             if Git.run(["status", "--porcelain", "--untracked-files=no"], in: repo, timeout: 20).out.isEmpty {
                 Git.run(["merge", "--ff-only", "--quiet", "origin/" + b], in: repo, timeout: 60)
+                deliverLocalCommits(repo: repo, base: b)
             }
         } else {
             // nicht ausgecheckt: lokalen Branch-Zeiger vorspulen (schlägt still fehl, wenn er eigene Commits hat)
             Git.run(["fetch", "--quiet", "origin", b + ":" + b], in: repo, timeout: 60)
         }
+    }
+
+    /// Lokal übernommene Ergebnisse (Merge in den Haupt-Branch, ohne Pull Request – z. B. weil gh gerade nicht geprüft war)
+    /// nachträglich als Pull Request liefern: die Commits wandern auf einen eigenen Branch, der Haupt-Branch geht zurück auf GitHub-Stand.
+    /// So landet nichts still am Review und der CI vorbei und spätere Helfer bauen nicht auf Unveröffentlichtem auf.
+    static func deliverLocalCommits(repo: String, base: String) {
+        guard GH.ready else { return }
+        let ahead = Git.run(["rev-list", "--count", "origin/\(base)..\(base)"], in: repo, timeout: 20).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let n = Int(ahead), n > 0, n <= 20 else { return }
+        // nur Commits, die Salenta Code selbst übernommen hat (Nachricht = Aufgabentitel aus dem Betreuer)
+        let titles = Set(Steward.shared.projects.first { $0.id == repo }?.tasks.filter { $0.state == .done }.map(\.title) ?? [])
+        let subjects = Git.run(["log", "--format=%s", "origin/\(base)..\(base)"], in: repo, timeout: 20).out.split(separator: "\n").map(String.init)
+        guard !subjects.isEmpty, subjects.allSatisfy({ titles.contains($0) || $0.hasPrefix("Merge") || $0.hasPrefix("Checkpoint:") }) else { return }
+        let short = String(UUID().uuidString.prefix(8)).lowercased()
+        let branch = "aos/nachlieferung-\(short)"
+        guard Git.run(["push", "origin", "\(base):refs/heads/\(branch)"], in: repo, timeout: 120).code == 0 else { return }
+        let body = L("Lokal geprüfte und übernommene Ergebnisse des Projekt-Betreuers, nachträglich als Pull Request:") + "\n\n" + subjects.map { "- " + $0 }.joined(separator: "\n")
+        let bf = FileManager.default.temporaryDirectory.appendingPathComponent("aos-nachlieferung-\(short).md")
+        try? body.write(to: bf, atomically: true, encoding: .utf8)
+        let r = Proc.zsh("gh pr create --head \(Shell.quote(branch)) --base \(Shell.quote(base)) --title \(Shell.quote(subjects.count == 1 ? subjects[0] : String(format: L("%d übernommene Ergebnisse"), subjects.count))) --body-file \(Shell.quote(bf.path))", in: repo, timeout: 90)
+        try? FileManager.default.removeItem(at: bf)
+        guard r.code == 0 else { return }
+        Git.run(["reset", "--hard", "--quiet", "origin/" + base], in: repo, timeout: 30)
+        CrashLog.mark("Nachlieferung als PR: \(branch) (\(n) Commits)")
     }
 
     private static func explain(_ out: String) -> String {

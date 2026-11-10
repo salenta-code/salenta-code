@@ -45,6 +45,7 @@ def header(home):
     <nav class="nav" id="nav" aria-label="[[Sections||Bereiche]]">
       <a href="{h}#coding">[[Coding||Coden]]</a>
       <a href="{h}#steward">[[Steward||Betreuer]]</a>
+      <a href="{h}#harness">[[New||Neu]]</a>
       <a href="{h}#intelligence">Intelligence</a>
       <a href="{h}#costs">[[Costs||Kosten]]</a>
       <a href="{h}#ship">Pull Requests</a>

@@ -1,0 +1,11 @@
+#!/bin/bash
+# timeout für macOS: timeout [-s SIG] SEKUNDEN BEFEHL … (beendet den Befehl nach Ablauf, Exit 124)
+sig=TERM
+if [ "$1" = "-s" ]; then sig="$2"; shift 2; fi
+secs="$1"; shift
+"$@" & pid=$!
+( sleep "$secs"; kill -"$sig" "$pid" 2>/dev/null; sleep 2; kill -KILL "$pid" 2>/dev/null ) & wd=$!
+wait "$pid"; rc=$?
+kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+if ! kill -0 "$pid" 2>/dev/null && [ "$rc" -ge 128 ]; then exit 124; fi
+exit "$rc"

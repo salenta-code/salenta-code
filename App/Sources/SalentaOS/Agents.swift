@@ -53,14 +53,17 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
     let effort: String?
     /// Nur planen, nichts ändern (Claude: --permission-mode plan, Codex: read-only).
     let planOnly: Bool
+    /// Voller Zugriff (von dir pro Auftrag gewählt): Claude ohne Rückfragen, Codex ohne Sandbox.
+    let fullAccess: Bool
     var isOSAgent: Bool { osAgentConfig != nil }
     var displayName: String { isOSAgent ? "OS-Agent" : kind.title }
 
     init(kind: AgentKind, mode: RunMode, directory: URL, prompt: String?, taskID: String?, label: String?, osAgentConfig: URL? = nil,
          resumeID: String? = nil, model: String? = nil, effort: String? = nil, codingConfig: URL? = nil,
          id: UUID = UUID(), startedAt: Date = Date(), attach: Bool = false, planOnly: Bool = false,
-         continueSession: String? = nil, chrome: Bool = false, onlyChosenSkills: Bool = false) {
+         continueSession: String? = nil, chrome: Bool = false, onlyChosenSkills: Bool = false, fullAccess: Bool = false) {
         self.planOnly = planOnly
+        self.fullAccess = fullAccess && !planOnly
         self.onlyChosenSkills = onlyChosenSkills
         self.continueSession = continueSession
         self.chrome = chrome
@@ -112,7 +115,7 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
             return
         }
         // Die PID-Datei erlaubt sauberes Beenden.
-        var command = "echo $$ > \(Shell.quote(pidFile.path)); cd \(Shell.quote(directory.path)) && "
+        var command = "echo $$ > \(Shell.quote(pidFile.path)); cd \(Shell.quote(directory.path)) && " + Accounts.shared.exports()
         var promptArg = ""
         var promptFile = ""
         if let prompt, !prompt.isEmpty {
@@ -124,7 +127,10 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
         let hasPrompt = !promptArg.isEmpty
         // Modellwahl: Claude Code --model, Codex -m und Denktiefe.
         // Denkstufe passend zur Aufgabe – auch bei Claude (wenn die installierte Version sie kennt)
-        let claudeModel = (model.map { " --model \(Shell.quote($0))" } ?? "")
+        // Lokal (Ollama) und OpenRouter: das Modell steht schon in der Umgebung (ANTHROPIC_MODEL) – ein --model mit
+        // „qwen3-coder:latest“ lehnt Claude Code als unbekanntes Modell ab (unrecognized_model)
+        let modelViaEnv = kind == .ollama || kind == .openrouter
+        let claudeModel = (modelViaEnv ? "" : (model.map { " --model \(Shell.quote($0))" } ?? ""))
             + (kind.harness == .claude ? (effort.map { CLIFlags.shared.pick(.claude, ["--effort \($0)"]) } ?? "") : "")
         var codexOpts = model.map { " -m \(Shell.quote($0))" } ?? ""
         if let effort { codexOpts += " -c model_reasoning_effort=\(Shell.quote(effort))" }
@@ -142,9 +148,27 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
         }
         let log = Shell.quote(logFile.path)
         let live = Shell.quote(Paths.root.appendingPathComponent("bin/aos-live").path)
+        // Helfer-Befehle laufen in bash (zsh bricht bei Mustern ohne Treffer ab und teilt Variablen nicht auf) –
+        // und bin/ liefert ein `timeout`, das macOS nicht mitbringt
+        if mode == .autonom, osAgentConfig == nil {
+            // Helfer mit niedrigerer Priorität (vererbt sich auf Tests, Builds, Worker): die Oberfläche bleibt flüssig
+            command += "renice -n 10 -p $$ >/dev/null 2>&1; "
+            command += "export SHELL=/bin/bash; export PATH=\(Shell.quote(Paths.root.appendingPathComponent("bin").path)):$PATH; "
+            // Test-Runner drosseln: zwei Worker je Helfer reichen – bei vier Helfern wären es sonst 4×(alle Kerne) → Volllast und Hitze
+            command += "export VITEST_MAX_THREADS=2 VITEST_MAX_FORKS=2 VITEST_MIN_THREADS=1 VITEST_MIN_FORKS=1 JEST_MAX_WORKERS=2 UV_THREADPOOL_SIZE=4; "
+        }
 
         if let rid = resumeID {
             command += kind == .codex ? "exec codex resume \(Shell.quote(rid))" : "exec claude --resume \(Shell.quote(rid))"
+        } else if let cfg = osAgentConfig, kind == .codex {
+            // OS-Agent über Codex: eigene, private Codex-Konfiguration (Anmeldung wie gewohnt) plus die verbundenen MCP-Tools.
+            // Keine Schlüssel auf der Befehlszeile – alles steht in einer Datei, die nur du lesen kannst.
+            let home = OSAgentCodex.home(id: id, mcp: sessionConfig(cfg))
+            let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-os-codex-\(id.uuidString).md")
+            try? (OSAgent.rules + "\n\n---\n\n" + (prompt ?? "")).write(to: file, atomically: true, encoding: .utf8)
+            let json = CLIFlags.shared.pick(.codex, sub: "exec", ["--json", "--experimental-json"])
+            command += "export CODEX_HOME=\(Shell.quote(home)); codex exec\(codexOpts) -s workspace-write -c sandbox_workspace_write.network_access=true\(CLIFlags.shared.pick(.codex, sub: "exec", ["--skip-git-repo-check"]))\(json) - < \(Shell.quote(file.path))"
+                + " 2>>\(Shell.quote(logFile.path + ".stderr")) | python3 -u \(live) --log \(log); exit ${pipestatus[1]}"   // Codex-Protokoll getrennt, die Ansicht bleibt lesbar
         } else if let cfg = osAgentConfig {
             let rules = FileManager.default.temporaryDirectory.appendingPathComponent("aos-rules-\(id.uuidString).md")
             try? OSAgent.rules.write(to: rules, atomically: true, encoding: .utf8)
@@ -172,19 +196,26 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
             let browser = chrome ? F.pick(.claude, ["--chrome"]) : ""
             // Nur die gewählten Skills: alle anderen bleiben ungeladen (ihre Beschreibungen kosten sonst bei jedem Start Kontext)
             let diet = self.onlyChosenSkills ? F.pick(.claude, ["--disable-slash-commands"]) : ""
-            command += "claude -p\(claudeModel)\(cont)\(browser)\(diet)\(F.pick(.claude, ["--permission-mode \(planOnly ? "plan" : "acceptEdits")"])) --output-format stream-json --verbose"
+            command += "claude -p\(claudeModel)\(cont)\(browser)\(diet)\(F.pick(.claude, ["--permission-mode \(planOnly ? "plan" : fullAccess ? "bypassPermissions" : "acceptEdits")"])) --output-format stream-json --verbose"
                 + " --mcp-config \(Shell.quote(sessionConfig(codingConfig ?? OSAgent.aosOnlyConfig).path)) --permission-prompt-tool mcp__salenta-os__freigabe"
                 + " --allowedTools 'mcp__salenta-os'"
                 + " < \(promptFile) 2>&1 | python3 -u \(live) --log \(log); exit ${pipestatus[1]}"
         case (.codex, .autonom):
             let sandbox = planOnly ? F.pick(.codex, sub: "exec", ["--sandbox read-only", "-s read-only"])
-                                   : F.pick(.codex, sub: "exec", ["--full-auto", "--sandbox workspace-write", "-s workspace-write"])
+                : fullAccess ? F.pick(.codex, sub: "exec", ["--sandbox danger-full-access", "-s danger-full-access"])
+                : F.pick(.codex, sub: "exec", ["--full-auto", "--sandbox workspace-write", "-s workspace-write"])
             let json = F.pick(.codex, sub: "exec", ["--json", "--experimental-json"])
             // In einer Arbeitskopie liegt das Git-Verzeichnis im Haupt-Repo – ohne Freigabe kann Codex dort nicht einmal committen
             var addDir = ""
             if !planOnly, Worktrees.isWorktree(directory.path) {
                 let common = Git.run(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: directory.path, timeout: 10).out.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !common.isEmpty, F.supports(.codex, "--add-dir", sub: "exec") == true { addDir = " --add-dir " + Shell.quote(common) }
+                // Zusätzlich über die Konfiguration (wirkt auch, wenn die Option in der Hilfe fehlt): Git-Verzeichnis beschreibbar,
+                // und lokale Testserver (Dev-Server, Deno.serve) erlaubt – sonst gelten Tests fälschlich als rot
+                if !common.isEmpty {
+                    addDir += " -c " + Shell.quote("sandbox_workspace_write.writable_roots=[\"\(common)\"]")
+                }
+                addDir += " -c sandbox_workspace_write.network_access=true"
             }
             command += "codex exec\(codexOpts)\(sandbox)\(addDir)\(json)\(promptArg) 2>&1 | python3 -u \(live) --log \(log); exit ${pipestatus[1]}"
         case (.junie, .autonom):
@@ -220,6 +251,17 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
             command += hasPrompt ? "kimi\(claudeModel) -p\(promptArg); exec kimi --continue\(claudeModel)\(approve)" : "exec kimi\(claudeModel)\(approve)"
         case (.kimi, .autonom):
             command += "kimi -p\(promptArg)\(claudeModel)\(F.pick(.kimi, ["--output-format text"])) 2>&1 | python3 -u \(live) --log \(log); exit ${pipestatus[1]}"
+        // DeepSeek Harness: ein Auftrag läuft im Headless-Profil (Ergebnis wird ausgegeben); interaktiv danach eine Shell im Projekt
+        case (.deepseek, .interaktiv):
+            command += hasPrompt ? "dsh --profile headless\(promptArg); exec zsh -l" : "exec zsh -l"
+        // Salenta Harness: eigener Agent. Zugriffsstufe wird im Harness selbst erzwungen; JSON-Strom → Live-Ansicht.
+        case (.harness, _):
+            let access = planOnly ? "read" : fullAccess ? "full" : "project"
+            let h = Shell.quote(Paths.root.appendingPathComponent("bin/salenta-harness").path)
+            command += HarnessSetup.exports() + "\(h) --json --access \(access)\(model.map { " --model " + Shell.quote($0) } ?? "")\(promptArg) 2>&1 | python3 -u \(live) --log \(log); "
+                + (mode == .interaktiv ? "exec zsh -l" : "exit ${pipestatus[1]}")
+        case (.deepseek, .autonom):
+            command += "dsh --profile headless\(promptArg) 2>&1 | python3 -u \(live) --log \(log); exit ${pipestatus[1]}"
         default:
             command += "exec zsh -l"
         }
@@ -414,17 +456,34 @@ final class AgentManager: ObservableObject {
 
     var current: AgentSession? { sessions.first { $0.id == selected } ?? sessions.last }
 
+    /// Claude darf gerade nicht arbeiten: von dir pausiert, nicht angemeldet oder hart im Limit.
+    static var claudeOff: Bool { Usage.isPaused(.claude) || AgentHealth.unavailable(.claude) || Usage.shared.cachedPressure(.claude) >= 1 }
+
+    /// Wer statt Claude arbeitet. Der OS-Agent braucht MCP-Tools – das kann außer Claude nur Codex.
+    static func claudeStandIn(osAgent: Bool) -> AgentKind? {
+        let order: [AgentKind] = osAgent ? [.codex] : [.codex] + AgentKind.coders.filter { $0 != .codex && $0 != .claude && $0 != .ollama }
+        return order.first { OpenModels.available($0) && !AgentHealth.unavailable($0) && Usage.shared.cachedPressure($0) < 1 }
+    }
+
     @discardableResult
     func start(_ kind: AgentKind, in directory: String? = nil, prompt: String? = nil, taskID: String? = nil,
                mode: RunMode = .interaktiv, label: String? = nil, osAgentConfig: URL? = nil,
-               model: String? = nil, effort: String? = nil, codingConfig: URL? = nil, planOnly: Bool = false,
-               worktree useWorktree: Bool = true, question: Bool = false, continueSession: String? = nil, baseRef: String? = nil) -> AgentSession {
+               model: String? = nil, effort: String? = nil, codingConfig: URL? = nil, planOnly: Bool = false, fullAccess: Bool = false,
+               worktree useWorktree: Bool = true, question: Bool = false, continueSession: String? = nil, baseRef: String? = nil,
+               mergeIn: String? = nil) -> AgentSession {
         var kind = kind, model = model
         var offlineNote: String?
         // Kein Internet: Cloud-Agents gegen das lokale Modell tauschen – der Auftrag läuft weiter statt zu scheitern.
         if osAgentConfig == nil, let swap = LocalFirst.shared.offlineSwap(kind) {
             offlineNote = "\(kind.title) → \(L("lokal")) (\(swap.1)): " + (LocalFirst.shared.localOnly ? L("nur lokal eingestellt") : L("kein Internet"))
             kind = swap.0; model = swap.1
+        }
+        // Claude pausiert, im Limit oder abgemeldet: nichts darf trotzdem Claude starten – auch nicht der OS-Agent oder
+        // „Projekt gewählt → Claude Code“. Dann übernimmt Codex (der OS-Agent bekommt dort dieselben verbundenen Tools).
+        if kind == .claude, continueSession == nil, Self.claudeOff,
+           let alt = Self.claudeStandIn(osAgent: osAgentConfig != nil) {
+            offlineNote = (offlineNote.map { $0 + " · " } ?? "") + String(format: L("Claude ist pausiert oder nicht verfügbar – %@ übernimmt"), alt.title)
+            kind = alt; model = nil
         }
         // Letztes Sicherheitsnetz: nie ein fremdes Modell an einen Agent geben (z. B. GPT an Claude Code) – dann dessen Standard
         if let m = model, !ModelCatalog.fits(m, kind) { model = nil }
@@ -469,10 +528,16 @@ final class AgentManager: ObservableObject {
         }
         // Coding-Aufträge, die allein laufen: eigene Arbeitskopie, damit parallele Agents sich nicht stören.
         if wt == nil, useWorktree, !question, mode == .autonom, osAgentConfig == nil, AgentKind.coders.contains(kind), prompt != nil,
-           let w = Worktrees.create(for: base, id: UUID().uuidString, from: baseRef) {
+           let w = Worktrees.create(for: base, id: UUID().uuidString, from: baseRef, mergeIn: mergeIn) {
             wt = w
             dir = w.path
-            prompt = (prompt ?? "") + "\n\n" + L("Hinweis: Du arbeitest in einer eigenen Arbeitskopie (Branch %@) dieses Repos. Du musst weder committen noch pushen und wechselst nicht den Branch – Salenta Code übernimmt Commit, Prüfung und Pull Request. Abhängigkeiten (node_modules) und lokale Einstellungen (.env) sind schon da. Auf macOS gibt es kein `timeout`-Kommando – für Zeitlimits `perl -e 'alarm shift; exec @ARGV' 60 <befehl>` nutzen.").replacingOccurrences(of: "%@", with: w.branch)
+            // Konflikte aus dem eingemischten Ziel-Branch? Dann zuerst diese lösen
+            let unmerged = Git.run(["diff", "--name-only", "--diff-filter=U"], in: w.path, timeout: 15).out
+                .split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+            if !unmerged.isEmpty {
+                prompt = (prompt ?? "") + "\n\n" + L("Wichtig: In dieser Arbeitskopie ist der neueste Stand des Ziel-Branches schon eingemischt, aber diese Dateien haben Konflikte – löse zuerst alle Konfliktmarker (<<<<<<<, =======, >>>>>>>) sorgfältig und so, dass beide Seiten erhalten bleiben, wo sie zusammenpassen:") + "\n" + unmerged.map { "- " + $0 }.joined(separator: "\n")
+            }
+            prompt = (prompt ?? "") + "\n\n" + L("Hinweis: Du arbeitest in einer eigenen Arbeitskopie (Branch %@) dieses Repos. Du musst weder committen noch pushen und wechselst nicht den Branch – Salenta Code übernimmt Commit, Prüfung und Pull Request. Abhängigkeiten (node_modules) und lokale Einstellungen (.env) sind schon da. Ein `timeout`-Kommando ist vorhanden (z. B. `timeout 60 npm test`).").replacingOccurrences(of: "%@", with: w.branch)
         }
         // Claude in Chrome: bei Web-Projekten darf Claude die Seite selbst im Browser prüfen
         let chrome = kind == .claude && mode == .autonom && osAgentConfig == nil && !question && ChromeBridge.useFor(directory: dir)
@@ -491,7 +556,7 @@ final class AgentManager: ObservableObject {
                                    directory: URL(fileURLWithPath: dir, isDirectory: true),
                                    prompt: prompt, taskID: taskID, label: label, osAgentConfig: osAgentConfig,
                                    model: model, effort: effort, codingConfig: codingConfig, planOnly: planOnly,
-                                   continueSession: resuming ? continueSession : nil, chrome: chrome, onlyChosenSkills: diet)
+                                   continueSession: resuming ? continueSession : nil, chrome: chrome, onlyChosenSkills: diet, fullAccess: fullAccess)
         session.worktree = wt
         session.onFinish = { [weak self] s in
             MissionStore.shared.finish(s)
@@ -525,6 +590,13 @@ final class AgentManager: ObservableObject {
         selected = s.id
         saveOpen()
         return s
+    }
+
+    /// Von dir gestoppt: abbrechen, nicht als fertig werten – nichts prüfen, nichts übernehmen, nichts hochladen.
+    func stop(_ id: UUID) {
+        MissionStore.shared.setOutcome(id.uuidString, "stopped")
+        MissionStore.shared.markStopped(id.uuidString)
+        close(id)
     }
 
     func close(_ id: UUID) {
@@ -667,5 +739,70 @@ enum SkillDiet {
             out += "\n\n### " + s.name + "\n" + text
         }
         return (out, picked.map(\.name))
+    }
+}
+
+
+/// Codex-Konfiguration für den OS-Agent: verweist auf deine normale Codex-Anmeldung und ergänzt die MCP-Server.
+enum OSAgentCodex {
+    static func home(id: UUID, mcp: URL) -> String {
+        let fm = FileManager.default
+        let src = Accounts.shared.env()["CODEX_HOME"] ?? (NSHomeDirectory() + "/.codex")
+        let dir = fm.temporaryDirectory.appendingPathComponent("aos-codex-\(id.uuidString)")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        for item in (try? fm.contentsOfDirectory(atPath: src)) ?? [] where item != "config.toml" {
+            try? fm.createSymbolicLink(atPath: dir.appendingPathComponent(item).path, withDestinationPath: src + "/" + item)
+        }
+        let servers = ((try? JSONSerialization.jsonObject(with: Data(contentsOf: mcp))) as? [String: Any])?["mcpServers"] as? [String: Any] ?? [:]
+        let base = (try? String(contentsOfFile: src + "/config.toml", encoding: .utf8)) ?? ""
+        let toml = strip(base, names: Set(servers.keys)) + "\n\n" + tables(servers)
+        let out = dir.appendingPathComponent("config.toml")
+        fm.createFile(atPath: out.path, contents: Data(toml.utf8), attributes: [.posixPermissions: 0o600])
+        return dir.path
+    }
+
+    /// TOML-Abschnitte für die MCP-Server (stdio: command/args/env, http: url/headers).
+    static func tables(_ servers: [String: Any]) -> String {
+        var out: [String] = []
+        for name in servers.keys.sorted() {
+            guard let s = servers[name] as? [String: Any], let key = bare(name) else { continue }
+            // Web-Konnektoren mit Claude-Anmeldung (OAuth) kann Codex nicht nutzen – sie würden nur Fehler melden
+            if s["command"] == nil, (s["headers"] as? [String: String] ?? [:]).isEmpty { continue }
+            var lines = ["[mcp_servers.\(key)]"]
+            if let c = s["command"] as? String { lines.append("command = " + q(c)) }
+            if let a = s["args"] as? [String] { lines.append("args = [" + a.map(q).joined(separator: ", ") + "]") }
+            if let u = s["url"] as? String { lines.append("url = " + q(u)) }
+            if let h = s["headers"] as? [String: String], !h.isEmpty {
+                lines.append("http_headers = { " + h.keys.sorted().map { q($0) + " = " + q(h[$0] ?? "") }.joined(separator: ", ") + " }")
+            }
+            if let e = s["env"] as? [String: String], !e.isEmpty {
+                lines.append("[mcp_servers.\(key).env]")
+                for k in e.keys.sorted() { lines.append(q(k) + " = " + q(e[k] ?? "")) }
+            }
+            out.append(lines.joined(separator: "\n"))
+        }
+        return out.joined(separator: "\n\n") + "\n"
+    }
+
+    /// Gleichnamige Server aus deiner Konfiguration entfernen (sonst wären die Abschnitte doppelt).
+    static func strip(_ toml: String, names: Set<String>) -> String {
+        var keep: [String] = [], skipping = false
+        for line in toml.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("[") {
+                skipping = names.contains { n in t == "[mcp_servers.\(n)]" || t.hasPrefix("[mcp_servers.\(n).") || t == "[mcp_servers.\"\(n)\"]" }
+            }
+            if !skipping { keep.append(line) }
+        }
+        return keep.joined(separator: "\n")
+    }
+
+    static func bare(_ n: String) -> String? { n.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil ? n : nil }
+
+    /// TOML-Zeichenkette (Escape-Regeln wie JSON, ohne \\/).
+    static func q(_ s: String) -> String {
+        guard let d = try? JSONSerialization.data(withJSONObject: [s], options: [.withoutEscapingSlashes]),
+              let a = String(data: d, encoding: .utf8) else { return "\"\"" }
+        return String(a.dropFirst().dropLast())
     }
 }

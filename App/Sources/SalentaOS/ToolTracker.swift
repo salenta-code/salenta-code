@@ -38,21 +38,29 @@ struct ToolChips: View {
 
     var body: some View {
         if !skills.isEmpty || !exts.isEmpty {
-            HStack(spacing: 6) {
-                if !skills.isEmpty { group("wand.and.stars", L("Skills"), skills) }
-                if !exts.isEmpty { group("puzzlepiece.extension", L("Erweiterungen"), exts) }
+            // Nie umbrechen: passt nicht alles, werden es weniger Chips (der Rest als „+N“)
+            ViewThatFits(in: .horizontal) {
+                ForEach(compact ? [2, 1, 0] : [4, 3, 2, 1, 0], id: \.self) { n in row(n) }
             }
-            .help(L("Diese Skills und Erweiterungen hat der Auftrag bekommen – nur diese sind geladen"))
+            .help(L("Diese Skills und Erweiterungen hat der Auftrag bekommen – nur diese sind geladen") + "\n" + (skills + exts).joined(separator: ", "))
         }
     }
 
-    private func group(_ symbol: String, _ title: String, _ items: [String]) -> some View {
-        let shown = compact ? Array(items.prefix(2)) : Array(items.prefix(4))
+    private func row(_ n: Int) -> some View {
+        HStack(spacing: 6) {
+            if !skills.isEmpty { group("wand.and.stars", L("Skills"), skills, n) }
+            if !exts.isEmpty { group("puzzlepiece.extension", L("Erweiterungen"), exts, n) }
+        }
+        .fixedSize()
+    }
+
+    private func group(_ symbol: String, _ title: String, _ items: [String], _ n: Int) -> some View {
+        let shown = Array(items.prefix(n))
         return HStack(spacing: 4) {
             Image(systemName: symbol).font(.caption2).foregroundStyle(Color.accentColor)
             ForEach(shown, id: \.self) { n in
                 Text(n.replacingOccurrences(of: "/", with: ""))
-                    .font(.caption2.weight(.medium))
+                    .font(.caption2.weight(.medium)).lineLimit(1)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Capsule().fill(Color.accentColor.opacity(0.13)))
                     .foregroundStyle(Color.accentColor)

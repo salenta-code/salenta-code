@@ -241,11 +241,13 @@ enum SelfTest {
         write(wtPath, "src/app.test.ts", "const login = { password: \"test-passwort-123\" }\n")
         _ = Git.run(id + ["commit", "-qam", "helfer"], in: wtPath, timeout: 20)
         write(wtPath, ".agents/skills/design/SKILL.md", "von einem Lern-Plugin nebenbei geändert\n")   // Werkzeug-Rauschen
+        write(wtPath, ".playwright-mcp/console-2026.log", "debug\n")                                       // Ablage des Browser-Prüfwerkzeugs
         let paths = Worktrees.changes(wt).map(\.path).sorted()
         check("Änderungen = nur die des Helfers (keine fremden Commits)", paths == ["src/app.test.ts", "src/app.ts"], paths.joined(separator: ", "))
         let diff = Worktrees.diff(wt)
         check("Diff enthält keine fremden Dateien", !diff.contains("fremd.ts") && !diff.contains("db.pg-test") && !diff.contains("lokal.ts"))
         check("Skill-Änderungen von Agenten-Plugins landen nicht im Diff", !diff.contains(".agents/skills"))
+        check("Screenshots/Logs des Browser-Prüfwerkzeugs landen nicht im Diff", !diff.contains(".playwright-mcp") && !paths.contains { $0.contains(".playwright-mcp") })
         check("Test-Passwort im Test ist kein Geheimnis", SecretScan.scan(diff).isEmpty, SecretScan.scan(diff).joined(separator: "; "))
         let fakeKey = "sk-" + "ant-api03-" + String(repeating: "A", count: 28)   // zusammengesetzt, damit kein Scanner anschlägt
         let leak = "+++ b/src/config.ts\n+const key = \"" + fakeKey + "\"\n+const db = { password: \"geheim-echt-123\" }\n"
@@ -295,6 +297,46 @@ enum SelfTest {
               ModelCatalog.fits("opus", .claude) && ModelCatalog.fits("claude-opus-5-5", .claude) && !ModelCatalog.fits("gpt-5.6-sol", .claude)
               && !ModelCatalog.fits("kimi-code/k3.1-pro", .claude) && ModelCatalog.fits("gpt-6.1-sol", .codex) && !ModelCatalog.fits("opus", .codex)
               && ModelCatalog.fits("gpt-5.6-sol-high", .cursor) && ModelCatalog.fits("claude-opus-5-5-low", .cursor) && !ModelCatalog.fits("sonnet", .cursor))
+
+        // Limits und Abo-Sperren: Monatslimit mit Datum wird bis dahin gemieden, Abo ohne Zugang einen Tag
+        let junie = "✗ Anthropic: You have reached your specified API usage limits. You will regain access on 2099-12-01 at 00:00 UTC."
+        let kimi = "error: failed to run prompt: provider.auth_error: Your current subscription does not have access to Kimi Code right now. Upgrade your plan"
+        check("Monatslimit mit Datum → bis zum Datum gemieden", (Usage.parseReset(junie).map { $0.timeIntervalSinceNow > 365 * 86400 } ?? false)
+              && Usage.limitPatterns.contains(where: { junie.lowercased().contains($0) }) && Usage.limitPatterns.contains(where: { kimi.lowercased().contains($0) })
+              && !Usage.limitPatterns.contains(where: { "Stripe subscription created, 3 tests passed".lowercased().contains($0) }))
+        // Alte Einträge: Denkstufe im Modell-Feld zählt nicht als Modell
+        var legacy = MissionRecord(id: "x", title: "t", request: "r", agent: "codex", mode: "autonom", directory: "/tmp", started: Date(), log: "/tmp/x.log")
+        legacy.model = "medium"
+        check("Denkstufe im alten Modell-Feld wird nicht als Modell weitergegeben", legacy.cleanModel == nil && legacy.legacyEffort == "medium")
+        // Gesperrte Agents überstehen Neustarts und werden nicht eingeplant
+        Steward.markBroken(.grok); check("Sofort gescheiterter Agent bleibt 6 h gesperrt", Steward.isBroken(.grok)); Steward.clearBroken(.grok)
+        check("Sperre aufgehoben", !Steward.isBroken(.grok))
+        // Anmeldedaten sichtbar fehlend → nicht einplanen (Gemini ohne Datei und ohne Schlüssel)
+        check("Login-Vorprüfung liefert ein Ergebnis für Gemini/Codex", AgentHealth.credentialsMissing(.gemini) != nil && AgentHealth.credentialsMissing(.codex) != nil && AgentHealth.credentialsMissing(.claude) == nil)
+        // Steuerung mit Zeitlimit: Freigabe gilt bis zur Zeit, dann nicht mehr
+        ControlGrants.set(.browser, until: Date().addingTimeInterval(60)); check("Browser-Steuerung freigegeben", ControlGrants.until(.browser) != nil)
+        ControlGrants.set(.browser, until: nil); check("Browser-Steuerung beendet", ControlGrants.until(.browser) == nil)
+        // Einrichtungs-Skript und timeout-Shim liegen bereit und sind gültige Shell-Skripte
+        let srcDir = ProcessInfo.processInfo.environment["AOS_SRC"].map { URL(fileURLWithPath: $0) } ?? Paths.source
+        for tool in ["aos-setup", "timeout"] {
+            let p = srcDir.appendingPathComponent("bin/" + tool).path
+            check("bin/\(tool) vorhanden und gültig", FileManager.default.isExecutableFile(atPath: p) && Proc.zsh("/bin/bash -n " + Shell.quote(p), in: NSTemporaryDirectory(), timeout: 10).code == 0)
+        }
+        // Salenta Harness: mitgeliefert, startet, und seine eigenen Tests (geskriptetes Modell, kein Netz) sind grün
+        let sah = srcDir.appendingPathComponent("bin/salenta-harness").path
+        check("Salenta Harness vorhanden", FileManager.default.isExecutableFile(atPath: sah))
+        if Detection.which("node") != nil {
+            check("Salenta Harness startet", Proc.zsh(Shell.quote(sah) + " --version", in: NSTemporaryDirectory(), timeout: 20).out.contains("0."))
+            let t = Proc.zsh("node --test " + Shell.quote(srcDir.appendingPathComponent("bin/harness/test").path) + "/*.test.mjs 2>&1 | grep -E -A12 '^not ok|^# (pass|fail)' | head -40", in: NSTemporaryDirectory(), timeout: 120)
+            check("Salenta Harness: eigene Tests grün", t.out.contains("# fail 0"), String(t.out.prefix(1500)))
+        }
+        check("timeout beendet nach Ablauf (Exit 124)", Proc.zsh(Shell.quote(srcDir.appendingPathComponent("bin/timeout").path) + " 1 sleep 5; echo rc=$?", in: NSTemporaryDirectory(), timeout: 15).out.contains("rc=124"))
+        // GitHub-Projekt: solange die gh-Anmeldung ungeprüft ist, gilt der PR-Weg (nie still lokal mergen)
+        var gp = StewardProject(id: "/tmp/x", name: "x")
+        var gs = StewardSetup(); gs.remote = "https://github.com/a/b.git"; gp.setup = gs
+        check("GitHub-Projekt liefert per PR, solange gh nicht sicher fehlt", gp.hasGitHub && gp.repoSlug == "a/b" && (GH.state == .no ? !gp.viaPR : gp.viaPR))
+        // Reviewer: nie derselbe Agent, solange der andere nutzbar ist
+        check("Review macht der jeweils andere Agent", Verifier.reviewer(for: "codex") != .codex || Detection.which("claude") == nil)
 
         let body = "Fix für den Login\n\nCo-authored-by: Codex <codex@openai.com>\nCo-authored-by: Anna Beispiel <anna@example.com>\n🤖 Generated with Claude Code"
         let clean = GitSync.cleanCredits(body)
@@ -431,6 +473,11 @@ enum SelfTest {
         check("Pull Request: Beschreibung mit Zusammenfassung, Änderungen und Changelog", prBody.contains("## Zusammenfassung") && prBody.contains("## Changelog") && !prBody.contains("## Geprüft"), "")
         let phases = WorkPhases.plan(prompt: "Baue einen Dark-Mode-Button auf der Startseite", kind: .claude, directory: nil)
         check("Arbeitsplan: Phasen mit Planen, Umsetzen, Prüfen wie die CI", phases.map { $0.text.contains("Umsetzen") && $0.text.contains("Prüfen wie die CI") && $0.text.contains("Browser") } ?? !AutoSkills.enabled, "")
+        let dg = DesignGuide.rules(tweak: false, de: true), dgT = DesignGuide.rules(tweak: true, de: true), dgE = DesignGuide.rules(tweak: false, de: false)
+        check("Gestaltung: Leitfaden mit Bildsprache, Kontrast und fließendem Layout (DE/EN)", dg.contains("Bildsprache") && dg.contains("4,5:1") && dg.contains("390 px") && dgE.contains("4.5:1") && !dgE.contains("Bildsprache"), "")
+        check("Gestaltung: kleine Änderung ändert nur das Verlangte", DesignGuide.isSmallTweak("mach die farbe vom button blau") && !DesignGuide.isSmallTweak("redesign der startseite, farbe egal") && dgT.contains("nur genau das Verlangte"), "")
+        let uiPlan = WorkPhases.plan(prompt: "Gestalte die Landing Page neu", kind: .codex, directory: nil)
+        check("Gestaltung: Leitfaden gilt auch ohne Design-Plugin und für jeden Coding-Agent", uiPlan.map { $0.text.contains("oklch") } ?? !AutoSkills.enabled, "")
         let review = WorkPhases.plan(prompt: "Nur prüfen, nichts ändern: Sicherheit des Logins", kind: .claude, directory: nil)
         check("Arbeitsplan: Prüf-Auftrag ändert nichts und prüft Sicherheit", review.map { !$0.text.contains("Umsetzen") && $0.text.contains("Sicherheit") } ?? !AutoSkills.enabled, "")
         check("CI-Befehle: nur sichere Prüfbefehle", CIParity.safe("npm run lint") && CIParity.safe("pnpm test") && !CIParity.safe("npm run deploy")
@@ -532,6 +579,159 @@ extension SelfTest {
         try? FileManager.default.removeItem(at: ProjectMemory.url(for: ProjectMemory.root(of: repo)))
 
         // Mails: offensichtliche Automaten brauchen keine Antwort (ohne Modellaufruf)
+        do {
+            let look = StewardPR(number: 1, title: "Startseite im Apple-Stil neu gestalten", url: "", branch: "aos/x", sha: "a")
+            let fix = StewardPR(number: 2, title: "Alle alten Adressen per 301 umleiten", url: "", branch: "aos/y", sha: "b")
+            check("Optik-PR wird nicht selbst gemergt", look.changesLook && !fix.changesLook)
+        }
+        do {
+            let was = Usage.pausedUntil(.grok)
+            Usage.shared.pause(.grok, until: Date().addingTimeInterval(60))
+            let paused = Usage.isPaused(.grok) && AgentHealth.unavailable(.grok) && Usage.shared.pressure(.grok) >= 1
+            Usage.shared.resume(.grok)
+            if let was { Usage.shared.pause(.grok, until: was == .distantFuture ? nil : was) }
+            check("Anbieter pausieren: wird nicht eingeplant", paused && (was != nil || !Usage.isPaused(.grok)))
+        }
+        do {
+            // Fehlende Anmeldung (Gemini ohne Auth-Methode, Kimi ohne Abo-Zugang) wird erkannt – dann wird der Agent nicht mehr eingeplant
+            let gem = "Please set an Auth method in your settings.json or specify one of the following environment variables"
+            let kim = "error: failed to run prompt: provider.auth_error: Your current subscription does not have access to Kimi Code right now."
+            let hits = CLIFlags_loginHit(gem) && CLIFlags_loginHit(kim) && !CLIFlags_loginHit("Tests grün, 12 Dateien geändert")
+            check("Fehlende Anmeldung im Startfehler erkannt", hits)
+            check("Fremdes Modell nach Agent-Wechsel verworfen", !ModelCatalog.fits("haiku", .codex) && !ModelCatalog.fits("kimi-code/k3.1-pro", .claude)
+                  && !ModelCatalog.fits("gpt-6.1-sol", .claude) && ModelCatalog.fits("gpt-6.1-sol", .codex) && ModelCatalog.fits("sonnet", .claude))
+        }
+        do {
+            // OS-Agent über Codex: MCP-Server werden zu gültigen TOML-Abschnitten, alte gleichnamige fallen weg
+            let t = OSAgentCodex.tables(["salenta-os": ["command": "/usr/bin/python3", "args": ["/x/aos-mcp"], "env": ["AOS_HOME": "/x \"y\""]],
+                                         "web": ["type": "http", "url": "https://example.com/mcp", "headers": ["Authorization": "Bearer x"]],
+                                         "oauth": ["type": "http", "url": "https://login.example.com/mcp"]])
+            let stripped = OSAgentCodex.strip("model = \"gpt\"\n[mcp_servers.salenta-os]\ncommand = \"alt\"\n[mcp_servers.salenta-os.env]\nA = \"1\"\n[profiles.x]\nk = 1", names: ["salenta-os"])
+            check("OS-Agent über Codex: Tools werden mitgegeben",
+                  t.contains("[mcp_servers.salenta-os]") && t.contains("args = [\"/x/aos-mcp\"]") && t.contains("\"AOS_HOME\" = \"/x \\\"y\\\"\"")
+                  && t.contains("url = \"https://example.com/mcp\"") && !t.contains("login.example.com") && !stripped.contains("alt") && stripped.contains("[profiles.x]") && stripped.contains("model = "))
+        }
+        do {
+            // Hilfsaufrufe: Weiche zu Codex vorhanden, und ohne Pause bleibt es bei Claude
+            let ask = (ProcessInfo.processInfo.environment["AOS_SRC"].map { URL(fileURLWithPath: $0) } ?? Paths.source).appendingPathComponent("bin/aos-ask").path
+            let cmd = HelperLLM.command(model: "haiku", maxTurns: 3, file: "/tmp/x.md")
+            check("Hilfsaufrufe beachten die Claude-Pause", FileManager.default.isExecutableFile(atPath: ask)
+                  && (HelperLLM.useCodex ? cmd.contains("aos-ask") : cmd.contains("claude -p --model haiku")))
+        }
+        do {
+            // Verteilung: realistische Aufträge → richtiger Agent und richtiges Projekt. Ziel: 100 %.
+            let ps = [Project(path: "/tmp/v/kassenbuch-app", name: "kassenbuch-app", source: "test", isGit: true),
+                      Project(path: "/tmp/v/rezept-api", name: "rezept-api", source: "test", isGit: true),
+                      Project(path: "/tmp/v/wetter-widget", name: "wetter-widget", source: "test", isGit: true)]
+            let code: Set<MissionTarget> = [.claude, .junie]
+            let cases: [(String, Set<MissionTarget>, String?)] = [
+                ("Fixe den Login-Bug im kassenbuch-app", code, "kassenbuch-app"),
+                ("Baue im Projekt rezept-api einen neuen Endpoint für Zutaten", [.claude], "rezept-api"),
+                ("Review die letzten Änderungen in wetter-widget", [.codex], "wetter-widget"),
+                ("Schreib eine Mail an Herrn Müller wegen dem Termin am Freitag", [.osAgent], nil),
+                ("Was steht heute in meinem Kalender?", [.osAgent], nil),
+                ("Recherchiere die besten CRM-Tools für Makler", [.osAgent], nil),
+                ("@codex refactor die Datenbank-Schicht im rezept-api", [.codex], "rezept-api"),
+                ("mit Junie: warum stürzt kassenbuch-app beim Start ab", [.junie], "kassenbuch-app"),
+                ("Baue mit Salenta Harness im wetter-widget einen Dark Mode", [.harness], "wetter-widget"),
+                ("Der Export im kassenbuch-app funktioniert nicht", code, "kassenbuch-app"),
+                ("Erstell mir eine Aufgabe: Steuerberater anrufen", [.osAgent], nil),
+                ("Fasse meine ungelesenen Mails zusammen", [.osAgent], nil),
+                ("Schreib Tests für die Zutaten-Suche im rezept-api", [.claude], "rezept-api"),
+                ("Deploy wetter-widget auf Vercel", [.claude], "wetter-widget"),
+                ("Öffne im Browser die Seite der Bahn und such eine Verbindung nach Hamburg", [.osAgent], nil),
+                ("Mach im rezept-api einen Pull Request für den Fix", [.claude], "rezept-api"),
+                ("Prüf den Code im kassenbuch-app auf Sicherheitslücken", [.codex], "kassenbuch-app"),
+                ("Erinnere mich morgen an den Zahnarzt", [.osAgent], nil),
+                ("chatgpt soll mir einen Slogan schreiben", [.chatgpt], nil),
+                ("Ändere die Farbe vom Button im wetter-widget auf Blau", [.claude], "wetter-widget"),
+                ("Optimiere die Ladezeit vom kassenbuch-app", [.claude], "kassenbuch-app"),
+                ("Wie viele Leads habe ich diese Woche im CRM?", [.osAgent], nil),
+                ("Lies meine Notizen und mach eine Zusammenfassung", [.osAgent], nil),
+                ("Gestalte im wetter-widget die Startseite neu", [.claude], "wetter-widget"),
+                ("Antworte auf die WhatsApp von Lisa", [.osAgent], nil),
+                ("Warum ist der Build im rezept-api rot?", code, "rezept-api"),
+                ("Füge im kassenbuch-app eine CSV-Import-Funktion hinzu", [.claude], "kassenbuch-app"),
+                ("Plane meine Woche", [.osAgent], nil),
+                ("Ich habe eine falsche Rechnung bekommen, schreib dem Lieferanten", [.osAgent], nil),
+                ("Pass im rezept-api die Fehlermeldungen an", code, "rezept-api"),
+                ("Die rezept-api soll beim Speichern keine Fehler mehr werfen, bau das um", code, "rezept-api"),
+                ("Bestell mit Pizza-Taxi heute Abend etwas zu essen", [.osAgent], nil),
+            ]
+            var misses: [String] = []
+            for (text, want, proj) in cases {
+                let d = Router.decide(text, projects: ps, recent: [])
+                if !want.contains(d.target) || d.projectName != proj { misses.append("\(text) → \(d.target.rawValue)/\(d.projectName ?? "-")") }
+            }
+            check("Verteilung: \(cases.count - misses.count)/\(cases.count) Aufträge beim richtigen Agent und Projekt", misses.isEmpty, misses.joined(separator: " | "))
+        }
+        do {
+            // Volllast und Hitze: nie mehr Helfer, als der Mac verträgt
+            func c(_ t: ProcessInfo.ThermalState = .nominal, bat: Bool = false, cpu: Double = 20, mem: Double = 50, eco: Bool = false) -> Int {
+                PowerProfile.cap(4, eco: eco, thermal: t, onBattery: bat, cpu: cpu, memFree: mem)
+            }
+            let ok = c() == 4 && c(.fair) == 2 && c(.serious) == 1 && c(.critical) == 0 && c(cpu: 95) == 1 && c(mem: 10) == 1 && c(mem: 5) == 0
+                && c(bat: true) == 2 && c(eco: true) == 1 && c(.critical, cpu: 10, mem: 90) == 0 && c(.serious, bat: true, cpu: 99, mem: 3) == 0
+            check("Volllast/Hitze: Helferzahl sinkt bei Wärme, voller CPU, knappem Speicher und Akku", ok,
+                  "\(c())/\(c(.fair))/\(c(.serious))/\(c(.critical))/\(c(cpu: 95))/\(c(mem: 10))/\(c(mem: 5))/\(c(bat: true))/\(c(eco: true))")
+            check("Helfer laufen gedrosselt (niedrigere Priorität bzw. Effizienz-Kerne)", PowerProfile.effective == "full" || !PowerProfile.taskpolicyArgs.isEmpty)
+        }
+        if AutoSkills.enabled {
+            // Planung: realistische Aufträge → die richtigen Phasen. „+“ muss vorkommen, „-“ darf nicht. Ziel: 100 %.
+            let cases: [(String, AgentKind, [String], [String])] = [
+                ("Baue im Shop eine Merkliste ein", .claude, ["Verstehen & planen", "Umsetzen", "Aufräumen", "Prüfen wie die CI", "Abschließen"], ["Gestaltung:", "Design-Kritik"]),
+                ("Gestalte die Landing Page neu", .claude, ["Gestaltung:", "Bildsprache", "Design-Kritik", "Browser"], ["nur genau das Verlangte"]),
+                ("Ändere die Farbe vom Button auf Blau", .claude, ["Gestaltung:", "nur genau das Verlangte"], ["Design-Kritik", "Bildsprache"]),
+                ("Nur prüfen, nichts ändern: Login-Sicherheit", .claude, ["Sicherheit", "nichts ändern"], ["Umsetzen", "Aufräumen"]),
+                ("Baue den Stripe-Checkout ein", .claude, ["Umsetzen", "Sicherheit"], ["Design-Kritik"]),
+                ("Behebe den Tippfehler in der README", .claude, ["Umsetzen", "Prüfen wie die CI"], ["Design-Kritik", "Sicherheit"]),
+                ("Redesign der Startseite, die Farbe ist egal", .claude, ["Design-Kritik", "Bildsprache"], ["nur genau das Verlangte"]),
+                ("Mach das Formular responsive", .claude, ["Gestaltung:", "Browser"], []),
+                ("Schreib Unit-Tests für die Preisberechnung", .claude, ["Umsetzen", "Prüfen wie die CI"], ["Gestaltung:", "Design-Kritik"]),
+                ("Analysiere, read-only: warum ist die API langsam", .claude, ["Berichte"], ["Umsetzen", "Aufräumen"]),
+                ("Füge eine Animation zum Hero hinzu", .claude, ["Gestaltung:", "Design-Kritik"], []),
+                ("Gestalte die Startseite neu", .codex, ["Gestaltung:", "Design-Kritik"], []),
+                ("Webhook für neue Bestellungen einbauen", .claude, ["Sicherheit"], ["Gestaltung:"]),
+                ("Dark Mode für die Einstellungsseite", .claude, ["Gestaltung:"], []),
+                ("Refactor die Datenbank-Schicht", .codex, ["Umsetzen", "Aufräumen", "Prüfen wie die CI"], ["Gestaltung:"]),
+            ]
+            var misses: [String] = []
+            for (text, kind, must, mustNot) in cases {
+                guard let t = WorkPhases.plan(prompt: text, kind: kind, directory: nil)?.text else { misses.append("\(text) → kein Plan"); continue }
+                let miss = must.filter { !t.contains(L($0)) && !t.contains($0) }.map { "fehlt \($0)" } + mustNot.filter { t.contains(L($0)) || t.contains($0) }.map { "zu viel \($0)" }
+                if !miss.isEmpty { misses.append("\(text) → " + miss.joined(separator: ", ")) }
+            }
+            check("Planung: \(cases.count - misses.count)/\(cases.count) Aufträge mit den richtigen Phasen", misses.isEmpty, misses.joined(separator: " | "))
+        }
+        check("Prüfung: schon vorher rot zählt nicht gegen den Auftrag, mehr Fehler schon",
+              Verifier.preexisting(baseCode: 1, baseOut: "error A\nerror B", out: "error A\nerror B")
+              && !Verifier.preexisting(baseCode: 1, baseOut: "error A", out: "error A\nerror B\nerror C")
+              && !Verifier.preexisting(baseCode: 0, baseOut: "", out: "error A")
+              && !Verifier.preexisting(baseCode: 124, baseOut: "error A", out: "error A"))
+        do {
+            let diff = "+++ b/src/a.ts\n+const password = 'postgres12'\n+label: { password: 'Passwort eingeben bitte' }\n+token: '${{ secrets.GH_TOKEN }}'\n+++ b/src/b.ts\n+const apiKey = 'k8Jq2xL9pW4mZr7T'\n"
+            let hits = SecretScan.scan(diff)
+            check("Geheimnis-Scan: echte Schlüssel ja, Testwerte und Platzhalter nein", hits.count == 1 && hits[0].contains("b.ts"), hits.joined(separator: " | "))
+        }
+        check("Genannter Agent gilt (z. B. „mit Salenta Harness“)",
+              Router.decide("Baue im Projekt x eine Funktion mit Salenta Harness", projects: [], recent: []).target == .harness
+              && Router.named("bitte @harness") && !Router.named("Baue eine Login-Seite"))
+        do {
+            let ps = [Project(path: "/tmp/x/salenta", name: "salenta", source: "test", isGit: true), Project(path: "/tmp/x/betreuer-testprojekt", name: "betreuer-testprojekt", source: "test", isGit: true)]
+            check("Projektwahl: längster Name gewinnt, Agent-Namen zählen nicht",
+                  Router.project(for: "im Projekt betreuer-testprojekt mit Salenta Harness", projects: ps)?.name == "betreuer-testprojekt"
+                  && Router.project(for: "Baue X mit Salenta Harness", projects: ps) == nil)
+        }
+        do {
+            // Gestoppt heißt abgebrochen: der Betreuer verwirft das Ergebnis (nie prüfen, nie liefern)
+            var rec = MissionRecord(id: "stop-test", title: "x", request: "x", agent: "codex", mode: "autonom", directory: "/tmp", started: Date(), log: "", taskID: nil)
+            rec.outcome = "stopped"; rec.ended = Date()
+            MissionStore.shared.missions.append(rec)
+            var t = StewardTask(title: "x", detail: "", agent: "codex", model: "")
+            t.missionID = "stop-test"
+            check("Gestoppter Lauf wird verworfen, nicht geliefert", Steward.outcome(t, agents: nil)?.state == .dropped)
+            MissionStore.shared.missions.removeAll { $0.id == "stop-test" }
+        }
         check("Mail von noreply braucht keine Antwort", !Watchman.shared.needsReply(subject: "Ihre Rechnung", sender: "noreply@shop.example"))
 
         // Trefferquote rechnet mit Beispielaufträgen
@@ -589,4 +789,11 @@ enum SafeStart {
 
     /// Normales Beenden zählt nicht als Absturz.
     static func cleanExit() { UserDefaults.standard.set(0, forKey: key) }
+}
+
+
+/// Trifft ein Text eines gescheiterten Starts eins der Anmelde-Muster? (für den Selbsttest, ohne etwas zu merken)
+func CLIFlags_loginHit(_ text: String) -> Bool {
+    let t = text.lowercased()
+    return AgentHealth.loginPatterns.contains { t.range(of: $0, options: .regularExpression) != nil }
 }

@@ -73,6 +73,8 @@ struct AgenticOSApp: App {
                         Shell.spawn("mkdir -p \(Shell.quote((log as NSString).deletingLastPathComponent)) && cd \(Shell.quote(app)) && ./build.sh --open > \(Shell.quote(log)) 2>&1")
                     }
                     Button("Effizienz-Bericht schreiben") { _ = EfficiencyAudit.write() }
+                    Button("Volllast-Test (90 s)") { StressTest.run() }
+                    Button("Erfolgsquote auswerten") { _ = SuccessReport.write() }
                 } else {
                     Button("Nach Updates suchen …") { Updater.shared.check(manual: true) }
                 }
