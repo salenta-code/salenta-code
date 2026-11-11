@@ -147,6 +147,7 @@ struct PlanetBackdrop: View {
 /// Auswahl: Planeten als Kugeln – antippen wechselt Akzent und Hintergrund.
 struct PlanetPicker: View {
     @AppStorage("theme.planet") private var planetRaw = Planet.salenta.rawValue
+    @AppStorage("ui.calm") private var calm = true
     @AppStorage("theme.mode") private var mode = "system"
 
     var body: some View {
@@ -155,6 +156,7 @@ struct PlanetPicker: View {
             Picker("", selection: $mode) {
                 Text(L("Wie System")).tag("system"); Text(L("Hell")).tag("light"); Text(L("Dunkel")).tag("dark"); Text(L("Schwarz")).tag("black")
             }.pickerStyle(.segmented).labelsHidden().frame(width: 360)
+            Toggle(L("Ruhige Oberfläche (weniger auf einmal, alles bleibt erreichbar)"), isOn: $calm)
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(78), spacing: 10), count: 5), spacing: 12) {
                 ForEach(Planet.allCases) { p in
                     Button { withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { planetRaw = p.rawValue } } label: {

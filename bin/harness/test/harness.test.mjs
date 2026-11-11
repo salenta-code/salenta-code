@@ -154,3 +154,109 @@ test('Systemprompt: Arbeitsweise, Hindernisse, Sicherheit, Prüfung und Bericht;
   const r = systemPrompt({ root: '/tmp/x', access: 'read', depth: 1, tools: [] })
   assert.ok(r.includes('Read-only') && r.includes('sub-agent') && !r.includes('task tool'))
 })
+
+const MOCK_MCP = join(dirname(fileURLToPath(import.meta.url)), 'mock-mcp.mjs')
+function mcpConfig(dir, withApp = true) {
+  const f = join(dir, 'mcp.json')
+  const servers = { browser: { command: process.execPath, args: [MOCK_MCP, 'browser'] } }
+  if (withApp) servers['salenta-os'] = { command: process.execPath, args: [MOCK_MCP, 'salenta-os'] }
+  writeFileSync(f, JSON.stringify({ mcpServers: servers }))
+  return f
+}
+
+test('Werkzeug-Server: Browser-Werkzeuge laufen über die Freigabe von Salenta Code', () => {
+  const cfgDir = mkdtempSync(join(tmpdir(), 'sah-mcp-'))
+  const log = join(cfgDir, 'log.txt')
+  const { code, events } = run([
+    { toolCalls: [{ name: 'mcp__browser__browser_snapshot', args: {} }, { name: 'mcp__browser__browser_click', args: { element: 'OK' } }] },
+    { toolCalls: [{ name: 'mcp__browser__browser_click', args: { element: 'Jetzt kaufen' } }] },
+    { text: 'Geklickt; der Kauf braucht dich.' },
+  ], 'x', ['--mcp-config', mcpConfig(cfgDir)], {}, { MOCK_LOG: log })
+  assert.equal(code, 0)
+  const text = readFileSync(log, 'utf8')
+  assert.match(text, /klick OK/)
+  assert.ok(!/klick Jetzt kaufen/.test(text), 'abgelehnter Klick darf nicht ausgeführt werden')
+  assert.match(text, /freigabe mcp__browser__browser_click/)
+  const errs = events.filter(e => e.type === 'tool_result')
+  assert.equal(errs.length, 1)
+  assert.match(errs[0].output, /Verweigert: Kaufen braucht dich/)
+})
+
+test('Werkzeug-Server ohne Salenta Code: Browser-Steuerung braucht jemanden, der freigibt', () => {
+  const cfgDir = mkdtempSync(join(tmpdir(), 'sah-mcp-'))
+  const log = join(cfgDir, 'log.txt')
+  const { events } = run([
+    { toolCalls: [{ name: 'mcp__browser__browser_click', args: { element: 'OK' } }] },
+    { text: 'x' },
+  ], 'x', ['--mcp-config', mcpConfig(cfgDir, false)], {}, { MOCK_LOG: log, SALENTA_APPROVE: '' })
+  assert.ok(!existsSync(log))
+  assert.match(events.find(e => e.type === 'tool_result').output, /brauchen eine Freigabe/)
+})
+
+test('Mit Freigabe arbeiten: Befehle, die etwas verändern, werden vorgelegt – Lesen bleibt frei', async () => {
+  const asked = []
+  const approver = { available: true, kind: () => 'program', ask: async (t, i) => { asked.push(t); return { allow: true } } }
+  const p = createPolicy({ access: 'project', root: '/tmp', approval: 'ask', approver })
+  const bash = { name: 'bash' }
+  assert.equal(p.check(bash, { command: 'git status && cat a.txt' }), null)
+  assert.equal(p.check(bash, { command: 'npm run build' }).ask.tool, 'Bash')
+  assert.equal(p.check({ name: 'write' }, { path: 'a.txt' }), null)
+  assert.match(createPolicy({ access: 'project', root: '/tmp', approval: 'ask' }).check(bash, { command: 'npm run build' }), /niemand da/)
+  assert.equal(createPolicy({ access: 'project', root: '/tmp', approval: 'auto', approver }).check(bash, { command: 'npm run build' }), null)
+  assert.equal(createPolicy({ access: 'project', root: '/tmp', approver }).check(bash, { command: 'git push' }).ask.tool, 'Bash')
+})
+
+test('Websuche: Treffer werden aus der Ergebnisseite gelesen', async () => {
+  const { parseSearch } = await import('../tools/extra.mjs')
+  const html = '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fdocs&amp;rut=1">Beispiel <b>Doku</b></a><a class="result__snippet" href="x">Kurzer <b>Text</b></a>'
+    + '<a rel="nofollow" class="result__a" href="https://example.com/b">Zwei</a>'
+  const hits = parseSearch(html)
+  assert.equal(hits.length, 2)
+  assert.deepEqual(hits[0], { title: 'Beispiel Doku', url: 'https://example.org/docs', snippet: 'Kurzer Text' })
+  assert.equal(hits[1].url, 'https://example.com/b')
+})
+
+test('Computer-Steuerung: nur mit Freigabe; Kaufen wird abgelehnt; ohne Freigeber gar nicht', async () => {
+  const cfgDir = mkdtempSync(join(tmpdir(), 'sah-mcp-'))
+  const log = join(cfgDir, 'log.txt')
+  const script = [
+    { toolCalls: [{ name: 'computer_apps', args: {} }, { name: 'computer_click', args: { app: 'Notizen', name: 'Neue Notiz' } }] },
+    { toolCalls: [{ name: 'computer_click', args: { app: 'Shop', name: 'Jetzt kaufen' } }] },
+    { text: 'fertig' },
+  ]
+  const a = run(script, 'x', ['--computer', '--mcp-config', mcpConfig(cfgDir)], {}, { MOCK_LOG: log, SALENTA_HARNESS_COMPUTER_MOCK: '1' })
+  assert.equal(a.code, 0)
+  assert.match(readFileSync(log, 'utf8'), /freigabe mcp__computer__click/)
+  const errs = a.events.filter(e => e.type === 'tool_result')
+  assert.equal(errs.length, 1)
+  assert.match(errs[0].output, /Kaufen braucht dich/)
+  const b = run(script.slice(0, 1).concat([{ text: 'x' }]), 'x', ['--computer'], {}, { SALENTA_HARNESS_COMPUTER_MOCK: '1', SALENTA_APPROVE: '' })
+  assert.equal(b.events.filter(e => e.type === 'tool_result' && /niemand da/.test(e.output)).length, 2)
+  const c = run([{ toolCalls: [{ name: 'computer_apps', args: {} }] }, { text: 'x' }], 'x', [], {}, { SALENTA_HARNESS_COMPUTER_MOCK: '1' })
+  assert.match(c.events.find(e => e.type === 'tool_result').output, /Unbekanntes oder nicht erlaubtes Werkzeug/)
+})
+
+test('Computer-Steuerung: Tastenkürzel werden sicher übersetzt', async () => {
+  const { keyScript } = await import('../tools/computer.mjs')
+  assert.match(keyScript('cmd+shift+s'), /keystroke "s" using \{command down, shift down\}/)
+  assert.match(keyScript('return'), /key code 36$/)
+  assert.throws(() => keyScript('cmd+" & do shell script "x'), /Unbekannte Taste/)
+  assert.throws(() => keyScript('hyper+a'), /Unbekannte Zusatztaste/)
+})
+
+test('Entscheidungsfrage: eine Antwort ohne Werkzeuge, im Format der Hilfsmodelle; bei Fehler bleibt die Ausgabe leer', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sah-'))
+  const s = join(dir, '.mock.json'); writeFileSync(s, JSON.stringify([{ text: '{"agent":"codex","effort":"low"}' }]))
+  const env = { ...process.env, SALENTA_HARNESS_MOCK: s, SALENTA_HARNESS_HOME: join(dir, '.home') }
+  const ok = spawnSync('node', [CLI, '--provider', 'mock', 'ask'], { encoding: 'utf8', env, input: 'Welcher Agent? Antworte als JSON.' })
+  assert.equal(ok.status, 0)
+  const j = JSON.parse(ok.stdout.trim())
+  assert.equal(j.type, 'result'); assert.equal(j.is_error, false); assert.equal(j.via, 'harness')
+  assert.equal(JSON.parse(j.result).agent, 'codex')
+  writeFileSync(s, JSON.stringify([{ text: '' }]))
+  const bad = spawnSync('node', [CLI, '--provider', 'mock', 'ask'], { encoding: 'utf8', env, input: 'Frage' })
+  assert.equal(bad.status, 1)
+  assert.equal(bad.stdout.trim(), '')
+  const none = spawnSync('node', [CLI, '--provider', 'mock', 'ask'], { encoding: 'utf8', env, input: '' })
+  assert.equal(none.status, 2)
+})

@@ -116,13 +116,13 @@ struct GeneralSettings: View {
                 Toggle("Beim Planen im Internet recherchieren (aktueller Stand, Trends, Empfehlungen zum Anhaken)", isOn: Binding(
                     get: { UserDefaults.standard.object(forKey: "research.onPlan") as? Bool ?? true },
                     set: { UserDefaults.standard.set($0, forKey: "research.onPlan") }))
-                Toggle("KI wählt Agent, Modell, Projekt und Skills (Claude Haiku, ein paar Sekunden)", isOn: Binding(
+                Toggle("KI wählt Agent, Modell, Projekt, Skills und Erweiterungen (ein paar Sekunden)", isOn: Binding(
                     get: { UserDefaults.standard.object(forKey: "router.ai") as? Bool ?? true },
                     set: { UserDefaults.standard.set($0, forKey: "router.ai") }))
                 Toggle("Vor dem Start Vorschlag zeigen (Agent, Modell, Skills, Erweiterungen – bestätigen, ändern oder ablehnen)", isOn: Binding(
                     get: { UserDefaults.standard.object(forKey: "router.confirm") as? Bool ?? true },
                     set: { UserDefaults.standard.set($0, forKey: "router.confirm") }))
-                Text("Bei „Automatisch“ schaut Claude Haiku kurz auf den Auftrag und wählt den passenden Agent (Claude Code, Junie, Codex, OS-Agent), das Modell (Opus/Sonnet/Haiku bzw. Denktiefe bei Codex), das Repo und passende Skills. Ausgeschaltet entscheiden feste Stichwort-Regeln – sofort, aber ungenauer.")
+                Text("Bei „Automatisch“ schaut das Entscheidungsmodell auf den Auftrag und vergleicht alle installierten Agents mit ihren Modellen – ohne festen Favoriten. Es wählt Agent, Modell, Denktiefe und Projekt und dazu aus allen installierten Skills und Erweiterungen (auch den Repos, die du selbst hinzugefügt hast) die, die zum Auftrag passen – mehrere zusammen, wenn sie sich ergänzen. Agents mit Kosten pro Nutzung nimmt es nur, wenn du das unter Kosten erlaubst. Ausgeschaltet entscheiden feste Stichwort-Regeln – sofort, aber ungenauer.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Coding") {

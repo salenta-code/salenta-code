@@ -223,6 +223,21 @@ final class ModelCatalog: ObservableObject {
         }
     }
 
+    /// Kennt die CLI des Agents dieses Modell? Gilt nur für Agents, die ihre Modelle selbst auflisten (z. B. Cursor):
+    /// nach einer Übergabe bekäme Cursor sonst ein Modell, das es dort nicht gibt, und bräche sofort ab.
+    static func listed(_ model: String, _ agent: AgentKind, in lists: [String: [String]]? = nil) -> Bool {
+        guard !model.isEmpty, [.cursor, .opencode, .kiro, .pi, .grok].contains(agent) else { return true }
+        guard let known = (lists ?? savedLists())[agent.rawValue], known.count >= 2 else { return true }
+        return known.contains(model)
+    }
+
+    /// Zuletzt gespeicherte Modell-Listen der CLIs (data/models.json).
+    static func savedLists() -> [String: [String]] {
+        guard let d = try? Data(contentsOf: Paths.data.appendingPathComponent("models.json")),
+              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
+        return j["models"] as? [String: [String]] ?? [:]
+    }
+
     /// Kann der Agent ein Modell per Parameter bekommen?
     static func supportsModel(_ a: AgentKind) -> Bool { ![.junie, .shell].contains(a) }
 }

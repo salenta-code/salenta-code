@@ -281,12 +281,22 @@ def log_auto(tool, inp):
         f.write(json.dumps({"tool": tool, "detail": detail, "zeit": time.time()}, ensure_ascii=False) + "\n")
 
 
-def ask_user(tool, inp, timeout=900):
+def approval_wait(default=900):
+    """Wie lange auf deine Antwort gewartet wird. Helfer des Projekt-Betreuers laufen unbeaufsichtigt und warten kürzer
+    (AOS_APPROVAL_WAIT) – sonst steht ein Lauf eine Viertelstunde je Rückfrage, obwohl niemand am Rechner sitzt."""
+    try:
+        return max(30, min(default, int(os.environ.get("AOS_APPROVAL_WAIT", default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def ask_user(tool, inp, timeout=None):
+    timeout = timeout or approval_wait()
     d = os.path.join(DATA, "approvals")
     os.makedirs(d, exist_ok=True)
     rid = uuid.uuid4().hex[:12]
     with open(os.path.join(d, f"req-{rid}.json"), "w", encoding="utf-8") as f:
-        json.dump({"id": rid, "tool": tool, "input": inp, "zeit": time.time()}, f, ensure_ascii=False)
+        json.dump({"id": rid, "tool": tool, "input": inp, "zeit": time.time(), "mission": os.environ.get("AOS_MISSION_ID")}, f, ensure_ascii=False)
     dec_path = os.path.join(d, f"dec-{rid}.json")
     end = time.time() + timeout
     while time.time() < end:
@@ -298,7 +308,13 @@ def ask_user(tool, inp, timeout=900):
             except Exception:
                 pass
         time.sleep(1)
-    return False, "Keine Antwort innerhalb von 15 Minuten."
+    try:
+        os.remove(os.path.join(d, f"req-{rid}.json"))   # die Rückfrage ist erledigt – sie soll nicht weiter in der App stehen
+    except OSError:
+        pass
+    minutes = max(1, round(timeout / 60))
+    return False, (f"Keine Antwort innerhalb von {minutes} Minuten. Arbeite ohne diesen Schritt weiter "
+                   "und nenne ihn am Ende unter „Offen:“.")
 
 
 def delegation_result(cid, wait=0):
@@ -426,6 +442,12 @@ def call(name, a):
             if not ok or not grant_active(scope):
                 return {"behavior": "deny", "message": msg or ("Browser-Steuerung nicht freigegeben. Mach ohne Browser weiter und nenne den Schritt am Ende."
                         if scope == "browser" else "Computer-Steuerung nicht freigegeben. Mach ohne sie weiter und nenne den Schritt am Ende.")}
+        if scope and needs_approval(tool, inp):
+            # Absenden, Kaufen, Bezahlen, Löschen und Posten über Browser/Computer fragen immer einzeln – auch im Auto-Modus
+            ok, msg = ask_user(tool, inp)
+            if ok:
+                return {"behavior": "allow", "updatedInput": inp}
+            return {"behavior": "deny", "message": msg or "Abgelehnt. Diesen Schritt nicht auf anderem Weg ausführen; im Abschlussbericht nennen."}
         if needs_approval(tool, inp) and auto_mode():
             log_auto(tool, inp)
             return {"behavior": "allow", "updatedInput": inp}

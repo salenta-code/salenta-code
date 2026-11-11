@@ -3,11 +3,10 @@
 //   read     – nur lesen und suchen; Befehle nur aus einer Liste harmloser Befehle
 //   project  – schreiben nur im Projektordner; heikle Befehle (push, deploy, löschen außerhalb …) brauchen dich
 //   full     – alles, außer offensichtlich zerstörerischen Befehlen
-// Freigaben: Ist SALENTA_APPROVE gesetzt (Programm), wird es für heikle Aktionen gefragt (Exit 0 = erlaubt).
+// Freigaben holt approval.mjs ein: über Salenta Code, ein eigenes Programm (SALENTA_APPROVE) oder eine Rückfrage im Terminal.
 
 import { resolve, relative, isAbsolute, sep, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { spawnSync } from 'node:child_process'
 import { realpathSync, existsSync } from 'node:fs'
 
 export const ACCESS = ['read', 'project', 'full']
@@ -48,40 +47,68 @@ export function insideRoot(path, root) {
   return inside(r) || inside(tmp) || abs.startsWith(sep + 'tmp' + sep)
 }
 
-export function createPolicy({ access = 'project', root, approve = process.env.SALENTA_APPROVE } = {}) {
-  if (!ACCESS.includes(access)) throw new Error(`Unbekannte Zugriffsstufe: ${access}`)
+const CONTROL = /(browser|playwright|chrome|puppeteer|computer|desktop-control|mac-control)/i
 
-  function ask(kind, detail) {
-    if (!approve) return false
-    const r = spawnSync(approve, [kind, detail], { encoding: 'utf8', timeout: 15 * 60 * 1000 })
-    return r.status === 0
-  }
+/**
+ * approval:  auto – arbeitet selbstständig; nur heikle Schritte brauchen eine Freigabe
+ *            ask  – alles, was etwas verändert (Befehle, fremde Werkzeuge), braucht eine Freigabe; Dateien im Projekt bleiben frei
+ * approver:  wer entscheidet (siehe approval.mjs). Fehlt er, werden freigabepflichtige Schritte abgelehnt.
+ *
+ * check() liefert null (erlaubt), einen Text (verweigert) oder { ask: { tool, input, deny } } (Freigabe einholen).
+ */
+export function createPolicy({ access = 'project', root, approval = 'auto', approver = null } = {}) {
+  if (!ACCESS.includes(access)) throw new Error(`Unbekannte Zugriffsstufe: ${access}`)
+  if (!['auto', 'ask'].includes(approval)) throw new Error(`Unbekannter Freigabe-Modus: ${approval}`)
+  const can = () => !!approver?.available
+  const viaApp = () => approver?.kind?.() === 'app'
+  const need = (tool, input, deny) => can() ? { ask: { tool, input, deny } } : deny
 
   return {
-    access,
-    root,
-    /** Liefert null (erlaubt) oder einen Grund (verweigert). */
+    access, root, approval,
     check(tool, args = {}) {
       if (tool.name === 'bash') {
         const cmd = String(args.command || '')
         if (NEVER.some(rx => rx.test(cmd))) return 'Dieser Befehl ist immer gesperrt (zerstörerisch).'
-        if (access === 'read') {
+        const harmless = (() => {
           const parts = cmd.split(/&&|\|\||;|\|/).map(s => s.trim()).filter(Boolean)
-          const ok = !/>/.test(cmd) && !/`|\$\(/.test(cmd) && parts.length > 0
+          return !/>/.test(cmd) && !/`|\$\(/.test(cmd) && parts.length > 0
             && parts.every(p => READ_SAFE.test(p) || /^(head|tail|grep|wc|sort|uniq|cut|tr)\b/.test(p))
-          return ok ? null : 'Nur-lesen-Modus: nur Befehle, die nichts verändern (ls, cat, grep, git status/log/diff …).'
+        })()
+        if (access === 'read') return harmless ? null : 'Nur-lesen-Modus: nur Befehle, die nichts verändern (ls, cat, grep, git status/log/diff …).'
+        const risky = RISKY.some(rx => rx.test(cmd))
+        if (access === 'project' && risky) {
+          return need('Bash', { command: cmd }, 'Heikler Befehl (z. B. push, deploy, löschen, sudo) – braucht die Freigabe des Besitzers. Nicht ausführen; im Abschlussbericht vorschlagen.')
         }
-        if (access === 'project' && RISKY.some(rx => rx.test(cmd))) {
-          return ask('bash', cmd) ? null
-            : 'Heikler Befehl (z. B. push, deploy, löschen, sudo) – braucht die Freigabe des Besitzers. Nicht ausführen; im Abschlussbericht vorschlagen.'
+        // Mit Freigabe arbeiten: jeder Befehl, der etwas verändern kann, wird vorgelegt (Salenta Code winkt Harmloses selbst durch)
+        if (approval === 'ask' && access !== 'full' && !harmless) {
+          return need('Bash', { command: cmd }, 'Freigabe nötig, aber niemand da, der freigeben kann. Schritt im Abschlussbericht nennen.')
         }
+        return null
+      }
+      if (tool.control === 'computer') {
+        // Eingebaute Computer-Steuerung: immer über die Freigabe (Zeit-Freigabe in Salenta Code, sonst Rückfrage)
+        if (access === 'read' && !tool.readOnly) return 'Nur-lesen-Modus: den Mac ansehen ja, bedienen nein.'
+        const name = `mcp__computer__${tool.name.replace(/^computer_/, '')}`
+        return can() ? { ask: { tool: name, input: args, deny: 'Computer-Steuerung nicht freigegeben.' } }
+          : 'Computer-Steuerung braucht eine Freigabe – niemand da, der freigeben kann.'
+      }
+      if (tool.mcp) {
+        if (tool.mcp.server === 'salenta-os') return tool.mcp.tool === 'freigabe' ? 'Dieses Werkzeug ist intern.' : null
+        const control = CONTROL.test(tool.mcp.server)
+        if (access === 'read' && !tool.readOnly && !control) return 'Nur-lesen-Modus: dieses Werkzeug verändert etwas.'
+        const name = `mcp__${tool.mcp.server}__${tool.mcp.tool}`
+        // Salenta Code entscheidet über alle fremden Werkzeuge: Lesen läuft durch, Browser/Computer brauchen die Zeit-Freigabe,
+        // Absenden/Kaufen/Löschen fragen einzeln, Blockier-Regeln greifen.
+        if (viaApp()) return { ask: { tool: name, input: args, deny: 'Nicht freigegeben.' } }
+        if (tool.readOnly && !control) return null
+        if (control || approval === 'ask') return can() ? { ask: { tool: name, input: args, deny: 'Nicht freigegeben.' } } : (control && access !== 'full' ? 'Browser- und Computer-Steuerung brauchen eine Freigabe – niemand da, der freigeben kann.' : null)
         return null
       }
       if (!tool.readOnly) {
         if (access === 'read') return 'Nur-lesen-Modus: Dateien dürfen nicht verändert werden.'
         const target = args.path || args.file_path
         if (target && access === 'project' && !insideRoot(String(target), root)) {
-          return ask(tool.name, String(target)) ? null : `Schreiben nur im Projektordner erlaubt (${root}).`
+          return need(tool.name === 'edit' ? 'Edit' : 'Write', { file_path: String(target) }, `Schreiben nur im Projektordner erlaubt (${root}).`)
         }
       }
       return null

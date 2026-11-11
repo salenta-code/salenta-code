@@ -812,6 +812,8 @@ struct StatusPill: View {
 // MARK: - Start wie bei Claude
 
 struct HomeView: View {
+    @AppStorage("ui.calm") private var calm = true
+    @State private var showAllDone = false
     @ObservedObject private var missions = MissionStore.shared
     @EnvironmentObject private var tasks: TaskStore
     @EnvironmentObject private var agents: AgentManager
@@ -829,8 +831,9 @@ struct HomeView: View {
             VStack(spacing: Grid.xl) {
                 Spacer(minLength: 60)
                 HStack(spacing: Grid.m) {
-                    LiveMark(size: 36, active: agents.runningCount > 0)
-                    Text("\(greeting), \(Profile.name)").font(.system(size: 34, weight: .regular, design: .serif))
+                    LiveMark(size: calm ? 28 : 36, active: agents.runningCount > 0)
+                    Text("\(greeting), \(Profile.name)")
+                        .font(calm ? .system(size: 28, weight: .semibold) : .system(size: 34, weight: .regular, design: .serif))
                 }
                 MissionComposer(style: .claude, seed: $seed)
                     .frame(maxWidth: 760)
@@ -847,6 +850,7 @@ struct HomeView: View {
             .frame(maxWidth: .infinity)
         }
         .navigationTitle("")
+        .toolbarBackground(calm ? .hidden : .automatic, for: .windowToolbar)
     }
 
     private func statusRow(icons: Bool) -> some View {
@@ -858,6 +862,9 @@ struct HomeView: View {
                 .labelStyle(icons ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
         }
         .lineLimit(1)
+        // Ruhig: die Statusleiste tritt zurück (grau, klein) statt mit Akzentfarbe um Aufmerksamkeit zu konkurrieren
+        .tint(calm ? Color.secondary : nil)
+        .font(calm ? .caption : nil)
     }
 
     private var suggestions: some View {
@@ -895,12 +902,19 @@ struct HomeView: View {
                 ForEach([MissionPhase.waiting, .running, .review, .failed], id: \.self) { ph in
                     let list = open.filter { $0.1 == ph }
                     if !list.isEmpty {
-                        VStack(alignment: .leading, spacing: Grid.s) {
+                        VStack(alignment: .leading, spacing: calm ? 2 : Grid.s) {
                             HStack(spacing: 6) {
-                                PhaseBadge(phase: ph)
+                                if !calm || ph != .review { PhaseBadge(phase: ph) }
                                 Text("\(ph.title) · \(list.count)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             }
-                            ForEach(list, id: \.0.id) { rec, phase in OverviewRow(rec: rec, phase: phase) }
+                            .padding(.leading, calm ? Grid.s : 0).padding(.bottom, calm ? Grid.xs : 0)
+                            // Ruhig: Fertiges nicht als lange Liste – die drei neuesten, der Rest auf Klick (steht auch in der Seitenleiste)
+                            let cut = calm && !showAllDone && (ph == .review || ph == .failed) && list.count > 3
+                            ForEach(cut ? Array(list.prefix(3)) : list, id: \.0.id) { rec, phase in OverviewRow(rec: rec, phase: phase) }
+                            if cut {
+                                Button(String(format: L("Alle %d anzeigen"), list.count)) { withAnimation(.snappy) { showAllDone = true } }
+                                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).padding(.leading, Grid.s)
+                            }
                         }
                     }
                 }
@@ -916,33 +930,54 @@ struct HomeView: View {
 struct OverviewRow: View {
     let rec: MissionRecord
     let phase: MissionPhase
+    @AppStorage("ui.calm") private var calm = true
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var agents: AgentManager
     @EnvironmentObject private var tasks: TaskStore
     @ObservedObject private var store = MissionStore.shared
+    @State private var hover = false
+    private var closable: Bool { phase == .review || phase == .failed }
 
     var body: some View {
         HStack(spacing: Grid.s) {
             Button { app.page = .chat(rec.id) } label: {
                 HStack(spacing: Grid.s) {
+                    let meta = "\(rec.agentTitle)\(rec.projectName.isEmpty ? "" : " · " + rec.projectName) · \(relativeDay(rec.started))"
+                    if calm {
+                        Text(MissionRow.plain(rec.title)).lineLimit(1)
+                        Spacer(minLength: Grid.m)
+                        Text(meta).font(.caption).foregroundStyle(.tertiary).lineLimit(1).layoutPriority(-1)
+                            .opacity(hover && closable ? 0 : 1)
+                    } else {
                     Image(systemName: rec.agentSymbol).foregroundStyle(.secondary).frame(width: 18)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(rec.title).lineLimit(1)
-                        Text("\(rec.agentTitle)\(rec.projectName.isEmpty ? "" : " · " + rec.projectName) · \(relativeDay(rec.started))")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(meta).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer()
+                    }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if phase == .review || phase == .failed {
+            if closable, !calm {
                 Button("Abschließen") { store.archive(rec.id, agents: agents, tasks: tasks) }
                     .controlSize(.small)
             }
         }
-        .padding(Grid.m)
-        .background(ModernCardBackground(radius: 12))
+        // Ruhig: die Aktion zeigt sich erst, wenn du auf der Zeile bist (an der Stelle der Randnotiz) – sonst steht in jeder Zeile ein Knopf
+        .overlay(alignment: .trailing) {
+            if closable, calm, hover {
+                Button("Abschließen") { store.archive(rec.id, agents: agents, tasks: tasks) }
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, calm ? Grid.s : Grid.m).padding(.vertical, calm ? 6 : Grid.m)
+        .background {
+            if calm { RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(hover ? 0.07 : 0)) }
+            else { ModernCardBackground(radius: 12) }
+        }
+        .onHover { hover = $0 }
     }
 }
 
@@ -950,16 +985,25 @@ struct OverviewRow: View {
 struct MissionRow: View {
     let rec: MissionRecord
     var helpers: Int = 0
+    @AppStorage("ui.calm") private var calm = true
     @EnvironmentObject private var agents: AgentManager
     var body: some View {
         let s = agents.sessions.first { $0.id.uuidString == rec.id }
         TimelineView(.periodic(from: .now, by: 5)) { _ in
             let ph = rec.phase(session: s)
+            let detail = "\(rec.delegated == true ? (rec.routeReason?.hasPrefix("Mod:") == true ? "↳ Mod · " : "↳ Helfer · ") : "")\(rec.agentTitle) · \(ph.title)"
             HStack(spacing: Grid.s) {
+                if calm {
+                    // Ruhig: eine Zeile je Auftrag – Agent und Stand stehen im Tooltip und im Zeichen rechts
+                    // Fertiges tritt zurück (grau, ohne Zeichen) – ein Zeichen bekommt nur, was läuft oder dich braucht
+                    Text(MissionRow.plain(rec.title)).lineLimit(1).help(detail)
+                        .foregroundStyle(ph == .review ? .secondary : .primary)
+                } else {
                 Image(systemName: rec.agentSymbol).frame(width: 16).foregroundStyle(ph == .running ? Color.green : .secondary)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(rec.title).lineLimit(1)
-                    Text("\(rec.delegated == true ? (rec.routeReason?.hasPrefix("Mod:") == true ? "↳ Mod · " : "↳ Helfer · ") : "")\(rec.agentTitle) · \(ph.title)").font(.caption2).foregroundStyle(ph == .running || ph == .waiting ? ph.color : .secondary).lineLimit(1)
+                    Text(detail).font(.caption2).foregroundStyle(ph == .running || ph == .waiting ? ph.color : .secondary).lineLimit(1)
+                }
                 }
                 Spacer(minLength: 0)
                 if helpers > 0 {
@@ -970,9 +1014,16 @@ struct MissionRow: View {
                 }
                 Text(Self.age(rec.started)).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                     .help(rec.started.formatted(date: .abbreviated, time: .shortened))
-                PhaseBadge(phase: ph)
+                if !calm || ph != .review { PhaseBadge(phase: ph) }
             }
         }
+    }
+
+    /// Titel ohne vorangestelltes Kennzeichen (z. B. das Betreuer-Symbol) – für die ruhige Liste.
+    static func plain(_ title: String) -> String {
+        var t = Substring(title)
+        while let f = t.unicodeScalars.first, !(f.properties.isAlphabetic || f.properties.numericType != nil || "\"„“#(".unicodeScalars.contains(f)) { t = t.dropFirst() }
+        return t.isEmpty ? title : String(t)
     }
 
     /// Kurzes Alter: 5m, 3h, 2d

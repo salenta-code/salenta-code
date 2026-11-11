@@ -217,7 +217,9 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
                 }
                 addDir += " -c sandbox_workspace_write.network_access=true"
             }
-            command += "codex exec\(codexOpts)\(sandbox)\(addDir)\(json)\(promptArg) 2>&1 | python3 -u \(live) --log \(log); exit ${pipestatus[1]}"
+            // Ordner ohne Git (z. B. ein neues Projekt): sonst bricht Codex sofort mit „Not inside a trusted directory“ ab
+            let anyDir = F.pick(.codex, sub: "exec", ["--skip-git-repo-check"])
+            command += "codex exec\(codexOpts)\(sandbox)\(anyDir)\(addDir)\(json)\(promptArg) 2>&1 | python3 -u \(live) --log \(log); exit ${pipestatus[1]}"
         case (.junie, .autonom):
             command += "junie\(F.pick(.junie, ["--skip-update-check"]))\(F.pick(.junie, ["--output-format json-stream"]))\(promptArg) 2>&1 | python3 -u \(live) --log \(log); exit ${pipestatus[1]}"
         // Weitere Coding-Agents
@@ -258,7 +260,12 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
         case (.harness, _):
             let access = planOnly ? "read" : fullAccess ? "full" : "project"
             let h = Shell.quote(Paths.root.appendingPathComponent("bin/salenta-harness").path)
-            command += HarnessSetup.exports() + "\(h) --json --access \(access)\(model.map { " --model " + Shell.quote($0) } ?? "")\(promptArg) 2>&1 | python3 -u \(live) --log \(log); "
+            // Werkzeug-Server (Salenta Code für Freigaben und Übergaben; Browser und Anbindungen, wenn der Auftrag sie braucht),
+            // Freigabe-Modus (selbstständig oder mit Freigabe) und – wenn eingeschaltet – die Computer-Steuerung.
+            let mcp = " --mcp-config " + Shell.quote(sessionConfig(codingConfig ?? OSAgent.aosOnlyConfig).path)
+            let approval = " --approval " + (fullAccess ? "auto" : HarnessSetup.approval)
+            let computer = HarnessSetup.computer && !planOnly ? " --computer" : ""
+            command += HarnessSetup.exports() + "\(h) --json --access \(access)\(approval)\(mcp)\(computer)\(model.map { " --model " + Shell.quote($0) } ?? "")\(promptArg) 2>&1 | python3 -u \(live) --log \(log); "
                 + (mode == .interaktiv ? "exec zsh -l" : "exit ${pipestatus[1]}")
         case (.deepseek, .autonom):
             command += "dsh --profile headless\(promptArg) 2>&1 | python3 -u \(live) --log \(log); exit ${pipestatus[1]}"
@@ -276,10 +283,13 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
         env["SHELL_SESSIONS_DISABLE"] = "1"
         env["MCP_TOOL_TIMEOUT"] = "960000"
         env["AOS_MISSION_ID"] = id.uuidString   // Freigaben dürfen bis zu 15 Minuten warten
-        if !Git.hasIdentity(directory.path) {
-            // ohne eingerichtete Git-Identität würden Commits der Agents scheitern – nur für diese Sitzung setzen
-            env["GIT_AUTHOR_NAME"] = Git.fallbackName; env["GIT_COMMITTER_NAME"] = Git.fallbackName
-            env["GIT_AUTHOR_EMAIL"] = Git.fallbackEmail; env["GIT_COMMITTER_EMAIL"] = Git.fallbackEmail
+        // Helfer des Projekt-Betreuers laufen unbeaufsichtigt: auf eine Freigabe nur kurz warten, dann ohne den Schritt weiter
+        if label.hasPrefix("🧭") { env["AOS_APPROVAL_WAIT"] = "240" }
+        if let who = Git.sessionIdentity(directory.path) {
+            // Commits der Agents: ohne eingerichtete Identität würden sie scheitern; in GitHub-Projekten müssen sie deinem Konto
+            // zugeordnet sein (sonst blockieren Vorschauen den Pull Request). Nur für diese Sitzung – geht jeder Git-Einstellung vor.
+            env["GIT_AUTHOR_NAME"] = who.name; env["GIT_COMMITTER_NAME"] = who.name
+            env["GIT_AUTHOR_EMAIL"] = who.email; env["GIT_COMMITTER_EMAIL"] = who.email
         }
         env.removeValue(forKey: "TERM_SESSION_ID")
         if env["LANG"] == nil { env["LANG"] = "de_DE.UTF-8" }
@@ -292,7 +302,7 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
             persistent = true
             var inner = command.replacingOccurrences(of: "&& exec ", with: "&& ")
             inner = inner.replacingOccurrences(of: "; exit ${pipestatus[1]}", with: "; __rc=${pipestatus[1]}")
-            let keep = ["AOS_HOME", "AOS_SOURCE", "TERM_PROGRAM", "MCP_TOOL_TIMEOUT", "AOS_MISSION_ID", "LANG", "COLORTERM", "SHELL_SESSIONS_DISABLE"]
+            let keep = ["AOS_HOME", "AOS_SOURCE", "TERM_PROGRAM", "MCP_TOOL_TIMEOUT", "AOS_MISSION_ID", "AOS_APPROVAL_WAIT", "LANG", "COLORTERM", "SHELL_SESSIONS_DISABLE"]
             let exports = keep.compactMap { k in env[k].map { "export \(k)=\(Shell.quote($0))" } }.joined(separator: "\n")
             // Leistungsprofil: diese Sitzung (und alles, was sie startet) auf die sparsamen Kerne
             let qos = kind == .shell || PowerProfile.taskpolicyArgs.isEmpty ? "" : "/usr/sbin/taskpolicy \(PowerProfile.taskpolicyArgs.joined(separator: " ")) -p $$ 2>/dev/null\n"
@@ -385,6 +395,7 @@ final class AgentSession: NSObject, ObservableObject, Identifiable, LocalProcess
               var aos = servers["salenta-os"] as? [String: Any] else { return base }
         var env = aos["env"] as? [String: String] ?? [:]
         env["AOS_MISSION_ID"] = id.uuidString
+        if label.hasPrefix("🧭") { env["AOS_APPROVAL_WAIT"] = "240" }
         aos["env"] = env
         servers["salenta-os"] = aos
         j["mcpServers"] = servers
@@ -486,7 +497,7 @@ final class AgentManager: ObservableObject {
             kind = alt; model = nil
         }
         // Letztes Sicherheitsnetz: nie ein fremdes Modell an einen Agent geben (z. B. GPT an Claude Code) – dann dessen Standard
-        if let m = model, !ModelCatalog.fits(m, kind) { model = nil }
+        if let m = model, !ModelCatalog.fits(m, kind) || !ModelCatalog.listed(m, kind) { model = nil }
         let base = directory ?? directories.first ?? Paths.root.path
         remember(base)
         var dir = base
@@ -550,7 +561,11 @@ final class AgentManager: ObservableObject {
             let (block, names) = SkillDiet.inline(for: p)
             prompt = p + (block.isEmpty ? "" : "\n\n" + block)
             diet = true
-            if !names.isEmpty { autoNames.append(String(format: L("nur %d Skills geladen"), names.count)) }
+            if !names.isEmpty {
+                autoNames.append(String(format: L("nur %d Skills geladen"), names.count))
+                // Im Auftrag sichtbar machen, welche Skills wirklich geladen sind (auch die von der Agentenwahl gewählten)
+                for n in names where !autoNames.contains(where: { $0.replacingOccurrences(of: "/", with: "").lowercased() == n.lowercased() }) { autoNames.append(n) }
+            }
         }
         let session = AgentSession(kind: kind, mode: kind == .shell ? .interaktiv : mode,
                                    directory: URL(fileURLWithPath: dir, isDirectory: true),
@@ -709,36 +724,54 @@ struct LivePreview: View {
 enum SkillDiet {
     static var enabled: Bool { UserDefaults.standard.object(forKey: "skills.onlyChosen") as? Bool ?? true }
 
-    /// Findet die im Auftrag genannten Skills („/name“ oder „Skill: name“) und hängt ihre Anleitung an – ohne Kopfdaten, gekürzt.
-    static func inline(for prompt: String) -> (String, [String]) {
-        guard let catalog = SkillCatalog.current?.skills, !catalog.isEmpty else { return ("", []) }
+    /// Wie viele Skill-Anleitungen höchstens in einen Auftrag kommen – und wie viel Text insgesamt (mehrere teilen sich den Platz).
+    static let maxSkills = 6
+    static let budget = 24_000
+
+    /// Welche Skills der Auftrag nennt. Zuerst die ausdrücklich gewählten („/name“ – von der Agentenwahl, dem Betreuer oder dir),
+    /// danach Namen mit Bindestrich im Text. So verdrängt ein zufällig erwähnter Name nie einen gewählten Skill.
+    static func mentioned(in prompt: String, catalog: [Skill]) -> (load: [Skill], skipped: [Skill]) {
         let byName = Dictionary(catalog.map { ($0.name.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
-        var picked: [Skill] = []
+        var explicit: [Skill] = [], implicit: [Skill] = []
         let ns = prompt as NSString
         let re = try? NSRegularExpression(pattern: #"(?:^|[\s,(])/?([A-Za-z0-9][A-Za-z0-9._:-]{2,60})"#)
         for m in re?.matches(in: prompt, range: NSRange(location: 0, length: ns.length)) ?? [] {
-            let raw = ns.substring(with: m.range(at: 1)).lowercased()
+            var raw = ns.substring(with: m.range(at: 1)).lowercased()
+            while let last = raw.last, ".:-_".contains(last) { raw.removeLast() }   // Satzzeichen am Ende gehören nicht zum Namen
             let name = raw.components(separatedBy: ":").last ?? raw
-            let explicit = ns.substring(with: m.range).contains("/")
-            guard let s = byName[raw] ?? byName[name], !picked.contains(s) else { continue }
-            // nur ausdrücklich genannte Skills („/name“) oder Namen mit Bindestrich (kein gewöhnliches Wort)
-            if explicit || name.contains("-") { picked.append(s) }
-            if picked.count >= 4 { break }
+            guard let s = byName[raw] ?? byName[name] else { continue }
+            if ns.substring(with: m.range).contains("/") { if !explicit.contains(s) { explicit.append(s) } }
+            else if name.contains("-"), !implicit.contains(s) { implicit.append(s) }   // kein gewöhnliches Wort
         }
+        var seen = Set<String>()
+        let all = (explicit + implicit).filter { seen.insert($0.id).inserted }
+        return (Array(all.prefix(maxSkills)), Array(all.dropFirst(maxSkills)))
+    }
+
+    /// Hängt die Anleitungen der im Auftrag genannten Skills an – ohne Kopfdaten, gekürzt. Was nicht geladen wurde, steht dabei.
+    static func inline(for prompt: String) -> (String, [String]) {
+        guard let catalog = SkillCatalog.current?.skills, !catalog.isEmpty else { return ("", []) }
+        let (picked, skipped) = mentioned(in: prompt, catalog: catalog)
         guard !picked.isEmpty else {
             return (L("Skills: Für diesen Auftrag sind keine Skills geladen – arbeite direkt."), [])
         }
+        let each = max(2500, min(6000, budget / picked.count))
         var out = L("Skill-Anleitungen für diesen Auftrag (nur diese sind geladen – befolge sie):")
+        if picked.count > 1 { out += "\n" + L("Mehrere Skills: Wende jeden in dem Teil der Arbeit an, zu dem er passt. Widersprechen sie sich, gilt der Auftrag.") }
+        var loaded: [String] = []
         for s in picked {
             guard var text = try? String(contentsOfFile: s.path, encoding: .utf8) else { continue }
             if text.hasPrefix("---"), let end = text.range(of: "\n---", range: text.index(text.startIndex, offsetBy: 3)..<text.endIndex) {
                 text = String(text[end.upperBound...])
             }
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if text.count > 6000 { text = String(text.prefix(6000)) + "\n…" }
+            if text.count > each { text = String(text.prefix(each)) + "\n…" }
             out += "\n\n### " + s.name + "\n" + text
+            loaded.append(s.name)
         }
-        return (out, picked.map(\.name))
+        let missing = picked.map(\.name).filter { !loaded.contains($0) } + skipped.map(\.name)
+        if !missing.isEmpty { out += "\n\n" + String(format: L("Nicht geladen: %@ – arbeite ohne sie und rufe sie nicht auf."), missing.joined(separator: ", ")) }
+        return (out, loaded)
     }
 }
 

@@ -189,6 +189,7 @@ struct ModelAccessSettings: View {
                 }
                 Link("Schlüssel erstellen: platform.deepseek.com", destination: URL(string: "https://platform.deepseek.com/api_keys")!).font(.caption)
                 Text(HarnessSetup.status).font(.caption).foregroundStyle(HarnessSetup.ready ? .green : .orange)
+                HarnessControlSettings()
             }
             Section("Lokal mit Ollama (kostenlos, privat)") {
                 LocalSetupRow()

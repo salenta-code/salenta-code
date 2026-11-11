@@ -13,6 +13,28 @@ enum AutoSkills {
     static let alwaysIDs: Set<String> = ["serena", "context7"]   // kein „caveman“: verkürzte Antworten kosten Qualität
     static let tokenWords = ["token", "compress", "komprim", "terse", "concise", "caveman", "knapp", "spar", "context window", "kontext"]
 
+    /// Selbst hinzugefügtes Repo, das laut Name, Beschreibung oder Themen Tokens spart – läuft dann wie die kuratierten Token-Sparer immer mit.
+    static func savesTokens(_ e: Extension) -> Bool {
+        guard e.id.hasPrefix("custom:") else { return false }
+        let t = (e.name + " " + e.purpose + " " + e.when.joined(separator: " ")).lowercased()
+        return ["token sav", "save token", "saves token", "saving token", "token-sav", "token spar", "tokens spar", "token usage", "token cost", "token-eff",
+                "token eff", "token optim", "token reduc", "reduce token", "fewer tokens", "less tokens", "compress", "caveman", "context window"].contains { t.contains($0) }
+    }
+
+    /// Wörter, die in fast jedem Repo-Thema und fast jedem Auftrag stehen – sie sagen nichts darüber, ob ein Repo zum Auftrag passt.
+    static let genericWords: Set<String> = ["claude", "code", "coding", "skill", "skills", "agent", "agents", "plugin", "plugins", "server", "tool", "tools",
+                                            "anthropic", "openai", "codex", "awesome", "apps", "pack", "official", "community", "collection", "list", "best",
+                                            "prompt", "prompts", "automation", "workflow", "workflows", "assistant", "chatgpt", "gemini", "cursor", "model",
+                                            "models", "main", "with", "open", "source", "opensource", "free", "your", "help", "helper", "project", "projects"]
+
+    /// Passt ein selbst hinzugefügtes Repo dem Wortlaut nach zum Auftrag? Ein eindeutiges Stichwort muss als ganzes Wort vorkommen.
+    static func customMatch(_ keywords: [String], _ lower: String) -> Bool {
+        keywords.contains { k in
+            let w = k.lowercased()
+            return w.count >= 4 && !genericWords.contains(w) && Router.mentions(lower, w)
+        }
+    }
+
     /// Welche Agents Skills/Plugins/MCP überhaupt nutzen können.
     static func supports(_ kind: AgentKind, osAgent: Bool) -> Bool {
         osAgent || kind.harness == .claude || kind == .codex
@@ -43,15 +65,15 @@ enum AutoSkills {
         let harness: AgentKind = osAgent ? .claude : kind.harness
 
         // 1. Immer mit: installierte Token-Sparer und Doku-Helfer (bei Code-Aufträgen übernimmt das der Phasen-Plan)
-        for e in ExtensionCatalog.all where !onlyIntegrations && installed.contains(e.id) && (alwaysIDs.contains(e.id) || e.category == .tokens) {
+        for e in ExtensionCatalog.all where !onlyIntegrations && installed.contains(e.id) && (alwaysIDs.contains(e.id) || e.category == .tokens || savesTokens(e)) {
             guard !lower.contains(e.name.lowercased()) else { continue }
             if harness != .claude && (e.kind == .plugin || e.kind == .skill) { continue }   // Claude-Plugins nur bei Claude
             let line: String
             switch e.id {
             case "caveman": line = L("Antworte und arbeite knapp im Caveman-Stil (Plugin „caveman“ ist installiert, aktiviere es mit /caveman) – spart Tokens, Code und Fakten bleiben exakt.")
             default:
-                guard !e.usage.isEmpty else { continue }
-                line = e.usage
+                guard !e.howTo.isEmpty, !prompt.contains(e.howTo) else { continue }
+                line = e.howTo
             }
             p.lines.append(line); p.names.append(e.name)
         }
@@ -65,10 +87,12 @@ enum AutoSkills {
         }
 
         // 2. Passend zum Auftrag: Erweiterungen mit passenden Stichwörtern
-        for e in ExtensionCatalog.all where !onlyIntegrations && installed.contains(e.id) && !alwaysIDs.contains(e.id) && e.category != .tokens && !e.usage.isEmpty {
-            guard e.when.contains(where: { lower.contains($0) }), !p.names.contains(e.name) else { continue }
+        for e in ExtensionCatalog.all where !onlyIntegrations && installed.contains(e.id) && !alwaysIDs.contains(e.id) && e.category != .tokens && !e.howTo.isEmpty {
+            // Selbst hinzugefügte Repos: nur eindeutige Stichwörter als ganzes Wort (Themen wie „code“ oder „agent“ passen auf alles)
+            let hit = e.id.hasPrefix("custom:") ? customMatch(e.when, lower) : e.when.contains(where: { lower.contains($0) })
+            guard hit, !p.names.contains(e.name), !prompt.contains(e.howTo) else { continue }
             if harness != .claude && (e.kind == .plugin || e.kind == .skill) { continue }
-            p.lines.append(e.usage); p.names.append(e.name)
+            p.lines.append(e.howTo); p.names.append(e.name)
         }
         // 2a. Sicherheit und Prüfen: Prüf-Helfer und heikle Aufträge (Login, Zahlungen, Schlüssel, Deploy …)
         //     bekommen die installierten Sicherheits- und Review-Werkzeuge – auch ohne passendes Stichwort.

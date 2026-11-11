@@ -58,6 +58,10 @@ export function systemPrompt({ root, access, depth, tools, extra = '' }) {
     has('plan') ? '- For work with several steps keep a short plan with the plan tool and tick items off as you go. Do not write plan or analysis files unless the task asks for them.' : '- Do not write plan or analysis files unless the task asks for them.',
     '- Make the smallest change that fully solves the task. No placeholder code, no leftover TODOs or debug output, no unrelated refactors.',
     '- Look-ups that do not depend on each other go out together in one step – they run in parallel.',
+    tools.some(t => /^mcp__.*(browser|playwright|chrome)/i.test(t)) ? '- You can drive a real browser (mcp__browser__… tools): open pages you changed and check them. Take a text snapshot of the page before you click or type, and act on what the snapshot shows.' : '',
+    tools.some(t => /^(computer_|mcp__.*(computer|desktop|mac-control))/i.test(t)) ? '- You can operate this Mac (computer tools) – only when the task needs the desktop, never for work you can do with files or commands. Look first (computer_apps, computer_ui), act in small steps, and read the window again after each step to check the result.' : '',
+    tools.some(t => t.startsWith('mcp__') || t.startsWith('computer_')) ? '- Sending, submitting, buying, paying, deleting and posting always need the owner – if such a step is refused, do not look for a way around it; finish the rest and name the step in your report.' : '',
+    has('web_search') ? '- Look things up instead of guessing: web_search for current docs and error messages, web_fetch to read a page.' : '',
     has('task') ? '- Hand clearly separate parts (research elsewhere, an independent module) to a sub-agent with the task tool and a precise brief.' : '',
     '',
     'Obstacles',
@@ -178,7 +182,12 @@ export async function runAgent({ rt, prompt, session, root, access, depth = 0, m
     if (n >= 3 && !tool.readOnly) return fail('Dieser identische Aufruf lief schon zweimal. Nicht wiederholen – Ansatz ändern oder im Bericht erklären, was blockiert.')
     if (n >= 4) return fail('Schon mehrfach gelesen – das Ergebnis steht weiter oben im Verlauf.')
     const why = policy.check(tool, call.args || {})
-    if (why) return fail(`Verweigert: ${why}`)
+    if (why?.ask) {
+      // Freigabe einholen (Salenta Code, eigenes Programm oder Terminal) – der Lauf wartet so lange
+      out.info(`Wartet auf Freigabe: ${why.ask.tool}`, depth)
+      const a = await rt.get('approver').ask(why.ask.tool, why.ask.input)
+      if (!a.allow) return fail(`Verweigert: ${a.message || why.ask.deny}`)
+    } else if (why) return fail(`Verweigert: ${why}`)
     const hook = await rt.emit('beforeTool', call, ctx)
     if (hook?.deny) return fail(`Verweigert: ${hook.deny}`)
     let r
@@ -232,9 +241,8 @@ export function agentTools(rt) {
       // eigene Richtlinie mit (ggf. engerer) Zugriffsstufe für den Unteragent
       const { createPolicy } = await import('./policy.mjs')
       const sub = Object.create(ctx.rt)
-      const subPolicy = createPolicy({ access: level, root: ctx.root })
+      const subPolicy = createPolicy({ access: level, root: ctx.root, approval: policy.approval, approver: ctx.rt.has('approver') ? ctx.rt.get('approver') : null })
       sub.get = (key) => key === 'policy' ? subPolicy : ctx.rt.get(key)
-      void policy
       const r = await runAgent({ rt: sub, prompt, session: child, root: ctx.root, access: level, depth: ctx.depth + 1, maxSteps: 40, maxMinutes: 30, model: ctx.model, signal: ctx.signal })
       for (const f of r.changed) ctx.state.changed.add(f)
       return r.ok ? { output: `Bericht des Unteragents (${description}):\n${r.text}` } : { error: `Unteragent ohne Ergebnis (${description}): ${r.text}` }

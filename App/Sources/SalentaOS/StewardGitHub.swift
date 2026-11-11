@@ -32,6 +32,7 @@ struct StewardPR: Codable, Identifiable, Hashable {
     var cleanedSha: String? = nil      // für diesen Stand schon nach Debug-Dateien gesucht
     var base: String? = nil            // Ziel-Branch des PRs
     var lookSha: String? = nil         // für diesen Stand schon gemeldet: Optik-Änderung wartet auf dein Ok
+    var identitySha: String? = nil     // für diesen Stand schon geprüft: letzter Commit deinem GitHub-Konto zugeordnet?
 
     /// Verändert der PR das Aussehen? Geschmack entscheidet der Besitzer – solche PRs werden nie selbst gemergt.
     var changesLook: Bool {
@@ -164,6 +165,7 @@ extension Steward {
                             self.update(id) { p in
                                 if let i = p.tasks.firstIndex(where: { $0.id == t.id }) {
                                     p.tasks[i].state = .running; p.tasks[i].missionID = s.id.uuidString
+                                    p.tasks[i].started = Date()     // der neue Lauf zählt ab jetzt, nicht ab dem ersten Start
                                     p.tasks[i].prRetry = (p.tasks[i].prRetry ?? 0) + 1
                                     p.tasks[i].note = "🔧 " + L("PR-Problem wird automatisch behoben: ") + why
                                 }
@@ -248,6 +250,7 @@ extension Steward {
                 if let o = old[f.number] {
                     x.reviewedSha = o.reviewedSha; x.fixedSha = o.fixedSha; x.fixCount = o.fixCount
                     x.rerunSha = o.rerunSha; x.cleanedSha = o.cleanedSha; x.lookSha = o.lookSha   // sonst alle 10 min erneut
+                    x.identitySha = o.identitySha
                     x.reviewing = o.reviewing            // läuft schon ein Review → nicht noch eins starten
                     if o.reviewedSha == f.sha { x.reviewOK = o.reviewOK; x.risk = o.risk; x.summary = o.summary; x.issues = o.issues }
                 }
@@ -312,17 +315,28 @@ extension Steward {
             let ref = "refs/salenta/pr/\(pr.number)"
             _ = Git.run(["fetch", "--quiet", "--force", "origin", "pull/\(pr.number)/head:\(ref)", "+refs/heads/\(base):refs/remotes/origin/\(base)"], in: id, timeout: 120)
             let stat = Git.run(["diff", "--stat", "origin/\(base)...\(ref)"], in: id, timeout: 60).out
-            var diff = Git.run(["diff", "origin/\(base)...\(ref)"], in: id, timeout: 90).out
+            // Erzeugte Dateien (Lockfiles, Snapshots, Karten) füllen sonst den Platz, und der eigentliche Code wird abgeschnitten
+            var diff = Git.run(["diff", "origin/\(base)...\(ref)", "--", "."] + Self.reviewNoise.map { ":(exclude)" + $0 }, in: id, timeout: 90).out
+            if diff.isEmpty { diff = Git.run(["diff", "origin/\(base)...\(ref)"], in: id, timeout: 90).out }
             if diff.isEmpty { diff = Proc.zsh("gh pr diff \(pr.number)", in: id, timeout: 90).out }
             diff = "FILES:\n" + String(stat.suffix(4000)) + "\n\nPATCH:\n" + diff
+            // Der Prüfer bekommt den Stand des PRs als Arbeitskopie: Was im Patch abgeschnitten ist oder Kontext braucht, liest er nach,
+            // statt „im Diff nicht erkennbar“ als Einwand zu melden (das kostete Korrekturrunden ohne echten Fehler).
+            let checkout = Worktrees.root.appendingPathComponent("review-\(pr.number)-\(String(pr.sha.prefix(7)))").path
+            Git.run(["worktree", "remove", "--force", checkout], in: id, timeout: 30)   // Rest eines abgebrochenen Reviews
+            let hasCheckout = Git.run(["worktree", "add", "--detach", checkout, ref], in: id, timeout: 90).code == 0
+            defer { if hasCheckout { Git.run(["worktree", "remove", "--force", checkout], in: id, timeout: 60) } }
             let lang = Profile.languageCode == "de" ? "German (plain, short)" : "English"
             let prompt = """
             You are a strict senior reviewer for the repository at \(id). Project goal: \(goal.isEmpty ? "-" : goal)
             Pull request #\(pr.number) "\(pr.title)" by \(pr.author), CI: \(pr.ci), mergeable: \(pr.mergeable).
             Review the diff for: correctness and obvious bugs, security (secrets, injection, auth), data loss, breaking changes,
             missing tests for risky logic, and whether it does what the title says. Ignore style nitpicks.
-            CI is checked separately – do NOT reject because CI is still running or red. If the diff is truncated, judge the visible part
-            and do NOT reject only because of truncation. Reject ("ok": false) only for concrete problems you can point to (file:line).
+            CI is checked separately – do NOT reject because CI is still running or red.
+            \(hasCheckout ? "You are inside a checkout of this pull request's head. If the patch below is cut off, or you need context to be sure, open the files (Read, Grep, Glob) before you judge." : "If the diff is truncated, judge the visible part.")
+            Report only defects you have verified. Never list something as an issue because it "is not visible in the diff", "could not be \
+            checked" or "may be missing" – look it up in the files; if you still cannot verify it, leave it out. Never reject because of truncation.
+            Reject ("ok": false) only for concrete problems you can point to (file:line).
             "ok": true only if it is safe to merge as is. "risk": low | medium | high.
             Agents never get API keys, tokens or hosting settings. Missing configuration only the owner can add (e.g. an API key in the
             hosting environment, a real delivery test against a live account) is NOT a reason to reject when the code handles its absence
@@ -330,7 +344,7 @@ extension Steward {
             Answer ONLY with JSON in \(lang): {"ok":true,"risk":"low","summary":"one or two sentences","issues":["file:line – problem – fix"]}
 
             DIFF (may be truncated):
-            \(String(diff.prefix(80_000)))
+            \(String(diff.prefix(120_000)))
             """
             let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-prreview-\(UUID().uuidString).md")
             try? prompt.write(to: file, atomically: true, encoding: .utf8)
@@ -344,8 +358,15 @@ extension Steward {
             let claudeOff = Usage.isPaused(.claude) || (Usage.shared.blocked["claude"] ?? .distantPast) > Date()
             let claudeModels = claudeOff ? [] : (Usage.shared.isTight(.claude) ? ["sonnet"] : ["opus", "sonnet"])
             for model in claudeModels {
-                let r = Proc.zsh("claude -p --model \(model) --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))",
+                var r = hasCheckout
+                    ? Proc.zsh("claude -p --model \(model) --output-format json --max-turns 12 --allowedTools Read,Grep,Glob --strict-mcp-config < \(Shell.quote(file.path))",
+                               in: checkout, timeout: 600)
+                    : (out: "", code: Int32(1))
+                // Ohne Arbeitskopie – oder die Runden reichten nicht: nur mit dem Patch im Prompt
+                if Verifier.claudeResult(r.out) == nil, Verifier.claudeFailure(r.out, code: r.code) != L("Claude ist im Limit") {
+                    r = Proc.zsh("claude -p --model \(model) --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))",
                                  in: NSTemporaryDirectory(), timeout: 420)
+                }
                 if let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"), a < b,
                    let x = try? JSONSerialization.jsonObject(with: Data(res[a...b].utf8)) as? [String: Any] { j = x; break }
                 if Verifier.claudeFailure(r.out, code: r.code) == L("Claude ist im Limit") { break }
@@ -356,7 +377,7 @@ extension Steward {
                 let oFlag = F.pick(.codex, sub: "exec", ["-o", "--output-last-message"])
                 let opts = F.pick(.codex, sub: "exec", ["-s read-only", "--sandbox read-only"]) + F.pick(.codex, sub: "exec", ["--skip-git-repo-check"])
                     + (oFlag.isEmpty ? "" : oFlag + " " + Shell.quote(outFile.path))
-                let r = Proc.zsh("codex exec\(opts) - < \(Shell.quote(file.path))", in: NSTemporaryDirectory(), timeout: 420)
+                let r = Proc.zsh("codex exec\(opts) - < \(Shell.quote(file.path))", in: hasCheckout ? checkout : NSTemporaryDirectory(), timeout: 420)
                 j = parse((try? String(contentsOf: outFile, encoding: .utf8)) ?? r.out)
                 try? FileManager.default.removeItem(at: outFile)
             }
@@ -425,6 +446,37 @@ extension Steward {
         }
         // Eigener PR mit roter CI, Konflikt oder Review-Einwänden → Korrektur direkt auf dem PR-Branch (einmal pro Stand)
         let broken = pr.ci == "red" || pr.mergeable == "CONFLICTING" || pr.reviewOK == false
+        // Rot, weil GitHub den letzten Commit keinem Konto zuordnet (Vorschau-Dienste wie Vercel verweigern dann den Aufbau)?
+        // Das kann kein Helfer im Code beheben. Der Betreuer setzt selbst einen leeren Commit mit deinem GitHub-Konto obendrauf.
+        if pr.ours, pr.ci == "red", pr.mergeable != "CONFLICTING", pr.identitySha != pr.sha {
+            setPR(id, pr.number) { $0.identitySha = pr.sha }
+            DispatchQueue.global(qos: .utility).async {
+                guard let new = Self.reattribute(repo: id, pr: pr) else {
+                    // Commit ist zugeordnet – die rote CI hat einen anderen Grund: gleich normal weiter entscheiden
+                    DispatchQueue.main.async { if let cur = self.project(id)?.prs?.first(where: { $0.number == pr.number }), cur.sha == pr.sha { self.decide(id, cur) } }
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.say(id, "system", "🪪 " + String(format: L("PR #%d: Die Vorschau war blockiert, weil der letzte Commit keinem GitHub-Konto zugeordnet war. Ich habe ihn deinem Konto zugeordnet – die Prüfungen laufen neu, kein Code-Problem."), pr.number))
+                    self.setPR(id, pr.number) { x in
+                        // gleicher Inhalt, neuer Stand: Review und Merker mitnehmen statt alles noch einmal zu prüfen
+                        if x.reviewedSha == pr.sha { x.reviewedSha = new }
+                        if x.lookSha == pr.sha { x.lookSha = new }
+                        if x.cleanedSha == pr.sha { x.cleanedSha = new }
+                        x.sha = new; x.identitySha = new; x.ci = "pending"
+                    }
+                    // Eine schon eingereihte „CI ist rot“-Korrektur für diesen PR entfällt
+                    self.update(id) { q in
+                        for i in q.tasks.indices where q.tasks[i].pr == pr.number && q.tasks[i].prBranch != nil && q.tasks[i].source == "ci"
+                            && [.queued, .idea].contains(q.tasks[i].state) && Self.isCIFix(q.tasks[i].detail) {
+                            q.tasks[i].state = .dropped
+                            q.tasks[i].note = L("Vorschau war nur wegen der Commit-Zuordnung blockiert – selbst behoben, keine Korrektur nötig")
+                        }
+                    }
+                }
+            }
+            return
+        }
         // Rote CI durch die Infrastruktur (Download-Fehler 5xx, Runner abgebrochen, Rate-Limit)? Dann kein Helfer, sondern einmal neu starten.
         if pr.ci == "red", pr.mergeable != "CONFLICTING", pr.reviewOK != false, pr.rerunSha != pr.sha {
             setPR(id, pr.number) { $0.rerunSha = pr.sha }
@@ -452,7 +504,10 @@ extension Steward {
             }
             if hasNoise { return }   // sonst normal weiter: Merge oder Korrektur
         }
-        if pr.ours, broken, pr.fixedSha != pr.sha, (pr.fixCount ?? 0) < 2, Energy.backgroundAgentsOK, !p.paused {
+        // Die Korrektur für diesen Stand ist gescheitert oder verworfen worden, ohne den PR zu ändern? Dann darf der Wächter es noch
+        // einmal versuchen – sonst bliebe der PR für immer liegen (der Planer darf PR-Korrekturen nicht selbst einreihen).
+        let retry = Self.fixFailed(p.tasks, pr: pr.number)
+        if pr.ours, broken, pr.fixedSha != pr.sha || retry, (pr.fixCount ?? 0) < 2, Energy.backgroundAgentsOK, !p.paused {
             setPR(id, pr.number) { $0.fixedSha = pr.sha; $0.fixCount = ($0.fixCount ?? 0) + 1 }
             let why = pr.mergeable == "CONFLICTING" ? L("Konflikt mit dem Haupt-Branch – neuesten Stand einarbeiten (rebase/merge) und Konflikte lösen.")
                 : pr.ci == "red" ? L("Die CI auf GitHub ist rot. Lies die Logs mit `gh pr checks` und `gh run view --log-failed` und behebe die Ursache.")
@@ -469,12 +524,49 @@ extension Steward {
             }
             say(id, "system", "🔧 " + String(format: L("PR #%d braucht eine Korrektur – Aufgabe eingereiht."), pr.number))
             dispatch(id)
-        } else if pr.ours, broken, (pr.fixCount ?? 0) >= 2, pr.fixedSha != pr.sha {
+        } else if pr.ours, broken, (pr.fixCount ?? 0) >= 2, pr.fixedSha != pr.sha || (retry && Self.mergeNoted["stuck#\(id)#\(pr.number)@\(pr.sha)"] == nil) {
             setPR(id, pr.number) { $0.fixedSha = pr.sha }
+            Self.mergeNoted["stuck#\(id)#\(pr.number)@\(pr.sha)"] = "1"
             say(id, "system", "✋ " + String(format: L("PR #%d ist nach 2 Korrekturen noch nicht grün – bitte selbst ansehen (Auf GitHub) oder über „Alle prüfen …“ entscheiden."), pr.number))
         } else if !pr.ours, pr.reviewOK != nil, !allowed, pr.reviewedSha == pr.sha, pr.summary != nil {
             // fremder PR: nur Bescheid sagen (einmal je Stand – über reviewedSha schon abgedeckt)
         }
+    }
+
+    /// Erzeugte Dateien, die im Review-Patch nichts verloren haben (sie stehen weiter in der Dateiliste).
+    static let reviewNoise = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "Cargo.lock", "Podfile.lock", "composer.lock",
+                              "*.snap", "*.map", "*.min.js", "*.min.css", "*.svg", "*.lock"]
+
+    /// Ist die letzte Korrektur für diesen PR gescheitert oder verworfen worden (und läuft keine mehr)? Von dir gestoppte zählen nicht.
+    static func fixFailed(_ tasks: [StewardTask], pr number: Int) -> Bool {
+        let fixes = tasks.filter { $0.pr == number && $0.prBranch != nil }
+        guard let last = fixes.last, !fixes.contains(where: { [.idea, .queued, .running, .review].contains($0.state) }) else { return false }
+        if last.state == .red { return true }
+        return last.state == .dropped && last.note != L("von dir gestoppt")
+    }
+
+    /// Korrektur-Aufgabe, die nur wegen roter CI entstand (nicht wegen Konflikt oder Review-Einwänden)?
+    static func isCIFix(_ detail: String) -> Bool {
+        let d = detail.lowercased()
+        return d.contains("gh pr checks") && !d.contains("konflikt") && !d.contains("conflict")
+    }
+
+    /// Ist der letzte Commit des PRs keinem GitHub-Konto zugeordnet, einen leeren Commit mit deinem Konto obendrauf setzen
+    /// (Vorschau-Dienste prüfen den Autor des letzten Commits). Liefert den neuen Stand – nil, wenn nichts zu tun war.
+    static func reattribute(repo: String, pr: StewardPR) -> String? {
+        guard GH.ready, !pr.branch.isEmpty, !pr.sha.isEmpty, let who = Git.githubIdentityWait() else { return nil }
+        let r = Proc.zsh("gh api " + Shell.quote("repos/{owner}/{repo}/commits/" + pr.sha) + " --jq '.author.login // \"\"' 2>/dev/null", in: repo, timeout: 30)
+        guard r.code == 0, r.out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }   // zugeordnet oder nicht prüfbar
+        let tmp = Worktrees.root.appendingPathComponent("konto-\(pr.number)-\(String(pr.sha.prefix(7)))").path
+        defer { Git.run(["worktree", "remove", "--force", tmp], in: repo, timeout: 60) }
+        guard Git.run(["fetch", "--quiet", "origin", pr.branch], in: repo, timeout: 120).code == 0,
+              Git.run(["worktree", "add", "--detach", tmp, "origin/" + pr.branch], in: repo, timeout: 60).code == 0,
+              Git.run(["rev-parse", "HEAD"], in: tmp).out.trimmingCharacters(in: .whitespacesAndNewlines) == pr.sha else { return nil }
+        guard Git.run(["-c", "user.name=\(who.name)", "-c", "user.email=\(who.email)", "commit", "-q", "--allow-empty", "-m",
+                       L("Vorschau neu anstoßen: Commit dem GitHub-Konto zugeordnet")], in: tmp).code == 0 else { return nil }
+        let new = Git.run(["rev-parse", "HEAD"], in: tmp).out.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard new.count >= 7, new != pr.sha, Git.run(["push", "origin", "HEAD:refs/heads/" + pr.branch], in: tmp, timeout: 120).code == 0 else { return nil }
+        return new
     }
 
     /// Enthält der PR Debug-Ablagen (.playwright-mcp, playwright-report)? Dann in einer kurzlebigen Arbeitskopie entfernen und hochladen.

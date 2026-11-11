@@ -390,7 +390,16 @@ enum PowerProfile {
     /// Laufende Helfer werden nie abgebrochen; es startet nur nichts Neues, bis der Mac wieder Luft hat.
     static func capParallel(_ n: Int) -> Int {
         let load = SystemLoad.shared
-        return cap(n, eco: effective == "eco", thermal: ProcessInfo.processInfo.thermalState, onBattery: load.onBattery, cpu: load.cpu, memFree: load.memFree)
+        return cap(n, eco: effective == "eco", thermal: thermalNow, onBattery: load.onBattery, cpu: load.cpu, memFree: load.memFree)
+    }
+    /// Hitze-Zustand des Macs. In der Entwickler-Version lässt er sich für einen Test vorgeben (nur im Speicher, bis zum Neustart):
+    /// so lässt sich prüfen, dass bei Hitze wirklich kein weiterer Helfer startet, ohne den Mac heiß laufen zu lassen.
+    /// Die Vorgabe läuft nach 10 Minuten von selbst ab – ein vergessener Test darf die Helfer nie dauerhaft anhalten.
+    static var testThermal: ProcessInfo.ThermalState? { didSet { testThermalUntil = testThermal == nil ? nil : Date().addingTimeInterval(600) } }
+    private static var testThermalUntil: Date?
+    static var thermalNow: ProcessInfo.ThermalState {
+        if Paths.isDevBuild, let t = testThermal, let until = testThermalUntil, Date() < until { return t }
+        return ProcessInfo.processInfo.thermalState
     }
 
     /// Reine Regel (testbar): wie viele Helfer bei dieser Lage gleichzeitig laufen dürfen.

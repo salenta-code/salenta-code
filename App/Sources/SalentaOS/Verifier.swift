@@ -39,6 +39,8 @@ struct VerifyReport: Codable, Hashable {
     var checks: [VerifyCheck] = []
     var review: VerifyReview?
     var screenshot: String?
+    /// Alle Aufnahmen (Desktop 1440 px, Mobil 390 px) – für die Sichtprüfung durch das Review-Modell.
+    var shots: [String]?
     var note: String?
     var diagnosis: VerifyDiagnosis?
     var diagnosing: Bool?
@@ -293,6 +295,25 @@ enum Verifier {
         return String(format: L("Nicht blockierend: Rot sind nur Tests, die dieser Auftrag nicht anfasst (%@). Lokal meist Zeitlimit oder fehlende Umgebung – die GitHub-CI prüft das vor dem Merge."), files.sorted().prefix(4).joined(separator: ", "))
     }
 
+    // MARK: Umgebung
+
+    /// Installationsbefehl des Projekts (Node) – für fehlende Werkzeuge in einer frischen Arbeitskopie.
+    /// Ein verlinktes node_modules wird vorher nur entlinkt: installiert wird in die Arbeitskopie, nie ins Haupt-Repo.
+    static func installCommand(_ dir: String) -> String? {
+        let fm = FileManager.default
+        func has(_ f: String) -> Bool { fm.fileExists(atPath: (dir as NSString).appendingPathComponent(f)) }
+        guard has("package.json") else { return nil }
+        let cmd = has("pnpm-lock.yaml") ? "pnpm install --frozen-lockfile" : has("yarn.lock") ? "yarn install --frozen-lockfile"
+            : has("bun.lockb") || has("bun.lock") ? "bun install" : has("package-lock.json") ? "npm ci --no-audit --no-fund" : "npm install --no-audit --no-fund"
+        return "[ -L node_modules ] && rm node_modules; " + cmd
+    }
+
+    /// Scheitert die Prüfung an der Umgebung statt am Code? (Ein Werkzeug oder Paket fehlt in der Arbeitskopie.)
+    static func missingTool(_ out: String) -> Bool {
+        out.range(of: "(?m)(^(sh|zsh|bash): (line \\d+: )?[\\w.@/-]+: (command )?not found|command not found: [\\w.@/-]+|Cannot find (module|package) '[^./])",
+                  options: .regularExpression) != nil
+    }
+
     // MARK: Ausgangsstand
 
     private static var baseCache: [String: (code: Int32, out: String)] = [:]
@@ -362,6 +383,7 @@ enum Verifier {
             // 1. Build, Lint, Tests
             let fork = Worktrees.forkPoint(wt)
             var ranTests = false
+            var triedInstall = false
             for c0 in (docsOnly ? [] : checks(for: dir)) {
                 // Wie Claude Code oder Codex: lokal nur die Tests, die die Änderung betrifft – die volle Suite läuft in der CI.
                 // Spart bei großen Projekten Minuten, Strom und Hitze; ohne CI läuft weiter alles.
@@ -391,6 +413,17 @@ enum Verifier {
                     report.checks[report.checks.count - 1].output = L("Zeitüberschreitung nach 10 Minuten – wird mit mehr Zeit wiederholt …")
                     publish()
                     r = Proc.zsh("exec \(PowerProfile.shellPrefix)nice -n 5 /bin/zsh -c " + Shell.quote(c.command), in: dir, timeout: 1800, tag: "verify-" + id)
+                }
+                // Werkzeug oder Paket fehlt (z. B. „tsx: command not found“)? Das ist die Umgebung, nicht der Code:
+                // einmal installieren und dieselbe Prüfung wiederholen.
+                if r.code != 0, r.code != 124, !triedInstall, !isCancelled(id), c.name != L("Installieren"), missingTool(r.out), let install = installCommand(dir) {
+                    triedInstall = true
+                    report.checks[report.checks.count - 1].output = L("Werkzeug fehlt in der Arbeitskopie – Abhängigkeiten werden installiert …")
+                    publish()
+                    let ins = Proc.zsh("exec \(PowerProfile.shellPrefix)nice -n 10 /bin/zsh -c " + Shell.quote(install), in: dir, timeout: 900, tag: "verify-" + id)
+                    if ins.code == 0, !isCancelled(id) {
+                        r = Proc.zsh("exec \(PowerProfile.shellPrefix)nice -n 10 /bin/zsh -c " + Shell.quote(c.command), in: dir, timeout: 900, tag: "verify-" + id)
+                    }
                 }
                 CheckGate.leave()
                 let i = report.checks.count - 1
@@ -442,13 +475,14 @@ enum Verifier {
             // 2. Screenshot bei UI-Änderungen
             let uiExt = ["tsx", "jsx", "vue", "svelte", "css", "scss", "html", "liquid", "astro"]
             if screenshotOn, changes.contains(where: { uiExt.contains(($0.path as NSString).pathExtension.lowercased()) }) {
-                if let shot = screenshot(dir: dir, id: id) { report.screenshot = shot; publish() }
+                let shots = screenshots(dir: dir, id: id, changed: changes.map(\.path))
+                if !shots.isEmpty { report.screenshot = shots[0]; report.shots = shots; publish() }
             }
 
             // 3. Zweite Meinung: ein anderes Modell liest den Diff
             if reviewOn && !isCancelled(id) {
                 let diff = Worktrees.diff(wt)
-                report.review = review(rec: rec, diff: diff, checks: report.checks, dir: dir)
+                report.review = review(rec: rec, diff: diff, checks: report.checks, dir: dir, shots: report.shots ?? [])
             }
             report.finished = Date()
             // 4. Ist etwas rot: erst sofort eine Einschätzung nach Regeln, dann genauer per KI
@@ -473,20 +507,59 @@ enum Verifier {
 
     // MARK: Screenshot (Dev-Server starten, mit Chrome headless fotografieren)
 
-    private static func screenshot(dir: String, id: String) -> String? {
+    /// Aufnahmen der Startseite in Desktop- (1440 px) und Mobilbreite (390 px).
+    /// Mit Dev-Server, wenn das Projekt einen hat; sonst direkt die geänderte HTML-Datei (statische Seiten).
+    private static func screenshots(dir: String, id: String, changed: [String] = []) -> [String] {
         let cfg = ProjectConfig.load(dir)
         let chrome = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                       "/Applications/Chromium.app/Contents/MacOS/Chromium",
                       "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"].first { FileManager.default.isExecutableFile(atPath: $0) }
-        guard let chrome else { return nil }
+        guard let chrome else { return [] }
         let fm = FileManager.default
+        let dirShots = Paths.support.appendingPathComponent("screens", isDirectory: true)
+        try? fm.createDirectory(at: dirShots, withIntermediateDirectories: true)
+        func shoot(_ url: String) -> [String] {
+            let profile = fm.temporaryDirectory.appendingPathComponent("aos-shot-profile").path
+            // Echte Gerätebreite braucht die Geräte-Emulation: ein Chrome-Fenster ist nie schmaler als 500 px. Mit bloßem
+            // „--window-size=390“ rechnet die Seite mit 500 px und die Aufnahme schneidet rechts ab – das sähe wie ein Überlauf aus.
+            let tool = Paths.root.appendingPathComponent("bin/harness/tools/shot.mjs").path
+            let node = fm.fileExists(atPath: tool) ? Detection.which("node") : nil
+            var out: [String] = []
+            for (suffix, w, h, mobile) in [("", 1440, 900, false), ("-mobil", 390, 844, true)] {
+                let stamp = "\(id.prefix(8))-\(Int(Date().timeIntervalSince1970))"
+                var file = dirShots.appendingPathComponent(stamp + suffix + ".png").path
+                var measured: (width: Int, content: Int)?
+                if let node {
+                    let r = Proc.zsh("\(Shell.quote(node)) \(Shell.quote(tool)) \(Shell.quote(chrome)) \(Shell.quote(url)) \(Shell.quote(file)) \(w) \(h)\(mobile ? " mobil" : "") 2>/dev/null",
+                                     in: dir, timeout: 70)
+                    measured = r.code == 0 ? measure(r.out) : nil
+                }
+                if !fm.fileExists(atPath: file) {
+                    // Ohne Node: Fenster-Aufnahme. Schmaler als 500 px geht so nicht – dann ehrlich als „schmal, 500 px“ kennzeichnen.
+                    let width = max(w, 500)
+                    if width != w { file = dirShots.appendingPathComponent(stamp + "-schmal.png").path }
+                    _ = Proc.zsh("\(Shell.quote(chrome)) --headless=new --disable-gpu --hide-scrollbars --no-first-run --user-data-dir=\(Shell.quote(profile)) --window-size=\(width),\(h) --virtual-time-budget=5000 --screenshot=\(Shell.quote(file)) \(Shell.quote(url)) >/dev/null 2>&1",
+                                 in: dir, timeout: 60)
+                }
+                guard fm.fileExists(atPath: file) else { continue }
+                if let m = measured { noteMeasure(file, m) }
+                out.append(file)
+            }
+            return out
+        }
         var devCmd = cfg?.dev
         if devCmd == nil, let d = fm.contents(atPath: (dir as NSString).appendingPathComponent("package.json")),
            let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
            let scripts = j["scripts"] as? [String: String], scripts["dev"] != nil {
             devCmd = fm.fileExists(atPath: (dir as NSString).appendingPathComponent("pnpm-lock.yaml")) ? "pnpm run dev" : "npm run dev"
         }
-        guard let devCmd else { return nil }
+        guard let devCmd else {
+            // Statische Seite: die geänderte HTML-Datei direkt öffnen (index.html bevorzugt)
+            let pages = changed.filter { $0.lowercased().hasSuffix(".html") }.sorted { ($0.hasSuffix("index.html") ? 0 : 1, $0.count) < ($1.hasSuffix("index.html") ? 0 : 1, $1.count) }
+            guard let page = pages.first else { return [] }
+            let path = (dir as NSString).appendingPathComponent(page)
+            return fm.fileExists(atPath: path) ? shoot(URL(fileURLWithPath: path).absoluteString) : []
+        }
 
         let log = fm.temporaryDirectory.appendingPathComponent("aos-dev-\(id.prefix(8)).log")
         fm.createFile(atPath: log.path, contents: nil)
@@ -499,7 +572,7 @@ enum Verifier {
         env["PORT"] = "4\(Int.random(in: 100...899))"
         p.environment = env
         if let h = try? FileHandle(forWritingTo: log) { p.standardOutput = h; p.standardError = h }
-        guard (try? p.run()) != nil else { return nil }
+        guard (try? p.run()) != nil else { return [] }
         defer {
             if let port = port(in: (try? String(contentsOf: log, encoding: .utf8)) ?? "") {
                 _ = Proc.zsh("lsof -ti tcp:\(port) | xargs kill 2>/dev/null", in: dir, timeout: 10)
@@ -516,15 +589,9 @@ enum Verifier {
                 url = String(text[r]).replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
             }
         }
-        guard let url else { return nil }
+        guard let url else { return [] }
         usleep(2_500_000)
-        let dirShots = Paths.support.appendingPathComponent("screens", isDirectory: true)
-        try? fm.createDirectory(at: dirShots, withIntermediateDirectories: true)
-        let out = dirShots.appendingPathComponent("\(id.prefix(8))-\(Int(Date().timeIntervalSince1970)).png").path
-        let profile = fm.temporaryDirectory.appendingPathComponent("aos-shot-profile").path
-        _ = Proc.zsh("\(Shell.quote(chrome)) --headless=new --disable-gpu --hide-scrollbars --no-first-run --user-data-dir=\(Shell.quote(profile)) --window-size=1440,900 --virtual-time-budget=5000 --screenshot=\(Shell.quote(out)) \(Shell.quote(url))",
-                     in: dir, timeout: 60)
-        return fm.fileExists(atPath: out) ? out : nil
+        return shoot(url)
     }
 
     private static func port(in text: String) -> String? {
@@ -545,12 +612,121 @@ enum Verifier {
         return usable(.codex) && !Usage.shared.isTight(.codex) ? .codex : (usable(.claude) ? .claude : .codex)
     }
 
-    private static func review(rec: MissionRecord, diff: String, checks: [VerifyCheck], dir: String) -> VerifyReview? {
+    /// Entwickler-Test der Sichtprüfung: eine absichtlich kaputte Seite aufnehmen und dem Review nur die Aufnahmen zeigen
+    /// (der Code bleibt ihm verborgen) – findet es die Mängel, sieht es wirklich hin. Ergebnis: logs/design-check.txt.
+    static func designProbe() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var lines: [String] = []
+            let fm = FileManager.default
+            let base = (NSTemporaryDirectory() as NSString).appendingPathComponent("salenta-design-probe-" + String(UUID().uuidString.prefix(6)))
+            let site = (base as NSString).appendingPathComponent("seite"), empty = (base as NSString).appendingPathComponent("leer")
+            try? fm.createDirectory(atPath: site, withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: empty, withIntermediateDirectories: true)
+            let html = """
+            <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Probe</title></head>
+            <body style="margin:0;font-family:Helvetica,sans-serif;background:#d9d9d9">
+            <h1 style="width:1500px;white-space:nowrap;font-size:64px;margin:24px">Willkommen bei unserem neuen Angebot für alle Kundinnen und Kunden</h1>
+            <p style="color:#cfcfcf;font-size:18px;margin:24px">Dieser Text ist hellgrau auf hellgrauem Grund und kaum zu lesen.</p>
+            <div style="position:absolute;top:30px;left:10px;width:320px;height:120px;background:#e00000;color:#fff;font-size:28px">Dieser Kasten überdeckt die Überschrift</div>
+            </body></html>
+            """
+            try? html.write(toFile: (site as NSString).appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+            let shots = screenshots(dir: site, id: "probe" + String(UUID().uuidString.prefix(4)), changed: ["index.html"])
+            lines.append((shots.count == 2 ? "✓ " : "✗ ") + "Aufnahmen: \(shots.count) (Desktop und Mobil erwartet)")
+            measureLock.lock(); let known = measures; measureLock.unlock()
+            for f in shots { lines.append("  · " + describeShot(f, measured: known[f])) }
+            if let m = shots.first(where: { $0.contains("-mobil") }).flatMap({ known[$0] }) {
+                lines.append((m.width == 390 && m.content > 391 ? "✓ " : "✗ ") + "Handy-Breite echt 390 px, Überlauf der kaputten Seite gemessen: \(m.content - m.width) px")
+            } else {
+                lines.append("✗ Keine Messung der Handy-Breite (Node fehlt oder Aufnahme-Werkzeug gescheitert) – Aufnahme nur als schmales Fenster")
+            }
+            // Gegenprobe: eine saubere Seite darf am Handy keinen Überlauf melden (sonst scheitern gute Ergebnisse am Prüfwerkzeug)
+            let clean = (base as NSString).appendingPathComponent("sauber")
+            try? fm.createDirectory(atPath: clean, withIntermediateDirectories: true)
+            let ok = """
+            <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sauber</title></head>
+            <body style="margin:0;font-family:Helvetica,sans-serif"><main style="max-width:60rem;margin:0 auto;padding:24px">
+            <h1 style="font-size:clamp(28px,6vw,56px)">Willkommen bei unserem neuen Angebot für alle Kundinnen und Kunden</h1>
+            <p style="font-size:18px;line-height:1.5">Dieser Text passt auf jeden Bildschirm.</p></main></body></html>
+            """
+            try? ok.write(toFile: (clean as NSString).appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+            let cleanShots = screenshots(dir: clean, id: "sauber" + String(UUID().uuidString.prefix(4)), changed: ["index.html"])
+            measureLock.lock(); let known2 = measures; measureLock.unlock()
+            if let m = cleanShots.first(where: { $0.contains("-mobil") }).flatMap({ known2[$0] }) {
+                lines.append((m.content <= m.width + 1 ? "✓ " : "✗ ") + "Gegenprobe saubere Seite: Inhalt \(m.content) px auf \(m.width) px – \(m.content <= m.width + 1 ? "kein Überlauf" : "fälschlich Überlauf")")
+            } else {
+                lines.append("✗ Gegenprobe: keine Messung")
+            }
+            if !shots.isEmpty {
+                let rec = MissionRecord(id: "design-probe", title: "Design-Probe", request: "Gestalte eine saubere Startseite, die auch auf dem Handy gut lesbar ist.",
+                                        agent: "claude", mode: "autonom", directory: empty, started: Date(), log: "", taskID: nil)
+                let diff = "+++ b/README.md\n+Startseite überarbeitet.\n"
+                let t0 = Date()
+                let r = review(rec: rec, diff: diff, checks: [], dir: empty, shots: shots)
+                let design = (r?.issues ?? []).filter { $0.lowercased().contains("design") }
+                let saw = r?.ok == false && !design.isEmpty
+                lines.append((saw ? "✓ " : "✗ ") + "Review (\(r?.agent ?? "-"), \(Int(Date().timeIntervalSince(t0))) s): " + (saw ? "kaputte Seite erkannt und abgelehnt" : "Mängel nicht erkannt"))
+                lines.append("  Urteil: " + String((r?.summary ?? "-").prefix(300)))
+                for i in (r?.issues ?? []).prefix(6) { lines.append("  – " + String(i.prefix(240))) }
+            }
+            try? fm.removeItem(atPath: base)
+            let url = Paths.source.appendingPathComponent("logs/design-check.txt")
+            try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? ("Design-Prüfung – \(DateCoding.stamp(Date()))\n\n" + lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    /// Zusatz für das Review, wenn es Aufnahmen gibt: das Ergebnis wird auch angesehen, nicht nur gelesen.
+    /// Gemessene Breiten je Aufnahme (Gerätebreite, Inhaltsbreite) – eine Messung statt eines Eindrucks.
+    private static var measures: [String: (width: Int, content: Int)] = [:]
+    private static let measureLock = NSLock()
+    static func noteMeasure(_ file: String, _ m: (width: Int, content: Int)) {
+        measureLock.lock(); measures[file] = m; if measures.count > 400 { measures.removeAll() }; measureLock.unlock()
+    }
+    /// Ausgabe des Aufnahme-Werkzeugs lesen: {"width":390,"content":412,"overflow":22}
+    static func measure(_ out: String) -> (width: Int, content: Int)? {
+        guard let a = out.lastIndex(of: "{"), let b = out.lastIndex(of: "}"), a < b,
+              let j = try? JSONSerialization.jsonObject(with: Data(out[a...b].utf8)) as? [String: Any],
+              let w = j["width"] as? Int, let c = j["content"] as? Int, w > 0 else { return nil }
+        return (w, c)
+    }
+    /// Eine Aufnahme für das Review beschreiben: Gerät, Breite und – wenn gemessen – ob der Inhalt über den Rand läuft.
+    static func describeShot(_ file: String, measured: (width: Int, content: Int)?) -> String {
+        let kind = file.contains("-mobil") ? "phone, 390 px wide" : file.contains("-schmal") ? "narrow window, 500 px wide (not a phone width)" : "desktop, 1440 px wide"
+        guard let m = measured else { return kind }
+        return kind + (m.content > m.width + 1
+            ? " – MEASURED: the content is \(m.content) px wide, \(m.content - m.width) px wider than the screen (horizontal overflow)"
+            : " – MEASURED: no horizontal overflow (content fits the \(m.width) px screen)")
+    }
+
+    static func visualBrief(_ shots: [String], readable: Bool) -> String {
+        guard !shots.isEmpty else { return "" }
+        measureLock.lock(); let known = measures; measureLock.unlock()
+        let list = shots.map { "- \(describeShot($0, measured: known[$0])): \($0)" }.joined(separator: "\n")
+        return """
+
+        Screenshots of the result (start page)\(readable ? " – open each file with the Read tool before you judge" : " are attached as images"):
+        \(list)
+        Look at them like a strict art director. Real visual defects fail the change: broken or overlapping layout, text with poor contrast, \
+        missing styles, an error or blank page, obvious filler or placeholder content – and, only if the task asked for design work, \
+        a generic templated look without a clear idea. Horizontal overflow: trust the MEASURED note, not your impression; a picture that \
+        simply ends at the screen edge is not an overflow, and without a measurement do not claim one. \
+        List each defect under "issues", starting with "Design:", and say concretely what to change. \
+        A defect fails the change only if this change caused it or the task was to fix exactly that. If it was plainly there before \
+        (the diff does not touch the page, component or styles involved), mention it once starting with "Hinweis (schon vorher):" and do not fail the change for it. \
+        If the change is on a page the screenshots do not show, judge only what is visible and never fail the change for what you cannot see.
+
+        """
+    }
+
+    private static func review(rec: MissionRecord, diff: String, checks: [VerifyCheck], dir: String, shots: [String] = []) -> VerifyReview? {
         // Nur lokal / offline: das Review macht das lokale Modell (über den Claude-Weg), nicht Codex in der Cloud
         let who = LocalFirst.shared.useLocal || LocalFirst.shared.localOnly ? AgentKind.claude : reviewer(for: rec.agent)
         let lang = Profile.languageCode == "de" ? "German" : "English"
         let checkText = checks.isEmpty ? "(no automatic checks)" : checks.map { "- \($0.name) `\($0.command)`: \($0.ok == true ? "passed" : $0.ok == false ? "FAILED" : ($0.output.hasPrefix(L("Nicht blockierend")) ? "not blocking – it already failed before this change, or only tests in files this change doesn't touch failed locally; CI runs the full suite" : "skipped"))" }.joined(separator: "\n")
         let rules = (ProjectConfig.load(dir)?.rules ?? []) + Rules.global
+        // Aufnahmen nur für Modelle, die Bilder sehen können (nicht für das lokale Modell)
+        let look = LocalFirst.shared.useLocal || LocalFirst.shared.localOnly ? [] : shots.filter { FileManager.default.fileExists(atPath: $0) }
         let prompt = """
         You are a strict senior reviewer. Another AI agent (\(rec.agentTitle)) made the changes below for this task.
         Decide if the change is correct and complete – above all: does it do what the task asks? If the task contains a \
@@ -559,6 +735,9 @@ enum Verifier {
         never fail a change because a full test run, CI result, push or PR is not shown here; only the affected tests run locally.
         Only flag real problems: bugs, regressions, missing parts of the task,
         security issues, broken rules, leftover debug code. Ignore style preferences.
+        Judge the code in the diff. Missing proof that a diff cannot contain – screenshots, logs, production checks, test output, \
+        a manual test – is never a defect: if the code is right, pass it and mention the open proof under "owner".
+        Problems that existed before this change and that the task did not ask to fix are not a reason to fail it.
         Agents never receive API keys, passwords, tokens or hosting/deployment settings, and must not deploy. If something can only be \
         finished by the owner (e.g. adding an API key in the hosting environment, logging in to a service, buying a domain, a live \
         delivery test against a real account), do NOT fail the change for it – set ok to true if the code side is done correctly and \
@@ -569,7 +748,7 @@ enum Verifier {
         \(rules.isEmpty ? "" : "\nProject rules (must be followed):\n" + rules.map { "- " + $0 }.joined(separator: "\n") + "\n")
         Automatic checks:
         \(checkText)
-
+        \(visualBrief(look, readable: who != .codex))
         Diff:
         ```diff
         \(diff.prefix(70_000))
@@ -587,7 +766,8 @@ enum Verifier {
             let oFlag = F.pick(.codex, sub: "exec", ["-o", "--output-last-message"])
             let opts = F.pick(.codex, sub: "exec", ["-s read-only", "--sandbox read-only"]) + F.pick(.codex, sub: "exec", ["--skip-git-repo-check"])
                 + (oFlag.isEmpty ? "" : oFlag + " " + Shell.quote(outFile.path))
-            let r = Proc.zsh("codex exec\(opts) -c model_reasoning_effort=high - < \(Shell.quote(file.path))",
+            let images = look.isEmpty ? "" : F.pick(.codex, sub: "exec", ["-i " + look.map(Shell.quote).joined(separator: " -i "), "--image " + look.map(Shell.quote).joined(separator: " --image ")])
+            let r = Proc.zsh("codex exec\(images)\(opts) -c model_reasoning_effort=high - < \(Shell.quote(file.path))",
                              in: dir, timeout: 600)
             answer = (try? String(contentsOf: outFile, encoding: .utf8)) ?? r.out
             try? FileManager.default.removeItem(at: outFile)
@@ -599,7 +779,8 @@ enum Verifier {
             let model = Usage.shared.isTight(.claude) ? "sonnet" : "opus"
             // 4 Runden reichten bei großen Änderungen nicht („maximum number of turns“) – dann lief alles ungeprüft durch.
             // Jetzt 12 Runden; scheitert es trotzdem, ein zweiter Versuch nur mit dem Diff im Prompt (ohne Werkzeuge).
-            var r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns 12 --allowedTools Read,Grep,Glob --strict-mcp-config < \(Shell.quote(file.path))", in: dir, timeout: 600)
+            let addDir = look.isEmpty ? "" : CLIFlags.shared.pick(.claude, ["--add-dir " + Shell.quote((look[0] as NSString).deletingLastPathComponent)])
+            var r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns 12 --allowedTools Read,Grep,Glob\(addDir) --strict-mcp-config < \(Shell.quote(file.path))", in: dir, timeout: 600)
             if claudeResult(r.out) == nil {
                 r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns 2 --strict-mcp-config < \(Shell.quote(file.path))", in: dir, timeout: 420)
             }
@@ -745,7 +926,7 @@ enum Verifier {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-diag-\(UUID().uuidString).md")
         try? prompt.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
-        let r = Proc.zsh(HelperLLM.command(model: "haiku", maxTurns: 3, file: file.path), in: dir, timeout: 120)
+        let r = Proc.zsh(HelperLLM.command(model: "haiku", maxTurns: 3, file: file.path, decision: true), in: dir, timeout: 120)
         guard let res = claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"),
               let j = try? JSONSerialization.jsonObject(with: Data(res[a...b].utf8)) as? [String: Any],
               let why = j["why"] as? String, let fix = j["fix"] as? String else { return nil }

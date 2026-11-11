@@ -18,6 +18,23 @@ extension Color {
     init(hex: UInt32) { self.init(nsColor: NSColor(hex: hex)) }
 }
 
+/// Seitenleiste in der ruhigen Oberfläche: Symbole neutral statt in Akzentfarbe, etwas mehr Luft je Zeile.
+/// Farbe bleibt dem vorbehalten, was dich braucht (Rückfrage, Fehler) oder gerade läuft.
+struct QuietSidebarLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 10) {
+            configuration.icon.foregroundStyle(.secondary).frame(width: 18, alignment: .center)
+            configuration.title
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder func quietSidebar(_ on: Bool) -> some View {
+        if on { labelStyle(QuietSidebarLabelStyle()).environment(\.defaultMinListRowHeight, 30) } else { self }
+    }
+}
+
 extension NSColor {
     convenience init(hex: UInt32) {
         self.init(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,

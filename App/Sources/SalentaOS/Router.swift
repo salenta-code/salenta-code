@@ -160,6 +160,56 @@ enum Router {
         return scored.filter { $0.1 >= 3 }.sorted { $0.1 > $1.1 }.map(\.0).filter { seen.insert($0.name).inserted }
     }
 
+    /// Auswahlliste für die Planung: zuerst die Skills, die dem Wortlaut nach passen, danach alle übrigen – jeder Name einmal.
+    /// So sieht das Entscheidungsmodell alles, was installiert ist, und nicht nur die Treffer der Stichwortsuche
+    /// (ein englisch beschriebener Skill passte sonst nie zu einem deutschen Auftrag).
+    static func skillMenu(_ raw: String, skills: [Skill], limit: Int = 140) -> [Skill] {
+        var seen = Set<String>()
+        return Array((Array(suggestSkills(raw + " " + bridge(raw), skills: skills).prefix(40)) + skills).filter { seen.insert($0.name).inserted }.prefix(limit))
+    }
+
+    /// Deutsche Auftragswörter → englische Begriffe, wie sie in Skill-Beschreibungen stehen. Nur für die Reihenfolge der Auswahlliste.
+    static let bridgeWords: [(de: String, en: String)] = [
+        ("sicherheit", "security vulnerabilities"), ("lücke", "security vulnerabilities"), ("schwachstelle", "security vulnerabilities"),
+        ("prüf", "review"), ("test", "testing tests"), ("fehler", "debug debugging"), ("absturz", "debug crash"), ("ursache", "debug debugging"),
+        ("oberfläche", "frontend design interface"), ("gestalt", "design frontend"), ("design", "design frontend"), ("seite", "page frontend"),
+        ("mobil", "mobile responsive"), ("handy", "mobile responsive"), ("barriere", "accessibility"), ("ladezeit", "performance speed"),
+        ("datenbank", "database"), ("doku", "documentation docs"), ("übersetz", "translate translation"), ("suchmaschine", "search"),
+        ("auffindbar", "search"), ("bereitstell", "deploy deployment"), ("veröffentlich", "deploy release"), ("architektur", "architecture"),
+        ("aufräum", "refactor simplify"), ("vereinfach", "simplify refactor"), ("plan", "plan planning"), ("recherch", "research"),
+    ]
+    static func bridge(_ raw: String) -> String {
+        let t = raw.lowercased()
+        return bridgeWords.filter { t.contains($0.de) }.map(\.en).joined(separator: " ")
+    }
+
+    /// Die Auswahlliste als Text: die passendsten Skills mit Beschreibung, alle übrigen mit Namen – nach Quelle gruppiert.
+    /// Nichts Installiertes bleibt verborgen, und die Liste bleibt auch bei mehreren hundert Skills kurz.
+    static func skillCatalogText(_ raw: String, skills: [Skill], detailed: Int = 70, describe: Int = 110) -> String {
+        let menu = skillMenu(raw, skills: skills, limit: .max)
+        guard !menu.isEmpty else { return "(none)" }
+        var text = menu.prefix(detailed).map { "- \($0.name) [\($0.source)]: \(String($0.description.prefix(describe)))" }.joined(separator: "\n")
+        let rest = Array(menu.dropFirst(detailed))
+        if !rest.isEmpty {
+            text += "\nAll other installed skills, names only (pick one by its exact name when the name clearly fits the task):"
+            for source in Array(Set(rest.map(\.source))).sorted() {
+                text += "\n[\(source)] " + rest.filter { $0.source == source }.map(\.name).joined(separator: ", ")
+            }
+        }
+        return text
+    }
+
+    /// Kann dieser Agent den Skill laden? Die Quelle sagt, wo er liegt (Claude Code, Plugin, Codex, Junie, gemeinsamer Agents-Ordner).
+    static func loadable(_ s: Skill, by agent: AgentKind?) -> Bool {
+        guard let agent else { return false }
+        switch agent.harness {
+        case .claude: return ["Claude Code", "Plugin", "Agents"].contains(s.source)
+        case .codex: return ["Codex", "Agents"].contains(s.source)
+        case .junie: return ["Junie", "Agents"].contains(s.source)
+        default: return s.source == "Agents"
+        }
+    }
+
     static func project(for raw: String, projects: [Project]) -> Project? {
         // Agent-Namen zählen nicht als Projekt („mit Salenta Harness“ ist kein Hinweis auf das Projekt „salenta“)
         var t = raw.lowercased()
@@ -260,7 +310,8 @@ struct PhaseBadge: View {
     }
 }
 
-// MARK: - KI-Wahl: ein kurzer Blick von Claude Haiku auf den Auftrag (Agent, Modell, Projekt, Skills)
+// MARK: - KI-Wahl: ein kurzer Blick des Entscheidungsmodells auf den Auftrag (Agent, Modell, Denktiefe, Projekt, Skills) –
+// das stärkste Modell, das du schon hast (Claude oder Codex); ohne beides der Salenta Harness
 
 struct AIRouteDecision {
     var target: MissionTarget
@@ -291,27 +342,37 @@ enum AIRouter {
         let installed = installed.filter { Billing.autoOK($0) }
         let fallbackAI = AIRouteDecision(target: fallback.target, model: defaultModel(for: fallback.target, text: text), effort: nil,
                                          directory: fallback.directory, skills: [], reason: fallback.reason)
-        guard enabled, installed.contains(.claude) else {
-            log("skipped: enabled=\(enabled) claude=\(installed.contains(.claude))")
+        // Entscheiden kann jedes Modell, das schon da ist (Claude, Codex, sonst der Salenta Harness) – nicht nur Claude
+        guard enabled, installed.contains(.claude) || HelperLLM.currentDecider != nil else {
+            log("skipped: enabled=\(enabled) decider=\(HelperLLM.deciderLabel)")
             return completion(fallbackAI)
         }
 
         let projList = projects.prefix(60).map { "- \($0.name): \($0.path)" }.joined(separator: "\n")
-        let preSkills = Router.suggestSkills(text, skills: skills).prefix(25)
-        let skillList = (preSkills.isEmpty ? Array(skills.prefix(60)) : Array(preSkills))
-            .map { "- \($0.name): \(String($0.description.prefix(110)))" }.joined(separator: "\n")
-        let agentsList = ([
-            installed.contains(.claude) ? "claude – Claude Code: build features, refactor, larger code changes, new files" : nil,
-            installed.contains(.junie) ? "junie – JetBrains Junie: debugging, find the root cause of a bug and fix it, failing tests" : nil,
-            installed.contains(.codex) ? "codex – OpenAI Codex: code review, double-checking a diff, writing tests, second opinion" : nil,
-            "os – OS Agent (runs on Claude): everything that is not coding – mail, calendar, CRM/integrations (MCP), research, browser tasks, writing texts, planning; can also delegate coding itself when a task mixes both",
-        ].compactMap { $0 }
-            + [AgentKind.cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .deepseek, .harness, .openrouter, .ollama].filter { installed.contains($0) }.map { "\($0.rawValue) – \($0.title): \($0.strength)" })
+        // Alle installierten Skills stehen zur Wahl – die mit Wortüberlappung zuerst, danach der Rest.
+        let skillList = Router.skillCatalogText(text, skills: skills)
+        // Jeder installierte Agent mit Stärken, den Modellen seiner CLI und dem Stand seines Limits: Das Entscheidungsmodell
+        // vergleicht alle, statt einen festen Favoriten zu nehmen.
+        let order: [AgentKind] = [.claude, .codex, .junie, .cursor, .opencode, .gemini, .grok, .kiro, .pi, .kimi, .deepseek, .harness, .openrouter, .ollama]
+        var offered: [AgentKind: Set<String>] = [:]
+        func modelsLine(_ a: AgentKind) -> String {
+            if a == .claude { return " · models: opus (strongest), sonnet (default), haiku (small)" }
+            let list = a == .ollama ? [LocalFirst.shared.model].compactMap { $0 }.map { ModelOption(value: $0, label: $0) } : ModelCatalog.shared.latest(for: a, limit: 6)
+            offered[a] = Set(list.map(\.value))
+            return list.isEmpty ? "" : " · models: " + list.map { $0.value + ($0.hint.isEmpty ? "" : " (" + $0.hint + ")") }.joined(separator: ", ")
+        }
+        func limitLine(_ a: AgentKind) -> String {
+            let p = Usage.shared.pressure(a)
+            return p >= 1 ? " · LIMIT REACHED" : p >= 0.05 ? " · \(Int(p * 100)) % of its limit used" : ""
+        }
+        let agentsList = (order.filter { installed.contains($0) }.map { "\($0.rawValue) – \($0.title): \($0.strength)\(modelsLine($0))\(limitLine($0))" }
+            + ["os – OS Agent (runs on Claude): everything that is not coding – mail, calendar, CRM/integrations (MCP), research, browser tasks, writing texts, planning; can also delegate coding itself when a task mixes both"])
             .joined(separator: "\n")
+        let offeredModels = offered
 
         let ext = ExtensionStore.shared
-        let installedExt = ext.installedList.filter { !$0.usage.isEmpty }
-            .map { "- \($0.id): \($0.purpose.prefix(100))" }.joined(separator: "\n")
+        let installedExt = ext.installedList.filter { !$0.howTo.isEmpty }
+            .map { "- \($0.id) (\($0.kind.rawValue)\($0.id.hasPrefix("custom:") ? ", added by the user" : "")\($0.usable(claudeBased: false) ? "" : ", claude/os only")): \($0.purpose.prefix(110))" }.joined(separator: "\n")
         let missingExt = ExtensionCatalog.all.filter { !ext.isInstalled($0) && !$0.install.isEmpty && !$0.when.isEmpty }
             .map { "- \($0.id): \($0.purpose.prefix(90))" }.joined(separator: "\n")
         let usageHint = Usage.shared.routerHint
@@ -326,23 +387,27 @@ enum AIRouter {
         \(agentsList)
 
         Models (field "model"):
-        - for claude and os: "opus" only for hard tasks (architecture, multi-file features, tricky bugs, important texts); \
+        - for claude and os: "opus" for hard tasks (architecture, multi-file features, tricky bugs, important texts); \
         otherwise leave empty (the agent's own default)
+        - for every other agent: an exact model id from that agent's list above when one model is clearly the best for this \
+        task; otherwise leave empty (the agent's own default)
         - "effort" (claude and codex): "low" for trivial/mechanical tasks, "medium" for almost everything (default – Opus needs no more),
           "high" only for genuinely hard bugs, deep reviews, security or architecture. Never max/xhigh.
-        - for junie: leave model empty
 
         Projects on this Mac (pick "directory" only for coding agents, must be one of these paths or empty):
         \(projList.isEmpty ? "(none)" : projList)
 
-        Installed skills (pick 0–3 that clearly help, exact names, else empty):
-        \(skillList.isEmpty ? "(none)" : skillList)
+        Installed skills – everything the user has; the source in brackets says which agent can load it \
+        (Claude Code, Plugin, Agents → claude and os · Codex, Agents → codex). Go through the whole list and pick every \
+        skill that clearly helps THIS task, exact names, up to 5 (empty if none fits):
+        \(skillList)
 
         Connected tools/integrations (MCP servers). Pick in "tools" ONLY the ones this task really needs \
         (for os and claude; "browser" = web browser automation). Fewer tools = faster and more focused:
         \(toolList)
 
-        Installed extensions (Claude Code plugins/tools). Pick in "extensions" the ones this task should use (claude/os only):
+        Installed extensions, including repos the user added himself (those marked "claude/os only" do nothing for other \
+        agents). Pick in "extensions" every one this task should use, by id, up to 4:
         \(installedExt.isEmpty ? "(none)" : installedExt)
 
         Not installed but available. Put in "suggest" (max 2) only those that would clearly make THIS task better or cheaper:
@@ -355,13 +420,17 @@ enum AIRouter {
         For claude above 60 %, use "opus" only when really necessary.
         \(history.isEmpty ? "" : "\n" + history + "\nPrefer agents that worked well for this kind of task, and the ones the user picks himself.\n")
         Decision rules:
-        - Finding out why something fails, bugs, errors, crashes, failing tests → junie (if listed), even if only analysis is asked.
-        - Reviewing / checking changes or code quality → codex (if listed).
-        - Building or changing code, new features, refactoring → claude.
         - No code involved (mail, calendar, CRM, research, texts, browser, planning) → os.
+        - Code: there is no fixed favourite. Compare ALL coding agents listed above, with their models, and pick the agent + \
+        model that is strongest for THIS task. Weigh what the task needs (building, finding a root cause, review, UI work, \
+        very large context, long multi-step work), the strengths and models listed, what worked here before, and how much \
+        of each limit is used. If two are equally good, take the one with more of its limit left.
         - If a project is named or obvious, set "directory" for coding agents.
-        - Skills and extensions: prefer 0–1, never more than 3. Only pick one if its description clearly matches THIS task's \
-        domain and technology. Never pick marketing, ads, sales or office skills for coding tasks, and never coding skills for mail/CRM tasks.
+        - Skills and extensions are part of the plan – decide them together with agent and model. Combine several when they \
+        cover different needs of the task (for example a token saver + a design skill + a test skill, or a docs helper + a \
+        security plugin). Pick one only if its description clearly matches THIS task's domain and technology – nothing that \
+        merely sounds related. Never pick marketing, ads, sales or office skills for coding tasks, and never coding skills \
+        for mail/CRM tasks. If a skill or extension is decisive for the task, prefer an agent that can load it.
         - "complexity": trivial (one obvious edit or a short text), small (one file, clear change), medium (several files or \
         some investigation), large (feature, refactor, debugging across the codebase, anything risky).
         - "localOK": true ONLY if a small local model could finish it reliably in one go: trivial/small, clearly specified, \
@@ -378,9 +447,10 @@ enum AIRouter {
             let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-route-\(UUID().uuidString).txt")
             try? prompt.write(to: file, atomically: true, encoding: .utf8)
             defer { try? FileManager.default.removeItem(at: file) }
+            let decidedBy = HelperLLM.deciderLabel
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            p.arguments = ["-l", "-i", "-c", HelperLLM.command(model: "haiku", maxTurns: 3, file: file.path)]   // -i: PATH aus .zshrc (claude, codex)
+            p.arguments = ["-l", "-i", "-c", HelperLLM.command(model: "haiku", maxTurns: 3, file: file.path, decision: true)]   // -i: PATH aus .zshrc (claude, codex)
             p.currentDirectoryURL = Paths.support
             var env = ProcessInfo.processInfo.environment
             env["AOS_SOURCE"] = "router"
@@ -393,9 +463,15 @@ enum AIRouter {
             let done = DispatchSemaphore(value: 0)
             do { try p.run() } catch { log("start failed: \(error)"); DispatchQueue.main.async { completion(fallbackAI) }; return }
             DispatchQueue.global().async { out = pipe.fileHandleForReading.readDataToEndOfFile(); done.signal() }
-            if done.wait(timeout: .now() + 25) == .timedOut { p.terminate(); log("timeout"); DispatchQueue.main.async { completion(fallbackAI) }; return }
+            if done.wait(timeout: .now() + 40) == .timedOut { p.terminate(); log("timeout"); DispatchQueue.main.async { completion(fallbackAI) }; return }
             while p.isRunning { usleep(20_000) }  // kein waitUntilExit: das dreht den RunLoop und kann SwiftUI mitten im Zeichnen abstürzen lassen
-            let parsed = parse(out, projects: projects, skills: skills, installed: installed, tools: tools)
+            var parsed = parse(out, projects: projects, skills: skills, installed: installed, tools: tools, models: offeredModels)
+            // Sichtbar machen, wer entschieden hat
+            if parsed != nil, HelperLLM.harnessDecides {
+                let text = String(decoding: out, as: UTF8.self)
+                let who = text.contains("\"via\":\"harness\"") ? "Salenta Harness" : text.contains("\"via\": \"codex\"") || text.contains("\"via\":\"codex\"") ? "Codex" : decidedBy
+                if !who.isEmpty { parsed!.reason += " · " + L("entschieden von") + " " + who }
+            }
             log("exit \(p.terminationStatus) · \(parsed == nil ? "FALLBACK" : "ok \(parsed!.target.rawValue) \(parsed!.model ?? "-")")\n"
                 + String(decoding: out.prefix(1500), as: UTF8.self) + "\n"
                 + String(decoding: errPipe.fileHandleForReading.availableData.prefix(800), as: UTF8.self))
@@ -412,7 +488,7 @@ enum AIRouter {
         else { try? line.write(to: url, atomically: true, encoding: .utf8) }
     }
 
-    private static func parse(_ data: Data, projects: [Project], skills: [Skill], installed: Set<AgentKind>, tools: [String]) -> AIRouteDecision? {
+    private static func parse(_ data: Data, projects: [Project], skills: [Skill], installed: Set<AgentKind>, tools: [String], models: [AgentKind: Set<String>] = [:]) -> AIRouteDecision? {
         // claude --output-format json → {"result": "<antwort>"}
         guard let outer = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = outer["result"] as? String,
@@ -423,29 +499,43 @@ enum AIRouter {
         if let k = target.agent, target != .osAgent, !installed.contains(k) { target = .osAgent }
         // Die Auswahl darf nur hochstufen, nie herunter: ohne Angabe läuft der Agent mit seinem eigenen Standard –
         // genau wie im Terminal. (Früher wählte die Vorauswahl oft „sonnet“/„haiku“ bzw. niedrige Denktiefe → schwächere Ergebnisse.)
-        let model = (j["model"] as? String).flatMap { $0.lowercased() == "opus" ? "opus" : nil }
+        // Andere Agents: genau ein Modell aus der Liste, die ihre CLI gerade anbietet – alles andere fällt auf ihren Standard zurück.
+        let rawModel = (j["model"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var model: String? = rawModel.lowercased() == "opus" ? "opus" : nil
+        if target != .claude, target != .osAgent { model = pickModel(rawModel, for: target.agent, offered: models) }
         let effort: String = (j["effort"] as? String).map { $0.lowercased() }.flatMap { ["low", "medium", "high"].contains($0) ? $0 : nil } ?? "medium"
         let dirRaw = (j["directory"] as? String) ?? ""
         let dir = projects.first { $0.path == dirRaw }?.path
-        let names = Set(skills.map(\.name))
-        let chosen = (j["skills"] as? [String] ?? []).filter { names.contains($0) }.prefix(3)
+        // Nur Skills, die der gewählte Agent auch laden kann – bis zu fünf, damit sich mehrere ergänzen können
+        var seenSkills = Set<String>()
+        let chosen = (j["skills"] as? [String] ?? []).filter { n in skills.contains { $0.name == n && Router.loadable($0, by: target.agent) } && seenSkills.insert(n).inserted }.prefix(5)
         let reason = (j["reason"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let known = Set(tools.map { $0.lowercased() })
         let pickedTools: [String]? = (j["tools"] as? [String]).map { $0.map { $0.lowercased() }.filter { known.contains($0) } }
-        let pickedExt = (j["extensions"] as? [String] ?? []).filter { id in ExtensionStore.shared.installedList.contains { $0.id == id } }
+        let claudeBased = target == .claude || target == .osAgent || target.agent?.harness == .claude
+        let pickedExt = Array((j["extensions"] as? [String] ?? []).filter { id in
+            ExtensionStore.shared.installedList.contains { $0.id == id && !$0.howTo.isEmpty && $0.usable(claudeBased: claudeBased) }
+        }.prefix(4))
         let suggested = (j["suggest"] as? [String] ?? []).filter { id in ExtensionCatalog.find(id).map { !ExtensionStore.shared.isInstalled($0) } ?? false }
         let complexity = (j["complexity"] as? String).flatMap { ["trivial", "small", "medium", "large"].contains($0.lowercased()) ? $0.lowercased() : nil }
         let localOK = (j["localOK"] as? Bool) ?? (j["localOK"] as? String).map { $0.lowercased() == "true" }
         return AIRouteDecision(target: target,
-                               model: (target == .claude || target == .osAgent) ? model : nil,
+                               model: model,
                                effort: (target == .codex || target == .claude) ? effort : nil,
                                directory: (target == .osAgent) ? nil : dir,
                                skills: Array(chosen), reason: reason.isEmpty ? L("Von der KI gewählt") : reason,
                                tools: (target == .osAgent || target == .claude) && !tools.isEmpty ? pickedTools : nil,
-                               extensions: (target == .osAgent || target == .claude) ? pickedExt : nil,
+                               extensions: pickedExt,
                                suggest: Array(suggested.prefix(2)),
                                complexity: complexity, localOK: localOK,
                                doneWhen: (j["done_when"] as? String).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : String($0.prefix(300)) })
+    }
+
+    /// Modellwunsch für einen Agent außer Claude: gilt nur, wenn er zum Agent passt und in dessen angebotener Liste steht.
+    static func pickModel(_ raw: String, for agent: AgentKind?, offered: [AgentKind: Set<String>]) -> String? {
+        guard let agent, !raw.isEmpty, !["opus", "sonnet", "haiku"].contains(raw.lowercased()),
+              ModelCatalog.fits(raw, agent), offered[agent]?.contains(raw) == true else { return nil }
+        return raw
     }
 
     /// Ohne KI: Standardmodell aus der Länge/Art des Auftrags.

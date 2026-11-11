@@ -33,6 +33,29 @@ struct Extension: Identifiable, Hashable {
     var essential = false
 
     var pluginKey: String? { kind == .plugin ? (install.components(separatedBy: "plugin install ").last?.components(separatedBy: " ").first) : nil }
+
+    /// Wie ein Agent diese Erweiterung im Auftrag nutzt. Selbst hinzugefügte Repos haben keinen festen Satz – für sie entsteht er
+    /// aus Art und Beschreibung, damit Agentenwahl, Betreuer und Automatik sie genauso einplanen wie die kuratierten.
+    var howTo: String {
+        if !usage.isEmpty { return usage }
+        guard id.hasPrefix("custom:") else { return "" }
+        let what = purpose.isEmpty || purpose == L("Ohne Beschreibung im Repo.") ? "" : " (" + String(purpose.prefix(140)) + ")"
+        switch kind {
+        case .plugin: return String(format: L("Das Plugin „%@“ ist installiert%@ – nutze seine Befehle und Skills überall dort, wo sie zu diesem Auftrag passen."), name, what)
+        case .skill: return String(format: L("Der Skill /%@ ist installiert%@ – nutze ihn, wo er zu diesem Auftrag passt."), name, what)
+        case .mcp: return String(format: L("Der MCP-Server „%@“ ist verbunden%@ – nutze seine Werkzeuge, statt es von Hand zu machen."), name, what)
+        case .cli, .tool: return String(format: L("Das Werkzeug „%@“ ist installiert%@ – nutze es, wo es hilft."), name, what)
+        }
+    }
+
+    /// Plugins und Skills kennt nur Claude Code (und was darauf läuft), MCP-Server und Werkzeuge jeder Agent.
+    /// (Ein Werkzeug, das nur ein Befehl von Claude Code oder ein anderer Agent ist, zählt für fremde Agents nicht.)
+    func usable(claudeBased: Bool) -> Bool {
+        if claudeBased { return true }
+        guard kind == .mcp || kind == .tool else { return false }
+        let u = usage.lowercased()
+        return !(u.contains("/" + id.lowercased()) || u.contains("claude ") || u.contains("junie"))
+    }
 }
 
 enum ExtensionCatalog {
@@ -260,7 +283,7 @@ final class ExtensionStore: ObservableObject {
     func matches(_ text: String) -> (use: [Extension], suggest: [Extension]) {
         let t = text.lowercased()
         let hits = ExtensionCatalog.all.filter { e in e.when.contains { t.contains($0) } }
-        return (hits.filter { isInstalled($0) && !$0.usage.isEmpty }, hits.filter { !isInstalled($0) && !$0.install.isEmpty })
+        return (hits.filter { isInstalled($0) && !$0.howTo.isEmpty }, hits.filter { !isInstalled($0) && !$0.install.isEmpty })
     }
 
     var installedList: [Extension] { ExtensionCatalog.all.filter { isInstalled($0) } }
@@ -436,13 +459,13 @@ struct ProposalCard: View {
             HStack(spacing: Grid.m) {
                 Menu {
                     ForEach(visible.filter { $0 != .auto }) { t in
-                        Button { decision.target = t; if t != .claude && t != .osAgent { decision.model = nil } } label: { Label(t.title, systemImage: t.symbol) }
+                        Button { decision.target = t; if !(t == .claude || t == .osAgent) || !["opus", "sonnet", "haiku"].contains(decision.model ?? "") { decision.model = nil } } label: { Label(t.title, systemImage: t.symbol) }
                     }
                 } label: { Label(decision.target.title, systemImage: decision.target.symbol).font(.callout.weight(.semibold)) }
                     .menuStyle(.borderlessButton).fixedSize()
                 let agent = decision.target == .osAgent ? AgentKind.claude : decision.target.agent
                 let chosen = agent.map { ModelCatalog.selected(for: $0) } ?? ""
-                Label(chosen.isEmpty ? (decision.model?.capitalized ?? L("Standardmodell")) : chosen, systemImage: "cpu").font(.callout)
+                Label(chosen.isEmpty ? (decision.model.map { ["opus", "sonnet", "haiku"].contains($0) ? $0.capitalized : $0 } ?? L("Standardmodell")) : chosen, systemImage: "cpu").font(.callout)
                 if let e = decision.effort { Label(L("Denktiefe ") + e, systemImage: "brain").font(.callout) }
                 if decision.target != .osAgent && decision.target != .chatgpt && decision.target != .claudeWeb {
                     // Projekt sichtbar und änderbar – oder lösen
@@ -492,7 +515,7 @@ struct ProposalCard: View {
                         if ext.busy.contains(e.id) { ProgressView().controlSize(.small) } else {
                             Button(e.install.hasPrefix("open ") ? L("Anleitung") : L("Installieren")) {
                                 ext.install(e) { ok in
-                                    if ok, !e.usage.isEmpty { decision.extensions = (decision.extensions ?? []) + [e.id] }
+                                    if ok, !e.howTo.isEmpty { decision.extensions = (decision.extensions ?? []) + [e.id] }
                                 }
                             }.controlSize(.small)
                         }

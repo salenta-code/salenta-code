@@ -67,14 +67,14 @@ struct AgenticOSApp: App {
             SidebarCommands()
             CommandGroup(after: .appInfo) {
                 if Paths.isDevBuild {
-                    Button("Salenta Code neu bauen und starten") {
-                        let app = Paths.source.appendingPathComponent("App").path
-                        let log = Paths.source.appendingPathComponent("logs/rebuild.log").path
-                        Shell.spawn("mkdir -p \(Shell.quote((log as NSString).deletingLastPathComponent)) && cd \(Shell.quote(app)) && ./build.sh --open > \(Shell.quote(log)) 2>&1")
-                    }
+                    Button("Salenta Code neu bauen und starten") { DevBridge.rebuild() }
                     Button("Effizienz-Bericht schreiben") { _ = EfficiencyAudit.write() }
                     Button("Volllast-Test (90 s)") { StressTest.run() }
                     Button("Erfolgsquote auswerten") { _ = SuccessReport.write() }
+                    Button("Salenta Harness prüfen") { HarnessCheck.run() }
+                    Button("Computer-Steuerung live testen (Rechner)") { HarnessCheck.live() }
+                    Button("Design-Prüfung testen") { Verifier.designProbe() }
+                    Button("Browser-Steuerung live testen") { HarnessCheck.browserLive() }
                 } else {
                     Button("Nach Updates suchen …") { Updater.shared.check(manual: true) }
                 }
@@ -188,6 +188,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         hotKey = HotKey { AppDelegate.toggleMainWindow() }
+        DevBridge.start()
+        // Installierte Erweiterungen gleich beim Start einlesen – sonst kennt die Agentenwahl sie beim ersten Auftrag noch nicht
+        _ = ExtensionStore.shared
     }
 
     /// Fenster schließen beendet nicht: Agents laufen weiter, Menüleiste bleibt.

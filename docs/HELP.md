@@ -41,13 +41,21 @@ Agents may change files in the project and run common commands (tests, build, li
 
 Under **Settings › Rules** you set your own block rules (globally or per project). In the menu bar you can turn on “Let agents work without asking” for a limited time – block rules still apply.
 
+You set up **Salenta Harness** (our own agent) under **Settings › Models**:
+
+- **How it works:** “On its own” only asks for risky steps. “With approval” also shows you every command that can change something.
+- **Browser control:** open, read, click and type on pages. **Computer control:** open apps, read windows, click, type and use menus. Before first use Salenta Code asks for how long (15 minutes, 1 hour, all day). Sending, buying, paying, deleting and posting always ask one by one – even in auto mode.
+- For computer control, allow Salenta Code once under System Settings › Privacy & Security › Accessibility and confirm the prompt about “System Events”.
+- **Check harness** tests key, model, tools, browser and computer control on your Mac – without changing anything.
+
 ## Reviewing and taking over changes
 
 Every coding task works in its **own working copy** of your project. Your project folder stays untouched until you take over – so several agents can work at the same time.
 
 - `.env` files, local settings and `node_modules` come along automatically so building and testing works. Add more files to a `.worktreeinclude` file in the project (one per line).
-- At the end you see **Changes** with all files and the diff. Configured checks (tests, build) run automatically; a second agent can review if you like.
+- At the end you see **Changes** with all files and the diff. Configured checks (tests, build) run automatically; a second agent can review if you like. For UI changes Salenta Code takes screenshots at desktop and true phone width (390 px) and the review looks at them – broken layouts fail. Whether content runs past the edge is measured. Anything that was already red or broken before the task does not block.
 - **Take over** – the changes go into your branch. Salenta Code then asks whether to **also upload them to GitHub** (normal push, never force).
+- **Commits belong to your GitHub account:** in GitHub projects Salenta Code links its own commits and those of the helpers to your account (via GitHub's noreply address; your git configuration stays untouched). Otherwise preview services such as Vercel block the pull request.
 - **Pull request …** – one click for commit, push and pull request. Title, description and changelog are already written (from the task and the changes), and you can edit everything. In the same window you see every changed file with its diff, choose **As draft** and the **base**: your branch – or another task's branch, so the PRs build on each other (stacked). Your GitHub sign-in (`gh`) is used.
 - **Push more:** while the PR is open, the task stays open. If the agent keeps working, **Push more** uploads the new changes to the same PR – with a rewritten description if you like. **Close** cleans up the working copy; PR and branch stay on GitHub.
 - **Discard** – the working copy is deleted, your project stays as it was.
@@ -59,7 +67,9 @@ Under **Projects**, a blue arrow with a number shows how many commits aren't on 
 - **Projects** shows all your projects with branch, open changes, CI status, live preview, terminal and rules. Every colored status explains in one sentence what's wrong and has a button to fix it.
 - **Continue** opens a new task directly in that project.
 - **Project knowledge** (brain icon): what all agents have learned about the project – pinned entries are given to every agent.
-- **Project steward:** hand a project over for stewardship. A coordinator plans tasks, starts helpers, watches CI and reports when it needs you. You decide how much it may do on its own.
+- **Decision model:** before every task the strongest model you already have (Claude or Codex, whichever is available) decides which agent runs it, with which model and thinking depth. No extra key is needed. Can be switched off under Settings › Models – then a small fast model decides.
+- **Agent, model, skills and extensions in one go:** The decision model has no fixed favourite. It compares all installed agents (Claude Code, Codex, Cursor and others) with the models their CLI currently offers and the state of their limits, and takes the combination that is strongest for this task. It also goes through all installed skills and extensions – including the repos you added yourself under Extensions – and hands the agent the ones that fit the task: several together when they complement each other (for example a token saver, a design skill and a browser test). An agent only gets what it can load: plugins and Claude skills go to Claude Code, MCP servers to every agent. When Claude Code runs on its own, the instructions of the chosen skills are placed directly in the task (up to six, chosen ones first); anything not loaded is stated there. The proposal before the start shows agent, model, skills and extensions, and you can remove each one. It only picks pay-per-use agents if you allow that under Costs. The project steward plans its helpers by the same rule.
+- **Project steward:** hand a project over for stewardship. It works through longer orders (numbered lists too) in your order and reports progress per point. If a result already is a pull request, the button reads “Merge PR #…” and merges exactly that PR. Its helpers run unattended: they wait at most four minutes for an approval, then continue without that step. Pay-per-use agents (e.g. Salenta Harness) are only used when you name the agent in your message. A coordinator plans tasks, starts helpers, watches CI and reports when it needs you. You decide how much it may do on its own.
 
 ## Agents, skills and extensions
 

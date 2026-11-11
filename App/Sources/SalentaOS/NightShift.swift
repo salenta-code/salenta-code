@@ -190,7 +190,7 @@ final class NightShift: ObservableObject {
         if rec.worktree != nil {
             if rec.verify == nil && Date().timeIntervalSince(ended) < 90 { return nil }
             if let v = rec.verify, v.finished == nil { return nil }
-            if rec.verify?.passed == false && (rec.fixRound ?? 0) < 1 && Date().timeIntervalSince(ended) < 120 { return nil }   // Autokorrektur kommt gleich
+            if rec.verify?.passed == false && Verifier.autoFix && (rec.fixRound ?? 0) < 2 && Date().timeIntervalSince(ended) < 240 { return nil }   // Autokorrektur kommt gleich (bis zu zwei Runden)
         }
         if rec.ok == false { return (.failed, rec.digest?.summary ?? L("abgebrochen"), cur) }
         if rec.verify?.passed == false { return (.red, rec.verify?.diagnosis?.why ?? L("Prüfung rot"), cur) }

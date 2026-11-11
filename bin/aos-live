@@ -107,6 +107,8 @@ def tool_line(name, inp):
         return MAGENTA, "🤖", f"Startet Helfer: {short(inp.get('description', ''), 80)}"
     if name == "TodoWrite":
         return MAGENTA, "🗒 ", "Plan aktualisiert"
+    if name == "Skill":
+        return MAGENTA, "🪄", f"Skill geladen: {short(str(inp.get('skill') or inp.get('command') or ''), 80)}"
     if name.startswith("mcp__"):
         server = name.split("__")[1] if name.count("__") >= 2 else "MCP"
         return MAGENTA, "🔌", f"{server}: {n}"

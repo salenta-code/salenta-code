@@ -193,6 +193,7 @@ struct MissionComposer: View {
     @AppStorage("mission.parallel") private var parallel = 1
     /// An wen geht der Auftrag? "auto" = Betreuer, wenn das Projekt einen hat · "none" = direkt an einen Agent · sonst Betreuer-ID
     @State private var stewardPick = "auto"
+    @AppStorage("ui.calm") private var calm = true
     @ObservedObject private var stewardStore = Steward.shared
     @AppStorage("local.only") private var localOnly = false
     @FocusState private var focused: Bool
@@ -436,7 +437,8 @@ struct MissionComposer: View {
             plusMenu
             projectChip(small: small)
             accessMenu
-            if fit != .slim, !stewardStore.projects.isEmpty { stewardMenu(small: small) }
+            // Ruhig: „Betreuer: auto“ steht nicht dauernd in der Leiste – die Wahl bleibt im Plus-Menü, eine bewusste Wahl wird angezeigt
+            if fit != .slim, !stewardStore.projects.isEmpty, !calm || stewardPick != "auto" { stewardMenu(small: small) }
             Spacer(minLength: Grid.s)
             Picker("", selection: Binding(get: { asking }, set: { if $0 { askMode = true; forceBuild = false } else { askMode = false; forceBuild = looksLikeQuestion } })) {
                 if small {
@@ -450,11 +452,12 @@ struct MissionComposer: View {
             .pickerStyle(.segmented).labelsHidden().fixedSize()
             .help(L("Fragen: Der Agent liest den Code und antwortet – er ändert nichts. Bauen: Er setzt den Auftrag um."))
             agentMenu(small: small)
-            if fit != .slim { modelMenu }
+            if fit != .slim, !calm || target != .auto { modelMenu }
             MicButton { t in text += (text.isEmpty || text.hasSuffix(" ") || text.hasSuffix("\n") ? "" : " ") + t; focused = true }
             sendButton
         }
         .lineLimit(1)
+        .tint(calm ? Color.secondary : nil)
     }
 
     private var plusMenu: some View {
@@ -787,8 +790,10 @@ struct MissionComposer: View {
         if question, !qDir.isEmpty, d.target != .codex { d.target = .claude }
         let auto = self.target == .auto && !plain
         // Genutzte Erweiterungen in den Auftrag (nur Claude-basierte Agents kennen die Plugins)
-        if let ext = d.extensions, !ext.isEmpty, d.target == .claude || d.target == .osAgent {
-            let lines = ext.compactMap { ExtensionCatalog.find($0)?.usage }.filter { !$0.isEmpty }
+        if let ext = d.extensions, !ext.isEmpty {
+            // Plugins und Skills kennt nur Claude Code, MCP-Server und Werkzeuge jeder Agent – auch selbst hinzugefügte Repos
+            let claudeBased = d.target == .claude || d.target == .osAgent || d.target.agent?.harness == .claude
+            let lines = ext.compactMap { ExtensionCatalog.find($0) }.filter { $0.usable(claudeBased: claudeBased) }.map(\.howTo).filter { !$0.isEmpty }
             if !lines.isEmpty { body += "\n\n" + L("Nutze dafür:") + "\n" + lines.map { "- " + $0 }.joined(separator: "\n") }
         }
         let target = d.target
@@ -815,6 +820,7 @@ struct MissionComposer: View {
         let skills = self.skills.union(d.skills)
         if !skills.isEmpty, target.agent != nil {
             body += "\n\nNutze dafür diese Skills: " + skills.sorted().map { target == .claude || target == .osAgent ? "/\($0)" : $0 }.joined(separator: ", ")
+            if skills.count > 1 { body += "\n" + L("Kombiniere sie: Wende jeden in dem Teil der Arbeit an, zu dem er passt.") }
         }
         let reason = d.reason
         let firstLine = body.components(separatedBy: .newlines).first ?? body
@@ -871,11 +877,20 @@ struct MissionComposer: View {
             }
             let group = kinds.count > 1 ? UUID().uuidString : nil
             for (i, agent) in kinds.enumerated() {
-                let tools = (agent == .claude && runMode == .autonom) ? (d.tools ?? []).filter { $0 != "browser" } : []
+                // Salenta Harness bekommt die gewählten Anbindungen wie Claude Code – und den Browser, wenn es um Oberflächen geht
+                // oder der Auftrag ihn braucht (jede Steuerung läuft über deine Freigabe mit Zeitlimit).
+                let harnessBrowser = agent == .harness && HarnessSetup.browser && !plan && !ask
+                    && ((d.tools ?? []).contains("browser") || WorkPhases.isUI(body.lowercased()) || HarnessSetup.wantsBrowser(body))
+                let tools = (agent == .claude && runMode == .autonom) ? (d.tools ?? []).filter { $0 != "browser" }
+                    : agent == .harness ? (d.tools ?? []).filter { $0 != "browser" } + (harnessBrowser ? ["browser"] : []) : []
                 let begin: (URL?) -> Void = { cfg in
                     let s = agents.start(agent, in: dir, prompt: prompt, taskID: i == 0 ? task.id : nil, mode: runMode,
                                          label: kinds.count > 1 ? "\(title) · \(agent.title)" : title,
-                                         model: ModelCatalog.selected(for: agent).isEmpty ? (agent == .claude || agent == .ollama ? model : nil) : ModelCatalog.selected(for: agent),
+                                         // Das gewählte Modell gilt für den Agent, für den es gewählt wurde – und nur, wenn dessen CLI es kennt
+                                         model: ModelCatalog.selected(for: agent).isEmpty
+                                             ? ((agent == .claude || agent == .ollama || i == 0)
+                                                ? model.flatMap { !$0.isEmpty && ModelCatalog.fits($0, agent) && ModelCatalog.listed($0, agent) ? $0 : nil } : nil)
+                                             : ModelCatalog.selected(for: agent),
                                          effort: (agent == .codex || agent == .claude) ? (effort ?? "medium") : nil,
                                          codingConfig: cfg, planOnly: plan || ask || access == "read", fullAccess: access == "full", question: ask)
                     if let cfg { try? FileManager.default.removeItem(at: cfg) }
@@ -897,7 +912,7 @@ struct MissionComposer: View {
                     begin(nil)
                 } else {
                     Task {
-                        let cfg = await OSAgent.prepareConfig(hub: hub, only: tools, browser: false, source: "claude")
+                        let cfg = await OSAgent.prepareConfig(hub: hub, only: tools, browser: tools.contains("browser"), source: agent == .harness ? "harness" : "claude")
                         await MainActor.run { begin(cfg) }
                     }
                 }

@@ -45,9 +45,9 @@ enum OSAgent {
         skills in the delegated task ("Use these skills: /name") and tell \(name) at the end which ones you used.
         - At the end, record the result with obsidian_schreiben (modus journal) if a vault is connected.
         """
-        let ext = ExtensionStore.shared.installedList.filter { !$0.usage.isEmpty }
+        let ext = ExtensionStore.shared.installedList.filter { !$0.howTo.isEmpty }
         if !ext.isEmpty {
-            r += "\nInstalled extensions you (and delegated Claude Code runs) can use:\n" + ext.map { "- \($0.name): \($0.usage)" }.joined(separator: "\n") + "\n"
+            r += "\nInstalled extensions you (and delegated Claude Code runs) can use:\n" + ext.map { "- \($0.name): \($0.howTo)" }.joined(separator: "\n") + "\n"
         }
         r += "If a task would clearly benefit from a tool that is not installed (e.g. Playwright for UI checks, a security plugin, Junie for debugging), say so at the start and suggest it to \(name) instead of installing it yourself.\n"
         let own = UserDefaults.standard.string(forKey: "agent.rules")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
