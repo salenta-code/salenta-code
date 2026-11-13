@@ -111,6 +111,7 @@ struct StewardProject: Codable, Identifiable, Hashable {
     var github: Bool? = nil              // Ergebnisse als Pull Request liefern (nil = automatisch, wenn GitHub da ist)
     var autoMerge: Bool? = nil           // grüne, geprüfte PRs selbst mergen (nil = wie Vertrauen „Grünes übernehmen“)
     var mergeAll: Bool? = nil            // auch PRs von anderen mergen (Standard: nur eigene)
+    var reviewLabel: String? = nil       // Label, das nach einem grünen Betreuer-Review gesetzt wird (z. B. wenn das Repo eine Freigabe per Label verlangt)
     var postReviews: Bool? = nil         // Review als Kommentar auf GitHub (Standard: an)
     var prs: [StewardPR]? = nil
     var lastPRScan: Date? = nil

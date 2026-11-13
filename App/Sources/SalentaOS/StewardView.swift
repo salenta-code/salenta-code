@@ -216,6 +216,9 @@ struct StewardProjectView: View {
                                                                                     set: { v in steward.update(id) { $0.autoMerge = v } }))
                         Toggle(L("Auch PRs von anderen mergen"), isOn: optBinding(\.mergeAll, false))
                         Toggle(L("Review als Kommentar auf GitHub schreiben"), isOn: optBinding(\.postReviews, true))
+                        TextField(L("Label nach grünem Review (leer = aus)"), text: Binding(get: { steward.project(id)?.reviewLabel ?? "" },
+                                                                                            set: { v in steward.update(id) { $0.reviewLabel = v.isEmpty ? nil : v } }))
+                            .help(L("Verlangt dein Repo eine Freigabe per Label, bevor ein PR grün wird? Trag den Namen ein – der Betreuer setzt es nach seinem grünen Review."))
                         let def = p.setup?.defaultBranch ?? "main"
                         let options = Array(Set([def, "main", p.prBase ?? def])).sorted()
                         Picker(L("Pull Requests gehen nach"), selection: Binding(get: { steward.project(id)?.prBase ?? def },

@@ -244,7 +244,9 @@ enum Worktrees {
                             ":(exclude,glob).codex/skills/**",
                             // Ablagen von Prüfwerkzeugen (Screenshots, Konsolen-Logs) – nie Teil der Änderung
                             ":(exclude,glob).playwright-mcp/**", ":(exclude,glob)playwright-report/**", ":(exclude,glob)**/.playwright-mcp/**",
-                            ":(exclude,glob).aos-*", ":(exclude,glob)**/*.aos-tmp"]
+                            ":(exclude,glob).aos-*", ":(exclude,glob)**/*.aos-tmp",
+                            // lokale Einstellungen von Code-Werkzeugen, die in jeder Arbeitskopie neu entstehen (z. B. Serena)
+                            ":(exclude,glob).serena/**"]
     static let addSpec = [".", ":(exclude)node_modules", ":(exclude,glob)**/node_modules"] + toolNoise
 
     static func top(_ wt: WorktreeInfo) -> String { Git.root(of: wt.path) ?? wt.path }
@@ -303,10 +305,23 @@ enum Worktrees {
         Git.run(["add", "-A", "--"] + Self.addSpec, in: dir)
         // schon committete Debug-Ablagen aus dem Index nehmen (wird als Löschung Teil des Commits)
         Git.run(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"] + Self.debugDirs, in: dir)
+        keepToolConfig(dir, base: forkPoint(wt))
         let staged = Git.run(["diff", "--cached", "--quiet"], in: dir).code != 0
         // Eingemischter Ziel-Branch (PR-Korrektur): den Merge immer abschließen, auch wenn sonst nichts geändert wurde
         let merging = Git.run(["rev-parse", "-q", "--verify", "MERGE_HEAD"], in: dir).code == 0
         if staged || merging { Git.run(Git.identity(dir) + ["commit", "--no-edit", "-m", message], in: dir) }
+    }
+
+    /// Werkzeug-Einstellungen, die in jeder Arbeitskopie neu entstehen, kommen nie in die Änderung – auch nicht, wenn ein Helfer sie
+    /// selbst committet hat. Versioniert das Projekt sie schon, bleibt sein Stand unverändert; sonst fliegen sie aus dem Index.
+    static let toolConfigDirs = [".serena"]
+
+    static func keepToolConfig(_ dir: String, base: String) {
+        for d in toolConfigDirs {
+            let inBase = !base.isEmpty && !Git.run(["ls-tree", "-d", "--name-only", base, "--", d], in: dir).out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if inBase { Git.run(["restore", "--source=" + base, "--staged", "--", d], in: dir) }
+            else { Git.run(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", d], in: dir) }
+        }
     }
 
     static var conflictMessage: String { L("Konflikt mit neueren Änderungen – bitte als Pull Request übernehmen.") }

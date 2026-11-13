@@ -386,14 +386,11 @@ extension Steward {
                 try? body.write(to: bf, atomically: true, encoding: .utf8)
                 _ = Proc.zsh("gh pr comment \(pr.number) --body-file \(Shell.quote(bf.path))", in: id, timeout: 60)
                 try? FileManager.default.removeItem(at: bf)
-                // Projekte mit Vier-Augen-Regel (.github/gegenpruefung-pfade.txt): das Review hier IST die unabhängige Prüfung
-                // durch einen anderen Agent ohne Umsetzungsverlauf – also Label setzen und den erwarteten Kommentar schreiben,
-                // sonst bleibt die CI rot, obwohl geprüft wurde.
-                if ok, risk != "high", FileManager.default.fileExists(atPath: (id as NSString).appendingPathComponent(".github/gegenpruefung-pfade.txt")) {
-                    let gf = FileManager.default.temporaryDirectory.appendingPathComponent("aos-prgegen-\(UUID().uuidString).md")
-                    try? ("Gegenprüfung: bestanden – " + L("unabhängiges Review durch den Projekt-Betreuer (anderer Agent, frischer Kontext). ") + summary).write(to: gf, atomically: true, encoding: .utf8)
-                    _ = Proc.zsh("gh label create gegengeprueft --color 0e8a16 --description 'Unabhängig gegengeprüft' 2>/dev/null; gh pr comment \(pr.number) --body-file \(Shell.quote(gf.path)) && gh pr edit \(pr.number) --add-label gegengeprueft", in: id, timeout: 90)
-                    try? FileManager.default.removeItem(at: gf)
+                // Verlangt das Repo eine Freigabe per Label (z. B. Vier-Augen-Regel), setzt der Betreuer es nach seinem grünen Review –
+                // das Review stammt von einem anderen Agent mit frischem Kontext. Neue Commits danach brauchen ein neues Review.
+                if ok, risk != "high", let label = Self.cleanLabel(self.project(id)?.reviewLabel) {
+                    let q = Shell.quote(label)
+                    _ = Proc.zsh("gh label create \(q) --color 0e8a16 --description \(Shell.quote(L("Vom Projekt-Betreuer geprüft"))) 2>/dev/null; gh pr edit \(pr.number) --add-label \(q)", in: id, timeout: 90)
                 }
             }
             DispatchQueue.main.async {
@@ -533,7 +530,14 @@ extension Steward {
         }
     }
 
-    /// CI-Stand eines PRs aus GitHubs Check-Liste. Läuft eine Prüfung mehrmals für denselben Stand (z. B. die Gegenprüfung erst rot,
+    /// Label-Name aus der Einstellung: leer = aus; nur ein einzelnes, harmloses Wort (Buchstaben, Ziffern, - _ . :).
+    static func cleanLabel(_ raw: String?) -> String? {
+        guard let t = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty, t.count <= 50,
+              t.range(of: #"^[\p{L}\p{N}][\p{L}\p{N} ._:-]*$"#, options: .regularExpression) != nil else { return nil }
+        return t
+    }
+
+    /// CI-Stand eines PRs aus GitHubs Check-Liste. Läuft eine Prüfung mehrmals für denselben Stand (z. B. eine Freigabe-Prüfung erst rot,
     /// nach dem Label grün), zählt nur ihr neuester Lauf – sonst bliebe der PR für immer „rot“ und würde nie gemergt.
     static func ciState(_ checks: [[String: Any]]) -> String {
         guard !checks.isEmpty else { return "none" }

@@ -815,13 +815,44 @@ extension SelfTest {
             func run(_ wf: String, _ name: String, _ c: String, _ at: String) -> [String: Any] {
                 ["__typename": "CheckRun", "workflowName": wf, "name": name, "conclusion": c, "status": "COMPLETED", "startedAt": at, "completedAt": at]
             }
-            let relabeled = [run("Gegenpruefung", "gegenpruefung", "FAILURE", "2026-11-12T14:53:37Z"), run("Gegenpruefung", "gegenpruefung", "SUCCESS", "2026-11-12T14:56:07Z"),
+            let relabeled = [run("Freigabe", "freigabe", "FAILURE", "2026-11-12T14:53:37Z"), run("Freigabe", "freigabe", "SUCCESS", "2026-11-12T14:56:07Z"),
                              run("CI", "pruefen", "SUCCESS", "2026-11-12T14:54:15Z"), run("Vorschau", "Supabase Preview", "SKIPPED", "2026-11-12T14:53:22Z")]
             let reverted = [run("G", "g", "SUCCESS", "2026-11-12T10:00:00Z"), run("G", "g", "FAILURE", "2026-11-12T11:00:00Z")]
             let running = [run("G", "g", "FAILURE", "2026-11-12T10:00:00Z"), ["workflowName": "G", "name": "g", "conclusion": "", "status": "IN_PROGRESS", "startedAt": "2026-11-12T11:00:00Z"]]
-            check("PR-CI: nur der neueste Lauf jeder Prüfung zählt (Gegenprüfung erst rot, nach dem Label grün → grün)",
+            check("Label nach grünem Review: nur ein sauberer Name, leer = aus",
+                  Steward.cleanLabel("approved") == "approved" && Steward.cleanLabel(" geprüft ") == "geprüft" && Steward.cleanLabel("") == nil
+                  && Steward.cleanLabel(nil) == nil && Steward.cleanLabel("a; rm -rf ~") == nil && Steward.cleanLabel("$(x)") == nil)
+            check("PR-CI: nur der neueste Lauf jeder Prüfung zählt (Freigabe-Prüfung erst rot, nach dem Label grün → grün)",
                   Steward.ciState(relabeled) == "green" && Steward.ciState(reverted) == "red" && Steward.ciState(running) == "pending"
                   && Steward.ciState([]) == "none" && Steward.ciState([["__typename": "StatusContext", "context": "vercel", "state": "FAILURE", "startedAt": "x"]]) == "red")
+        }
+        do {
+            // Werkzeug-Einstellungen (.serena) dürfen nie in die Änderung: neu angelegt → raus, schon versioniert → Stand des Projekts bleibt
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("aos-st-serena-\(UUID().uuidString)").path
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            func w(_ p: String, _ t: String) {
+                let u = URL(fileURLWithPath: dir).appendingPathComponent(p)
+                try? FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? t.write(to: u, atomically: true, encoding: .utf8)
+            }
+            _ = Git.run(["init", "-q"], in: dir); w("a.txt", "1")
+            _ = Git.run(Git.identity(dir) + ["add", "-A"], in: dir); _ = Git.run(Git.identity(dir) + ["commit", "-q", "-m", "base"], in: dir)
+            let base = Git.run(["rev-parse", "HEAD"], in: dir).out.trimmingCharacters(in: .whitespacesAndNewlines)
+            w(".serena/project.yml", "x"); w("a.txt", "2")
+            _ = Git.run(["add", "-A"], in: dir)
+            Worktrees.keepToolConfig(dir, base: base)
+            let staged1 = Git.run(["diff", "--cached", "--name-only"], in: dir).out
+            _ = Git.run(Git.identity(dir) + ["commit", "-q", "-m", "x"], in: dir)
+            // Projekt versioniert .serena schon: eine Änderung daran wird zurückgenommen
+            _ = Git.run(["add", "-f", ".serena/project.yml"], in: dir); _ = Git.run(Git.identity(dir) + ["commit", "-q", "-m", "serena"], in: dir)
+            let base2 = Git.run(["rev-parse", "HEAD"], in: dir).out.trimmingCharacters(in: .whitespacesAndNewlines)
+            w(".serena/project.yml", "lokal"); w("a.txt", "3"); _ = Git.run(["add", "-A"], in: dir)
+            Worktrees.keepToolConfig(dir, base: base2)
+            let staged2 = Git.run(["diff", "--cached", "--name-only"], in: dir).out
+            check("Werkzeug-Einstellungen (.serena) landen nie im Pull Request",
+                  staged1.contains("a.txt") && !staged1.contains(".serena") && staged2.contains("a.txt") && !staged2.contains(".serena")
+                  && Worktrees.addSpec.contains(":(exclude,glob).serena/**"))
         }
         do {
             let plug = ExtensionCatalog.find("playwright").flatMap(ExtensionStore.uninstallCommand) ?? ""

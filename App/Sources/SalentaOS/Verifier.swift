@@ -989,7 +989,10 @@ enum Handoff {
             if !files.isEmpty { state += "\nGeänderte Dateien bisher:\n" + String(files.suffix(1500)) + "\n" }
         }
         if let v = rec.verify, let p = v.passed {
-            state += "\nLetzte automatische Prüfung: " + (p ? "grün" : "rot") + (p ? "" : "\n" + v.failures.prefix(5).map { "- " + String($0.prefix(300)) }.joined(separator: "\n")) + "\n"
+            // in Schritten gebaut – ein einziger langer Ausdruck überfordert die Typprüfung mancher Compiler-Versionen
+            let failed: [String] = v.failures.prefix(5).map { (f: String) -> String in "- " + String(f.prefix(300)) }
+            let detail: String = p ? "" : "\n" + failed.joined(separator: "\n")
+            state += "\nLetzte automatische Prüfung: " + (p ? "grün" : "rot") + detail + "\n"
         }
         let coding = target != "os" && AgentKind(rawValue: target).map { AgentKind.coders.contains($0) } ?? false
         let prompt = """

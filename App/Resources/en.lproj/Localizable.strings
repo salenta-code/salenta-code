@@ -2489,7 +2489,6 @@
 "Vorschläge einklappen" = "Collapse suggestions";
 "Vorschläge ausklappen" = "Expand suggestions";
 "PR #%d: CI war wegen eines GitHub-/Download-Fehlers rot – neu gestartet, kein Code-Problem." = "PR #%d: CI was red because of a GitHub/download error – restarted, not a code problem.";
-"unabhängiges Review durch den Projekt-Betreuer (anderer Agent, frischer Kontext). " = "independent review by the project steward (different agent, fresh context). ";
 "GitHub CLI nicht angemeldet (gh auth login) – Ergebnis wartet, statt am Pull Request vorbei übernommen zu werden" = "GitHub CLI not signed in (gh auth login) – result is waiting instead of being applied without a pull request";
 "Lokal geprüfte und übernommene Ergebnisse des Projekt-Betreuers, nachträglich als Pull Request:" = "Results the project steward verified and applied locally, delivered as a pull request afterwards:";
 "%d übernommene Ergebnisse" = "%d applied results";
@@ -2692,3 +2691,6 @@
 "Der Skill-Ordner kommt in den Papierkorb." = "The skill folder goes to the Trash.";
 "Du kannst sie später jederzeit wieder installieren." = "You can install it again at any time.";
 "Vom Mac entfernen und aus der Liste löschen" = "Remove from this Mac and delete from the list";
+"Vom Projekt-Betreuer geprüft" = "Checked by the project steward";
+"Label nach grünem Review (leer = aus)" = "Label after a green review (empty = off)";
+"Verlangt dein Repo eine Freigabe per Label, bevor ein PR grün wird? Trag den Namen ein – der Betreuer setzt es nach seinem grünen Review." = "Does your repo require an approval label before a PR turns green? Enter its name – the steward sets it after its green review.";
