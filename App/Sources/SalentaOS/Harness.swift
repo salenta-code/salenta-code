@@ -10,14 +10,18 @@ enum HarnessSetup {
 
     static var hasKey: Bool { ["deepseek", "anthropic", "openai", "openrouter"].contains { Secrets.has($0) } }
 
+    /// Abo statt Schlüssel: Claude oder Codex sind schon eingeloggt – der Harness nutzt sie über deren Kommandozeile.
+    static var hasSubscription: Bool { Detection.which("claude") != nil || Detection.which("codex") != nil }
+
     static var ready: Bool {
-        FileManager.default.fileExists(atPath: script.path) && Detection.which("node") != nil && (hasKey || OllamaApp.installed)
+        FileManager.default.fileExists(atPath: script.path) && Detection.which("node") != nil && (hasKey || hasSubscription || OllamaApp.installed)
     }
 
     static var status: String {
         if Detection.which("node") == nil { return L("Node.js fehlt – im Terminal: brew install node") }
         if !FileManager.default.fileExists(atPath: script.path) { return L("Salenta Harness fehlt im App-Paket – neu installieren") }
         if hasKey { return L("Bereit – nutzt den ersten eingetragenen Schlüssel (DeepSeek, Anthropic, OpenAI, OpenRouter)") }
+        if hasSubscription { return L("Bereit über dein Claude- oder Codex-Abo – kein Schlüssel nötig, keine Kosten pro Nutzung") }
         if OllamaApp.installed { return L("Bereit mit lokalem Modell (Ollama) – für bessere Ergebnisse einen Schlüssel eintragen") }
         return L("Noch kein Modell: Schlüssel eintragen oder Ollama einrichten")
     }
@@ -44,7 +48,7 @@ enum HarnessSetup {
     static func exports() -> String {
         var s = ""
         for (acc, env) in keys { s += "export \(env)=\(Secrets.shellValue(acc)); " }
-        if let m = LocalFirst.shared.model {
+        if let m = LocalFirst.shared.model, !hasSubscription {
             s += "if [ -z \"$DEEPSEEK_API_KEY$ANTHROPIC_API_KEY$OPENAI_API_KEY$OPENROUTER_API_KEY\" ]; then export SALENTA_HARNESS_PROVIDER=ollama SALENTA_HARNESS_MODEL=\(Shell.quote(m)); fi; "
         }
         return s

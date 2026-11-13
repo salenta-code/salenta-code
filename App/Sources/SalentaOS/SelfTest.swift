@@ -812,6 +812,51 @@ extension SelfTest {
                   && !Steward.fixFailed([first], pr: 7) && !Steward.fixFailed([first, fix(.done)], pr: 7) && !Steward.fixFailed([fix(.red)], pr: 8))
         }
         do {
+            func run(_ wf: String, _ name: String, _ c: String, _ at: String) -> [String: Any] {
+                ["__typename": "CheckRun", "workflowName": wf, "name": name, "conclusion": c, "status": "COMPLETED", "startedAt": at, "completedAt": at]
+            }
+            let relabeled = [run("Gegenpruefung", "gegenpruefung", "FAILURE", "2026-11-12T14:53:37Z"), run("Gegenpruefung", "gegenpruefung", "SUCCESS", "2026-11-12T14:56:07Z"),
+                             run("CI", "pruefen", "SUCCESS", "2026-11-12T14:54:15Z"), run("Vorschau", "Supabase Preview", "SKIPPED", "2026-11-12T14:53:22Z")]
+            let reverted = [run("G", "g", "SUCCESS", "2026-11-12T10:00:00Z"), run("G", "g", "FAILURE", "2026-11-12T11:00:00Z")]
+            let running = [run("G", "g", "FAILURE", "2026-11-12T10:00:00Z"), ["workflowName": "G", "name": "g", "conclusion": "", "status": "IN_PROGRESS", "startedAt": "2026-11-12T11:00:00Z"]]
+            check("PR-CI: nur der neueste Lauf jeder Prüfung zählt (Gegenprüfung erst rot, nach dem Label grün → grün)",
+                  Steward.ciState(relabeled) == "green" && Steward.ciState(reverted) == "red" && Steward.ciState(running) == "pending"
+                  && Steward.ciState([]) == "none" && Steward.ciState([["__typename": "StatusContext", "context": "vercel", "state": "FAILURE", "startedAt": "x"]]) == "red")
+        }
+        do {
+            let plug = ExtensionCatalog.find("playwright").flatMap(ExtensionStore.uninstallCommand) ?? ""
+            let mcp = Extension(id: "custom:o/r", name: "R", kind: .mcp, category: .essentials, repo: "", stars: "", purpose: "", when: [],
+                                install: "claude mcp add --scope user srv -- npx -y srv", usage: "")
+            let skill = Extension(id: "custom:o/r:tool", name: "tool", kind: .skill, category: .essentials, repo: "", stars: "", purpose: "", when: [],
+                                  install: "git clone …", usage: "")
+            let bad = Extension(id: "custom:o/r:x", name: "../x", kind: .skill, category: .essentials, repo: "", stars: "", purpose: "", when: [],
+                                install: "", usage: "")
+            let m = ExtensionStore.uninstallCommand(mcp) ?? "", k = ExtensionStore.uninstallCommand(skill) ?? ""
+            check("Erweiterungen lassen sich wieder entfernen (Plugin, MCP für alle Agents, Skill in den Papierkorb)",
+                  plug.hasPrefix("claude plugin uninstall ") && plug.contains("playwright@claude-plugins-official")
+                  && m.hasPrefix("claude mcp remove --scope user 'srv'") && m.contains("codex mcp remove 'srv'")
+                  && k.contains(".claude/skills/'tool'") && k.contains(".Trash") && !k.contains("rm ")
+                  && ExtensionStore.uninstallCommand(bad) == nil
+                  && ExtensionCatalog.find("junie").flatMap(ExtensionStore.uninstallCommand) == nil)
+        }
+        do {
+            let now = Date(timeIntervalSince1970: 3_000_000), url = "https://github.com/o/r/actions/runs/1"
+            func t(_ st: StewardTask.State, ago: TimeInterval, pr: Int? = nil, note: String? = nil) -> StewardTask {
+                var x = StewardTask(title: "CI ist rot – reparieren: CI"); x.ref = url; x.state = st; x.pr = pr; x.note = note
+                x.created = now.addingTimeInterval(-ago - 600); x.finished = [.idea, .queued, .running].contains(st) ? nil : now.addingTimeInterval(-ago); return x
+            }
+            check("Betreuer: rote Haupt-Branch-Reparatur ohne Erfolg wird nach 30 Minuten neu eingereiht, höchstens dreimal",
+                  Steward.mainFixDue([], ref: url, now: now)
+                  && Steward.mainFixDue([t(.review, ago: 2000)], ref: url, now: now)            // endete ohne PR (keine Änderung)
+                  && !Steward.mainFixDue([t(.review, ago: 600)], ref: url, now: now)            // noch keine 30 Minuten
+                  && !Steward.mainFixDue([t(.queued, ago: 0)], ref: url, now: now)
+                  && !Steward.mainFixDue([t(.review, ago: 4000, pr: 12)], ref: url, now: now)   // Reparatur-PR unterwegs
+                  && !Steward.mainFixDue([t(.dropped, ago: 4000, note: L("von dir gestoppt"))], ref: url, now: now)
+                  && Steward.mainFixDue([t(.red, ago: 4000)], ref: url, now: now)
+                  && Steward.mainFixAttempts([t(.red, ago: 9000), t(.dropped, ago: 6000), t(.review, ago: 2000)], ref: url) == 3
+                  && Steward.mainFixAttempts([t(.red, ago: 9000)], ref: "x") == 0)
+        }
+        do {
             let t0 = Date(timeIntervalSince1970: 1_000_000)
             check("Ruhezustand zählt nicht als Laufzeit eines Helfers",
                   Steward.sleptGap(last: nil, now: t0) == 0 && Steward.sleptGap(last: t0, now: t0.addingTimeInterval(31)) == 0

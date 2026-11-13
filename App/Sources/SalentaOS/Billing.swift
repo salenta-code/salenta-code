@@ -11,7 +11,9 @@ enum Billing {
     static let d = UserDefaults.standard
 
     static func isMetered(_ a: AgentKind) -> Bool {
-        d.object(forKey: "billing.metered." + a.rawValue) as? Bool ?? defaultMetered.contains(a)
+        // Der Salenta Harness rechnet nur mit Schlüssel pro Nutzung ab; läuft er über dein Abo, kostet er nichts extra
+        if a == .harness, d.object(forKey: "billing.metered.harness") == nil { return HarnessSetup.hasKey }
+        return d.object(forKey: "billing.metered." + a.rawValue) as? Bool ?? defaultMetered.contains(a)
     }
     static func setMetered(_ a: AgentKind, _ on: Bool) { d.set(on, forKey: "billing.metered." + a.rawValue) }
 

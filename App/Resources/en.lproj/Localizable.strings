@@ -2681,3 +2681,14 @@
 "Kombiniere sie: Wende jeden in dem Teil der Arbeit an, zu dem er passt." = "Combine them: apply each one in the part of the work it fits.";
 "Mehrere Skills: Wende jeden in dem Teil der Arbeit an, zu dem er passt. Widersprechen sie sich, gilt der Auftrag." = "Several skills: apply each one in the part of the work it fits. If they contradict each other, the task decides.";
 "Nicht geladen: %@ – arbeite ohne sie und rufe sie nicht auf." = "Not loaded: %@ – work without them and do not call them.";
+
+"Bereit über dein Claude- oder Codex-Abo – kein Schlüssel nötig, keine Kosten pro Nutzung" = "Ready via your Claude or Codex subscription – no key needed, no pay-per-use cost";
+"Der Haupt-Branch ist nach 3 Reparaturversuchen noch rot – bitte selbst ansehen:" = "The main branch is still red after 3 repair attempts – please take a look yourself:";
+"Der Haupt-Branch ist rot – PRs mit roter CI warten jetzt, statt einzeln nachgebessert zu werden. Zuerst wird der Haupt-Branch repariert." = "The main branch is red – PRs with red CI now wait instead of being fixed one by one. The main branch gets repaired first.";
+"Der Haupt-Branch ist wieder grün." = "The main branch is green again.";
+"%d PRs bekommen den neuen Stand und werden neu geprüft." = "%d PRs get the latest state and are checked again.";
+"Vom Mac entfernen – Salenta Code nutzt sie danach nicht mehr" = "Remove from this Mac – Salenta Code stops using it";
+"„%@“ vom Mac entfernen?" = "Remove “%@” from this Mac?";
+"Der Skill-Ordner kommt in den Papierkorb." = "The skill folder goes to the Trash.";
+"Du kannst sie später jederzeit wieder installieren." = "You can install it again at any time.";
+"Vom Mac entfernen und aus der Liste löschen" = "Remove from this Mac and delete from the list";

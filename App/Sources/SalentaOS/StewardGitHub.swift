@@ -224,12 +224,7 @@ extension Steward {
                   let arr = try? JSONSerialization.jsonObject(with: Data(r.out[a...].utf8)) as? [[String: Any]] else { return }
             let found: [StewardPR] = arr.compactMap { j in
                 guard let n = j["number"] as? Int else { return nil }
-                let checks = (j["statusCheckRollup"] as? [[String: Any]]) ?? []
-                let states = checks.map { (($0["conclusion"] as? String) ?? ($0["state"] as? String) ?? ($0["status"] as? String) ?? "").uppercased() }
-                // Abgebrochene/übersprungene Checks (z. B. Vorschau-Umgebungen am Limit) sind kein Fehler im Code
-                let ci: String = checks.isEmpty ? "none"
-                    : states.contains { ["FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].contains($0) } ? "red"
-                    : states.allSatisfy { ["SUCCESS", "NEUTRAL", "SKIPPED", "CANCELLED", "STALE"].contains($0) } ? "green" : "pending"
+                let ci = Self.ciState((j["statusCheckRollup"] as? [[String: Any]]) ?? [])
                 let branch = j["headRefName"] as? String ?? ""
                 return StewardPR(number: n, title: j["title"] as? String ?? "", url: j["url"] as? String ?? "", branch: branch,
                                  sha: j["headRefOid"] as? String ?? "", author: (j["author"] as? [String: Any])?["login"] as? String ?? "",
@@ -506,6 +501,11 @@ extension Steward {
         }
         // Die Korrektur für diesen Stand ist gescheitert oder verworfen worden, ohne den PR zu ändern? Dann darf der Wächter es noch
         // einmal versuchen – sonst bliebe der PR für immer liegen (der Planer darf PR-Korrekturen nicht selbst einreihen).
+        // Haupt-Branch rot? Dann ist die PR-CI meist nur deshalb rot – keine Korrektur am PR (kostet nur Läufe), sondern warten,
+        // bis der Haupt-Branch repariert ist. Konflikte und Review-Einwände werden weiter behoben.
+        if pr.ours, p.mainRed == true, pr.ci == "red", pr.mergeable != "CONFLICTING", pr.reviewOK != false {
+            return
+        }
         let retry = Self.fixFailed(p.tasks, pr: pr.number)
         if pr.ours, broken, pr.fixedSha != pr.sha || retry, (pr.fixCount ?? 0) < 2, Energy.backgroundAgentsOK, !p.paused {
             setPR(id, pr.number) { $0.fixedSha = pr.sha; $0.fixCount = ($0.fixCount ?? 0) + 1 }
@@ -531,6 +531,26 @@ extension Steward {
         } else if !pr.ours, pr.reviewOK != nil, !allowed, pr.reviewedSha == pr.sha, pr.summary != nil {
             // fremder PR: nur Bescheid sagen (einmal je Stand – über reviewedSha schon abgedeckt)
         }
+    }
+
+    /// CI-Stand eines PRs aus GitHubs Check-Liste. Läuft eine Prüfung mehrmals für denselben Stand (z. B. die Gegenprüfung erst rot,
+    /// nach dem Label grün), zählt nur ihr neuester Lauf – sonst bliebe der PR für immer „rot“ und würde nie gemergt.
+    static func ciState(_ checks: [[String: Any]]) -> String {
+        guard !checks.isEmpty else { return "none" }
+        var latest: [String: (time: String, state: String)] = [:]
+        for c in checks {
+            let key = ((c["workflowName"] as? String) ?? "") + "/" + ((c["name"] as? String) ?? (c["context"] as? String) ?? "")
+            let time = (c["completedAt"] as? String).flatMap { $0.hasPrefix("0001") ? nil : $0 } ?? (c["startedAt"] as? String) ?? (c["createdAt"] as? String) ?? ""
+            let state = ((c["conclusion"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (c["state"] as? String) ?? (c["status"] as? String) ?? "").uppercased()
+            // Noch laufend (ohne Ergebnis) ist neuer als jeder fertige Lauf
+            let t = state.isEmpty || ["IN_PROGRESS", "QUEUED", "PENDING", "WAITING", "REQUESTED"].contains(state) ? "9999" : time
+            if let old = latest[key], old.time > t { continue }
+            latest[key] = (t, state)
+        }
+        let states = latest.values.map(\.state)
+        // Abgebrochene/übersprungene Checks (z. B. Vorschau-Umgebungen am Limit) sind kein Fehler im Code
+        if states.contains(where: { ["FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"].contains($0) }) { return "red" }
+        return states.allSatisfy { ["SUCCESS", "NEUTRAL", "SKIPPED", "CANCELLED", "STALE"].contains($0) } ? "green" : "pending"
     }
 
     /// Erzeugte Dateien, die im Review-Patch nichts verloren haben (sie stehen weiter in der Dateiliste).

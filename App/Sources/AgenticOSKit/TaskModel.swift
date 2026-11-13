@@ -275,7 +275,7 @@ public enum AgentKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .pi: "minimal agent, small focused tasks"
         case .kimi: "Moonshot Kimi Code – strong, inexpensive agentic coding with Kimi models, long tasks, frontend and visual coding; good fallback when Claude/Codex are at their limit"
         case .deepseek: "DeepSeek Harness – DeepSeek's own agent with DeepSeek models; inexpensive, good at coding and long multi-step tasks, can split work into sub-agents; pay per use via DeepSeek API"
-        case .harness: "Salenta Harness – Salenta's own agent: plans, delegates read-only research to parallel sub-agents, enforces access levels, always runs the project checks before finishing; runs on DeepSeek, Claude, OpenAI, OpenRouter or a local model"
+        case .harness: "Salenta Harness – Salenta's own agent: plans, delegates read-only research to parallel sub-agents, enforces access levels, always runs the project checks before finishing; runs on your Claude or Codex subscription (no key, no extra cost), or on DeepSeek, OpenAI, OpenRouter or a local model"
         case .openrouter: "Claude Code with open-source models via OpenRouter (Qwen, DeepSeek, Kimi, GLM) – pay per use, cheap, good when subscriptions are at their limit"
         case .ollama: "Claude Code with a local open-source model (Ollama) – free and private, but slower and weaker; small tasks only"
         case .shell: ""

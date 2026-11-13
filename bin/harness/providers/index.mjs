@@ -6,6 +6,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { harnessHome } from '../core/session.mjs'
+import { subscriptionChat, firstSubscription } from './subscription.mjs'
 
 export class LimitError extends Error {}
 
@@ -15,6 +16,9 @@ export const PROVIDERS = {
   openai:     { kind: 'openai', base: 'https://api.openai.com/v1', keyEnv: 'OPENAI_API_KEY', model: 'gpt-4.1' },
   ollama:     { kind: 'openai', base: (process.env.OLLAMA_HOST ? process.env.OLLAMA_HOST.replace(/\/$/, '') : 'http://localhost:11434') + '/v1', keyEnv: null, model: 'qwen3:8b' },
   anthropic:  { kind: 'anthropic', base: 'https://api.anthropic.com/v1', keyEnv: 'ANTHROPIC_API_KEY', model: 'claude-sonnet-5-5' },
+  // Abos: kein Schlüssel, die eingeloggte Kommandozeile liefert das Modell (Modell leer = deren Standard)
+  'claude-cli': { kind: 'subscription', keyEnv: null, model: '' },
+  'codex-cli':  { kind: 'subscription', keyEnv: null, model: '' },
   mock:       { kind: 'mock' },
 }
 
@@ -33,6 +37,8 @@ export function pickProvider(name, cfg = loadConfig()) {
     return { name: want, ...p, ...((cfg.providers || {})[want] || {}) }
   }
   for (const n of ['deepseek', 'anthropic', 'openai', 'openrouter']) if (process.env[PROVIDERS[n].keyEnv]) return { name: n, ...PROVIDERS[n] }
+  const sub = firstSubscription()   // ohne Schlüssel: das Abo, das schon da ist, vor dem lokalen Modell
+  if (sub) return { name: sub, ...PROVIDERS[sub] }
   return { name: 'ollama', ...PROVIDERS.ollama }
 }
 
@@ -165,6 +171,6 @@ export function createProvider(p) {
   return {
     name: p.name,
     model: p.model,
-    chat: (req) => p.kind === 'anthropic' ? anthropicChat(p, req) : p.kind === 'mock' ? mockChat(req) : openaiChat(p, req),
+    chat: (req) => p.kind === 'anthropic' ? anthropicChat(p, req) : p.kind === 'subscription' ? subscriptionChat(p, req) : p.kind === 'mock' ? mockChat(req) : openaiChat(p, req),
   }
 }

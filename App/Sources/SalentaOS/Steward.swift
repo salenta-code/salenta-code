@@ -98,6 +98,7 @@ struct StewardProject: Codable, Identifiable, Hashable {
     var created = Date()
     // Optional, damit ältere stewards.json weiter laden
     var extensions: [String]? = nil      // ausgewählte Erweiterungen – jeder Helfer nutzt sie
+    var mainRed: Bool? = nil             // CI auf dem Haupt-Branch rot? Dann sind PR-CIs meist nur deshalb rot – keine PR-Korrekturen
     var untilDone: Bool? = nil           // arbeitet ohne Pause weiter, bis das Ziel erreicht ist
     var improve: Bool? = nil             // danach selbst Verbesserungen suchen
     var goalReached: Date? = nil
@@ -1323,14 +1324,26 @@ final class Steward: ObservableObject {
                     if latest[w] == nil { latest[w] = run }
                 }
                 let failed = latest.values.filter { ($0["conclusion"] as? String) == "failure" && $0["url"] is String }
-                guard !failed.isEmpty else { return }
+                // Haupt-Branch rot oder wieder grün? (nur fertige Läufe zählen, Veröffentlichungen nicht)
+                let mainRuns = latest.values.filter { ($0["headBranch"] as? String) == branch && ($0["event"] as? String) != "release" && ($0["status"] as? String) == "completed" }
+                let mainRedNow: Bool? = mainRuns.isEmpty ? nil : mainRuns.contains { ($0["conclusion"] as? String) == "failure" }
                 DispatchQueue.main.async {
+                    if let now = mainRedNow { self.setMainRed(id, now) }
                     for run in failed {
                         let url = run["url"] as! String
                         let hb = run["headBranch"] as? String ?? branch
                         let release = hb != branch || (run["event"] as? String) == "release"
                         let title = "\(run["workflowName"] as? String ?? "CI"): \(run["displayTitle"] as? String ?? "")"
-                        guard let q = self.project(id), !q.tasks.contains(where: { $0.ref == url }) else { continue }
+                        // Eine Reparatur je roten Lauf – endet sie ohne Erfolg (keine Änderung, rot, verworfen), wird nach 30 Minuten
+                        // neu eingereiht, höchstens dreimal. Sonst bliebe der Haupt-Branch rot und alle PRs blieben liegen.
+                        guard let q = self.project(id), Self.mainFixDue(q.tasks, ref: url) else { continue }
+                        if Self.mainFixAttempts(q.tasks, ref: url) >= 3 {
+                            if Self.mainFixNoted[url] == nil {
+                                Self.mainFixNoted[url] = "1"
+                                self.say(id, "system", "✋ " + L("Der Haupt-Branch ist nach 3 Reparaturversuchen noch rot – bitte selbst ansehen:") + " " + url)
+                            }
+                            continue
+                        }
                         self.update(id) { p in
                             p.tasks.append(StewardTask(title: (release ? L("Veröffentlichung ist rot – reparieren: ") : L("CI ist rot – reparieren: ")) + title,
                                                        detail: (release ? L("Der Release-Lauf für") + " \(hb) " : L("Der letzte CI-Lauf auf") + " \(branch) ") + L("ist fehlgeschlagen") + " (\(url)). "
@@ -1343,6 +1356,48 @@ final class Steward: ObservableObject {
                         NotifyCenter.shared.post(.ciRed, title: "🔴 " + (self.project(id)?.name ?? "") + ": " + title, body: L("Der GitHub-Wächter hat eine Korrektur eingereiht."), route: .page("steward:" + id))
                     }
                     self.dispatch(id)
+                }
+            }
+        }
+    }
+
+    static var mainFixNoted: [String: String] = [:]
+
+    /// Reparaturen für diesen roten Lauf auf dem Haupt-Branch (von dir gestoppte zählen nicht).
+    static func mainFixAttempts(_ tasks: [StewardTask], ref: String) -> Int {
+        tasks.filter { $0.ref == ref && $0.note != L("von dir gestoppt") }.count
+    }
+
+    /// Darf für diesen roten Lauf (wieder) eine Reparatur eingereiht werden? Ja, wenn noch keine da ist – oder wenn alle bisherigen
+    /// ohne Erfolg geendet haben (keine Änderung, rot, verworfen) und die letzte mindestens 30 Minuten her ist.
+    static func mainFixDue(_ tasks: [StewardTask], ref: String, now: Date = Date()) -> Bool {
+        let mine = tasks.filter { $0.ref == ref }
+        guard let last = mine.max(by: { ($0.finished ?? $0.created) < ($1.finished ?? $1.created) }) else { return true }
+        if mine.contains(where: { [.idea, .queued, .running].contains($0.state) }) { return false }
+        if mine.contains(where: { $0.note == L("von dir gestoppt") }) { return false }
+        // Mit PR in Prüfung oder fertig → die Reparatur ist unterwegs; erst wenn der Lauf danach noch rot ist, kommt ein neuer Lauf (neue URL)
+        if mine.contains(where: { ($0.state == .review || $0.state == .done) && $0.pr != nil }) { return false }
+        return now.timeIntervalSince(last.finished ?? last.created) >= 1800
+    }
+
+    /// Haupt-Branch rot/grün merken. Wird er wieder grün, bekommen eigene PRs mit roter CI den neuen Stand (GitHub „Update branch“),
+    /// damit ihre CI neu läuft – ihr Rot kam meist nur vom Haupt-Branch.
+    func setMainRed(_ id: String, _ red: Bool) {
+        guard let p = project(id), p.mainRed != red else { return }
+        update(id) { $0.mainRed = red }
+        if red {
+            say(id, "system", "🔴 " + L("Der Haupt-Branch ist rot – PRs mit roter CI warten jetzt, statt einzeln nachgebessert zu werden. Zuerst wird der Haupt-Branch repariert."))
+            return
+        }
+        guard p.mainRed == true else { return }   // erster Blick (vorher unbekannt): nichts nachholen
+        let stale = (p.prs ?? []).filter { $0.ours && $0.ci == "red" && $0.mergeable != "CONFLICTING" }.map(\.number)
+        say(id, "system", "🟢 " + L("Der Haupt-Branch ist wieder grün.") + (stale.isEmpty ? "" : " " + String(format: L("%d PRs bekommen den neuen Stand und werden neu geprüft."), stale.count)))
+        guard !stale.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async {
+            for n in stale { _ = Proc.zsh("gh pr update-branch \(n)", in: id, timeout: 60) }
+            DispatchQueue.main.async {
+                self.update(id) { q in
+                    for i in (q.prs ?? []).indices where stale.contains(q.prs![i].number) { q.prs![i].ci = "pending"; q.prs![i].fixCount = 0 }
                 }
             }
         }
