@@ -146,7 +146,7 @@ final class ModelCatalog: ObservableObject {
             let base = discovered[agent.rawValue] ?? []
             let defaults = ["kimi-code/kimi-for-coding"]
             return (base + defaults.filter { !base.contains($0) }).map { ModelOption(value: $0, label: $0, hint: $0 == "kimi-code/kimi-for-coding" ? L("Kimi-Abo (Standard)") : "") }
-        case .cursor, .opencode, .kiro, .pi, .openrouter:
+        case .cursor, .opencode, .kiro, .pi, .openrouter, .deepseek, .harness:
             return (discovered[agent.rawValue] ?? []).map { ModelOption(value: $0, label: $0, hint: $0.hasSuffix(":free") ? L("kostenlos") : "") }
         case .ollama:
             let local = discovered[agent.rawValue] ?? []
@@ -221,6 +221,21 @@ final class ModelCatalog: ObservableObject {
         case .cursor: return !claudeAlias
         default: return !claudeAlias && !(m.hasPrefix("claude-") && agent != .opencode && agent != .openrouter)
         }
+    }
+
+    /// Kennt die CLI des Agents dieses Modell? Gilt nur für Agents, die ihre Modelle selbst auflisten (z. B. Cursor):
+    /// nach einer Übergabe bekäme Cursor sonst ein Modell, das es dort nicht gibt, und bräche sofort ab.
+    static func listed(_ model: String, _ agent: AgentKind, in lists: [String: [String]]? = nil) -> Bool {
+        guard !model.isEmpty, [.cursor, .opencode, .kiro, .pi, .grok].contains(agent) else { return true }
+        guard let known = (lists ?? savedLists())[agent.rawValue], known.count >= 2 else { return true }
+        return known.contains(model)
+    }
+
+    /// Zuletzt gespeicherte Modell-Listen der CLIs (data/models.json).
+    static func savedLists() -> [String: [String]] {
+        guard let d = try? Data(contentsOf: Paths.data.appendingPathComponent("models.json")),
+              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
+        return j["models"] as? [String: [String]] ?? [:]
     }
 
     /// Kann der Agent ein Modell per Parameter bekommen?

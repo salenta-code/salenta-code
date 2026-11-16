@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+# Kurze Hilfsfrage (Planung, Agent-Wahl, Zusammenfassung …) über Codex statt Claude – z. B. wenn du Claude pausiert hast.
+# Liest die Frage von stdin und gibt das Ergebnis im selben JSON-Format aus wie `claude -p --output-format json`,
+# damit alle Stellen, die das Ergebnis auslesen, unverändert funktionieren.
+import json, os, shutil, subprocess, sys, tempfile
+
+def main():
+    effort = "medium"
+    web = False
+    codex = None
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--effort" and i + 1 < len(args): effort = args[i + 1]
+        if a == "--web": web = True
+        if a == "--codex" and i + 1 < len(args): codex = args[i + 1]
+    if not codex:
+        # Hintergrundprozesse haben oft einen gekürzten PATH – übliche Orte mit absuchen
+        extra = [os.path.expanduser(p) for p in ("~/.local/bin", "~/.npm-global/bin", "~/.bun/bin", "~/.volta/bin")] + ["/opt/homebrew/bin", "/usr/local/bin"]
+        codex = shutil.which("codex", path=os.pathsep.join([os.environ.get("PATH", "")] + extra)) or "codex"
+    prompt = sys.stdin.read()
+    fd, out = tempfile.mkstemp(prefix="aos-ask-", suffix=".txt"); os.close(fd)
+    cmd = [codex, "exec", "-s", "read-only", "--skip-git-repo-check", "-c", f'model_reasoning_effort="{effort}"', "-o", out]
+    if web: cmd += ["-c", "tools.web_search=true"]
+    cmd.append("-")
+    try:
+        r = subprocess.run(cmd, input=prompt, text=True, capture_output=True, timeout=600, cwd=tempfile.gettempdir())
+        text = open(out, encoding="utf-8").read().strip() if os.path.exists(out) else ""
+        ok = r.returncode == 0 and bool(text)
+        err = (r.stderr or r.stdout or "")[-600:]
+    except Exception as e:
+        text, ok, err = "", False, str(e)
+    finally:
+        try: os.remove(out)
+        except OSError: pass
+    print(json.dumps({"type": "result", "subtype": "success" if ok else "error", "is_error": not ok,
+                      "result": text if ok else err, "via": "codex"}, ensure_ascii=False))
+    return 0 if ok else 1
+
+sys.exit(main())

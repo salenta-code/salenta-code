@@ -45,9 +45,9 @@ enum OSAgent {
         skills in the delegated task ("Use these skills: /name") and tell \(name) at the end which ones you used.
         - At the end, record the result with obsidian_schreiben (modus journal) if a vault is connected.
         """
-        let ext = ExtensionStore.shared.installedList.filter { !$0.usage.isEmpty }
+        let ext = ExtensionStore.shared.installedList.filter { !$0.howTo.isEmpty }
         if !ext.isEmpty {
-            r += "\nInstalled extensions you (and delegated Claude Code runs) can use:\n" + ext.map { "- \($0.name): \($0.usage)" }.joined(separator: "\n") + "\n"
+            r += "\nInstalled extensions you (and delegated Claude Code runs) can use:\n" + ext.map { "- \($0.name): \($0.howTo)" }.joined(separator: "\n") + "\n"
         }
         r += "If a task would clearly benefit from a tool that is not installed (e.g. Playwright for UI checks, a security plugin, Junie for debugging), say so at the start and suggest it to \(name) instead of installing it yourself.\n"
         let own = UserDefaults.standard.string(forKey: "agent.rules")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -57,7 +57,7 @@ enum OSAgent {
 
     /// Werkzeuge ohne Rückfrage. Alles andere fragt über mcp__salenta-os__freigabe (die liest-Tools winkt sie selbst durch).
     static let allowedTools = ["Read", "Grep", "Glob", "WebSearch", "WebFetch", "TodoWrite", "Task",
-                               "mcp__salenta-os", "mcp__browser"]
+                               "mcp__salenta-os"]   // Browser läuft über die Freigabe (Steuerung mit Zeitlimit)
 
     /// Baut die MCP-Konfiguration für einen Lauf (Datei nur für dich lesbar, mit frischen Tokens).
     /// Namen der verbundenen Integrationen (für die KI-Wahl der Tools).
@@ -153,6 +153,8 @@ struct ApprovalRequest: Identifiable, Hashable {
     let tool: String
     let input: [String: String]
     let date: Date
+    /// "browser" oder "computer": der Agent möchte die Steuerung – du gibst sie für eine Zeit frei.
+    var access: String? { input["_zugriff"] }
 
     /// "mcp__gmail__send_message" → "Gmail: send message"
     var title: String {
@@ -313,7 +315,9 @@ struct ApprovalBar: View {
     @State private var expanded: String?
 
     var body: some View {
-        if let r = approvals.pending.first {
+        if let r = approvals.pending.first, let scope = r.access.flatMap(ControlScope.init(rawValue:)) {
+            ControlAccessBar(request: r, scope: scope, more: approvals.pending.count - 1)
+        } else if let r = approvals.pending.first {
             VStack(alignment: .leading, spacing: Grid.s) {
                 HStack(spacing: Grid.m) {
                     Image(systemName: "hand.raised.fill").foregroundStyle(.orange).font(.title3)

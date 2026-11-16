@@ -22,6 +22,8 @@ prerelease=""; [[ "$version" == *-* ]] && prerelease="--prerelease"
 
 echo "→ Datenschutz-Prüfung (keine Schlüssel, keine persönlichen Daten)"
 "$here/scripts/privacy-check.sh"
+echo "→ Oberflächen-Prüfung (jeder Symbol-Knopf hat einen Hinweis) – dieselbe wie in der CI"
+(cd "$here" && python3 scripts/check-tooltips.py)
 
 echo "$version" > "$here/VERSION"
 dist="$here/dist/$version"; rm -rf "$dist"; mkdir -p "$dist"
@@ -68,6 +70,8 @@ spctl --assess --type open --context context:primary-signature -v "$dmg"
 cp "$dmg" "$dist/Salenta-Code.dmg"
 
 sha=$(shasum -a 256 "$zip" | cut -d' ' -f1)
+# Ohne RELEASE_NOTES: die vorbereitete Datei dist/<Version>-notes.md, sonst die Commit-Liste
+[ -z "${RELEASE_NOTES:-}" ] && [ -f "$here/dist/$version-notes.md" ] && RELEASE_NOTES="$(cat "$here/dist/$version-notes.md")"
 notes="${RELEASE_NOTES:-$(git -C "$here" log -20 --pretty='- %s' "$(git -C "$here" describe --tags --abbrev=0 "v$version^" 2>/dev/null || echo HEAD~20)"..HEAD 2>/dev/null || echo "- Verbesserungen und Fehlerbehebungen")}"
 cat > "$dist/latest.json" <<JSON
 {

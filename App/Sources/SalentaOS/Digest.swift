@@ -47,6 +47,10 @@ enum Digest {
     static func finalText(_ rec: MissionRecord) -> String? {
         guard let t = try? String(contentsOfFile: rec.log, encoding: .utf8) else { return nil }
         let clean = t.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+            // Interne Log-Zeilen der Agent-CLIs (z. B. „2026-…Z ERROR codex_core… failed to load skill“) sind kein Ergebnis
+            .components(separatedBy: "\n")
+            .filter { $0.range(of: #"^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+(ERROR|WARN|INFO|DEBUG)\s"#, options: .regularExpression) == nil }
+            .joined(separator: "\n")
         return String(clean.suffix(14_000))
     }
 
@@ -146,7 +150,7 @@ enum Digest {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-digest-\(UUID().uuidString).md")
         try? prompt.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
-        let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model haiku --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))",
+        let r = Proc.zsh(HelperLLM.command(model: "haiku", maxTurns: 3, file: file.path),
                          in: NSTemporaryDirectory(), timeout: 150)
         guard let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"),
               let data = res[a...b].data(using: .utf8),
@@ -300,9 +304,12 @@ struct DigestCard: View {
 
     private func next(_ d: MissionDigest) -> some View {
         let shown = showAll ? d.proposals : Array(d.proposals.prefix(4))
-        let agentKey = agentOverride ?? mostCommonAgent(d.proposals) ?? d.proposals[0].agent
+        let proposed = agentOverride ?? mostCommonAgent(d.proposals) ?? d.proposals[0].agent
+        // Vorschlag „Claude“, aber Claude ist pausiert: gleich den Ersatz zeigen und nehmen
+        let standIn: AgentKind? = agentOverride == nil && proposed == AgentKind.claude.rawValue && AgentManager.claudeOff ? AgentManager.claudeStandIn(osAgent: false) : nil
+        let agentKey = standIn?.rawValue ?? proposed
         let kind = AgentKind(rawValue: agentKey) ?? .claude
-        let suggested: String = d.proposals.first(where: { $0.agent == agentKey })?.model ?? ""
+        let suggested: String = standIn != nil ? "" : d.proposals.first(where: { $0.agent == agentKey })?.model ?? ""
         let model: String = agentOverride == nil ? suggested : ModelCatalog.selected(for: kind)
         let project: String = (Digest.workDir(rec) as NSString).lastPathComponent
         let intro: String = String(format: L("Der Agent schlägt %d nächste Schritte für %@ vor. Du musst nichts davon machen – starte einzelne oder alle auf einmal."), d.proposals.count, project)

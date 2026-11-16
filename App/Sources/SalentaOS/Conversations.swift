@@ -24,6 +24,8 @@ struct MissionRecord: Codable, Identifiable, Hashable {
     var archived: Bool? = nil
     /// Gewähltes Modell (für die Anzeige) und warum dieser Agent gewählt wurde.
     var model: String? = nil
+    /// Denkstufe (low/medium/high) – getrennt vom Modell, damit Übergaben sie behalten
+    var effort: String? = nil
     var routeReason: String? = nil
     /// Arbeitskopie bei Coding-Aufträgen (bis du übernimmst oder verwirfst).
     var worktree: WorktreeInfo? = nil
@@ -51,6 +53,9 @@ struct MissionRecord: Codable, Identifiable, Hashable {
     var checkpoint: String? = nil
 
     var agentKind: AgentKind { AgentKind(rawValue: agent) ?? .claude }
+    /// Ältere Einträge haben die Denkstufe im Modell-Feld gespeichert („medium“) – die zählt nicht als Modell.
+    var cleanModel: String? { model.flatMap { ["low", "medium", "high", "xhigh", "minimal"].contains($0) ? nil : $0 } }
+    var legacyEffort: String? { model.flatMap { ["low", "medium", "high"].contains($0) ? $0 : nil } }
     var isOSAgent: Bool { agent == "os" }
     var agentTitle: String { isOSAgent ? "OS-Agent" : agentKind.title }
     var agentSymbol: String { isOSAgent ? "sparkles" : agentKind.symbol }
@@ -91,7 +96,7 @@ final class MissionStore: ObservableObject {
         let request = prompt.components(separatedBy: "\n\n---\n").first ?? prompt
         missions.append(MissionRecord(id: s.id.uuidString, title: Self.tidy(s.label), request: request, agent: s.isOSAgent ? "os" : s.kind.rawValue,
                                       mode: s.mode.rawValue, directory: s.directory.path, started: s.startedAt,
-                                      log: s.logFile.path, taskID: s.taskID, model: s.model ?? s.effort, worktree: s.worktree))
+                                      log: s.logFile.path, taskID: s.taskID, model: s.model, effort: s.effort, worktree: s.worktree))
         save()
     }
 
@@ -130,6 +135,14 @@ final class MissionStore: ObservableObject {
     func setDigest(_ id: String, _ d: MissionDigest) {
         guard let i = missions.firstIndex(where: { $0.id == id }) else { return }
         missions[i].digest = d
+        save()
+    }
+
+    /// Gestoppt: als beendet und nicht erfolgreich markieren (sonst gälte der Lauf später als „fertig“ und würde geprüft und geliefert).
+    func markStopped(_ id: String) {
+        guard let i = missions.firstIndex(where: { $0.id == id }) else { return }
+        if missions[i].ended == nil { missions[i].ended = Date() }
+        missions[i].ok = false
         save()
     }
 
@@ -228,7 +241,8 @@ final class MissionStore: ObservableObject {
         save()
     }
 
-    func mission(_ id: String) -> MissionRecord? { missions.first { $0.id == id } }
+    /// Neueste stehen hinten – von hinten suchen (die Ansicht fragt das für jede laufende Zeile oft ab)
+    func mission(_ id: String) -> MissionRecord? { missions.last { $0.id == id } }
 
     var recent: [MissionRecord] { missions.sorted { $0.started > $1.started } }
 }
@@ -387,6 +401,8 @@ struct ConversationView: View {
     @State private var modelTick = 0
     @StateObject private var tail = LogTail()
     @ObservedObject private var catalog = ModelCatalog.shared
+    /// Arbeitsbereich rechts (Dateien, Vorschau, Diff, Verlauf) – bleibt eingeschaltet, bis du ihn zuklappst
+    @AppStorage("chat.workspace") private var showWorkspace = true
 
     static let handoffAgents: [(String, String, String)] = [
         ("os", "OS-Agent", "sparkles"), ("claude", "Claude Code", "sparkle"),
@@ -402,6 +418,8 @@ struct ConversationView: View {
                 header(rec)
                 MissionStatusBar(rec: rec, session: session).id(rec.id)
                 Divider()
+                HStack(spacing: 0) {
+                VStack(spacing: 0) {
                 if rec.runMode == .interaktiv, !showTerminal, let t = rec.transcript {
                     DialogChat(path: t, session: session)
                 } else if let s = session, rec.runMode == .interaktiv || showTerminal {
@@ -446,6 +464,14 @@ struct ConversationView: View {
                     }
                 }
                 composer(rec)
+                if rec.runMode == .autonom { LiveStatsBar(rec: rec, session: session, blocks: tail.blocks) }
+                }
+                if showWorkspace, rec.runMode == .autonom || rec.worktree != nil {
+                    Divider()
+                    WorkspacePanel(rec: rec, running: session?.running == true, blocks: tail.blocks)
+                        .frame(minWidth: 280, idealWidth: 340, maxWidth: 420)
+                }
+                }
             }
             .navigationTitle(rec.title)
             .task(id: rec.id) { await findTranscript(rec) }
@@ -511,8 +537,12 @@ struct ConversationView: View {
                         .sheet(isPresented: $showLivePreview) { PreviewSheet(id: rec.id, title: rec.title) }
                 }
                 if s.running {
-                    Button(role: .destructive) { agents.close(s.id) } label: { Image(systemName: "stop.fill") }.help("Stoppen")
+                    Button(role: .destructive) { agents.stop(s.id) } label: { Image(systemName: "stop.fill") }.help("Stoppen")
                 }
+            }
+            if rec.runMode == .autonom || rec.worktree != nil {
+                Toggle(isOn: $showWorkspace) { Image(systemName: "sidebar.right") }
+                    .toggleStyle(.button).help(L("Arbeitsbereich: geänderte Dateien mit Vorschau und Diff, Verlauf als Zeitleiste"))
             }
             Button { openWindow(id: "live") } label: { Image(systemName: "macwindow.on.rectangle") }.help("Im Live-Fenster ansehen")
             // Auftrag an einen Projekt-Betreuer übergeben: er plant ihn als Team neu und betreut ihn bis zum Schluss
@@ -782,6 +812,8 @@ struct StatusPill: View {
 // MARK: - Start wie bei Claude
 
 struct HomeView: View {
+    @AppStorage("ui.calm") private var calm = true
+    @State private var showAllDone = false
     @ObservedObject private var missions = MissionStore.shared
     @EnvironmentObject private var tasks: TaskStore
     @EnvironmentObject private var agents: AgentManager
@@ -799,14 +831,16 @@ struct HomeView: View {
             VStack(spacing: Grid.xl) {
                 Spacer(minLength: 60)
                 HStack(spacing: Grid.m) {
-                    LiveMark(size: 36, active: agents.runningCount > 0)
-                    Text("\(greeting), \(Profile.name)").font(.system(size: 34, weight: .regular, design: .serif))
+                    LiveMark(size: calm ? 28 : 36, active: agents.runningCount > 0)
+                    Text("\(greeting), \(Profile.name)")
+                        .font(calm ? .system(size: 28, weight: .semibold) : .system(size: 34, weight: .regular, design: .serif))
                 }
                 MissionComposer(style: .claude, seed: $seed)
                     .frame(maxWidth: 760)
-                HStack(spacing: Grid.m) {
-                    if Focus.isOn { Label("Fokus aktiv – nur Freigaben, fertige Aufträge und dringende Mails melden sich", systemImage: "moon.fill").font(.caption).foregroundStyle(.purple) }
-                    Spacer(); UsageMini(); FocusButton(); AwakeButton(); AutoModeButton()
+                // Statusleiste: ausgeschrieben, wenn Platz ist – sonst nur Symbole (nie umbrechen)
+                ViewThatFits(in: .horizontal) {
+                    statusRow(icons: false)
+                    statusRow(icons: true)
                 }.frame(maxWidth: 760).padding(.top, -Grid.l)
                 suggestions.frame(maxWidth: 760)
                 running.frame(maxWidth: 760)
@@ -816,21 +850,44 @@ struct HomeView: View {
             .frame(maxWidth: .infinity)
         }
         .navigationTitle("")
+        .toolbarBackground(calm ? .hidden : .automatic, for: .windowToolbar)
+    }
+
+    private func statusRow(icons: Bool) -> some View {
+        HStack(spacing: Grid.m) {
+            if Focus.isOn { Image(systemName: "moon.fill").foregroundStyle(.purple).help(L("Fokus aktiv – nur Freigaben, fertige Aufträge und dringende Mails melden sich")) }
+            Spacer(minLength: 0)
+            UsageMini()
+            Group { FocusButton(); AwakeButton(); ControlButton(); AutoModeButton() }
+                .labelStyle(icons ? AnyLabelStyle(.iconOnly) : AnyLabelStyle(.titleAndIcon))
+        }
+        .lineLimit(1)
+        // Ruhig: die Statusleiste tritt zurück (grau, klein) statt mit Akzentfarbe um Aufmerksamkeit zu konkurrieren
+        .tint(calm ? Color.secondary : nil)
+        .font(calm ? .caption : nil)
     }
 
     private var suggestions: some View {
-        let items = Array(tasks.focus.prefix(3))
+        ViewThatFits(in: .horizontal) {
+            suggestionRow(3)
+            suggestionRow(2)
+            suggestionRow(1)
+        }
+    }
+
+    private func suggestionRow(_ n: Int) -> some View {
+        let items = Array(tasks.focus.prefix(n))
         return HStack(spacing: Grid.s) {
             ForEach(items) { t in
                 Button { seed = t.title + (t.notes.isEmpty ? "" : "\n\n" + t.notes) } label: {
-                    Label(t.title, systemImage: "checklist").lineLimit(1)
-                        .font(.callout)
+                    Label(t.title, systemImage: "checklist").lineLimit(1).truncationMode(.tail)
+                        .font(.callout).frame(maxWidth: 260)
                         .padding(.horizontal, Grid.m).padding(.vertical, 7)
                         .background(Capsule().strokeBorder(Color.secondary.opacity(0.3)))
                 }
                 .buttonStyle(.plain)
             }
-            if let next = calendar.next {
+            if n == 3, let next = calendar.next {
                 Label("\(next.start.timeString) \(next.title)", systemImage: "calendar").lineLimit(1)
                     .font(.callout).foregroundStyle(.secondary)
                     .padding(.horizontal, Grid.m).padding(.vertical, 7)
@@ -845,12 +902,19 @@ struct HomeView: View {
                 ForEach([MissionPhase.waiting, .running, .review, .failed], id: \.self) { ph in
                     let list = open.filter { $0.1 == ph }
                     if !list.isEmpty {
-                        VStack(alignment: .leading, spacing: Grid.s) {
+                        VStack(alignment: .leading, spacing: calm ? 2 : Grid.s) {
                             HStack(spacing: 6) {
-                                PhaseBadge(phase: ph)
+                                if !calm || ph != .review { PhaseBadge(phase: ph) }
                                 Text("\(ph.title) · \(list.count)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             }
-                            ForEach(list, id: \.0.id) { rec, phase in OverviewRow(rec: rec, phase: phase) }
+                            .padding(.leading, calm ? Grid.s : 0).padding(.bottom, calm ? Grid.xs : 0)
+                            // Ruhig: Fertiges nicht als lange Liste – die drei neuesten, der Rest auf Klick (steht auch in der Seitenleiste)
+                            let cut = calm && !showAllDone && (ph == .review || ph == .failed) && list.count > 3
+                            ForEach(cut ? Array(list.prefix(3)) : list, id: \.0.id) { rec, phase in OverviewRow(rec: rec, phase: phase) }
+                            if cut {
+                                Button(String(format: L("Alle %d anzeigen"), list.count)) { withAnimation(.snappy) { showAllDone = true } }
+                                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).padding(.leading, Grid.s)
+                            }
                         }
                     }
                 }
@@ -866,33 +930,54 @@ struct HomeView: View {
 struct OverviewRow: View {
     let rec: MissionRecord
     let phase: MissionPhase
+    @AppStorage("ui.calm") private var calm = true
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var agents: AgentManager
     @EnvironmentObject private var tasks: TaskStore
     @ObservedObject private var store = MissionStore.shared
+    @State private var hover = false
+    private var closable: Bool { phase == .review || phase == .failed }
 
     var body: some View {
         HStack(spacing: Grid.s) {
             Button { app.page = .chat(rec.id) } label: {
                 HStack(spacing: Grid.s) {
+                    let meta = "\(rec.agentTitle)\(rec.projectName.isEmpty ? "" : " · " + rec.projectName) · \(relativeDay(rec.started))"
+                    if calm {
+                        Text(MissionRow.plain(rec.title)).lineLimit(1)
+                        Spacer(minLength: Grid.m)
+                        Text(meta).font(.caption).foregroundStyle(.tertiary).lineLimit(1).layoutPriority(-1)
+                            .opacity(hover && closable ? 0 : 1)
+                    } else {
                     Image(systemName: rec.agentSymbol).foregroundStyle(.secondary).frame(width: 18)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(rec.title).lineLimit(1)
-                        Text("\(rec.agentTitle)\(rec.projectName.isEmpty ? "" : " · " + rec.projectName) · \(relativeDay(rec.started))")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(meta).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer()
+                    }
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if phase == .review || phase == .failed {
+            if closable, !calm {
                 Button("Abschließen") { store.archive(rec.id, agents: agents, tasks: tasks) }
                     .controlSize(.small)
             }
         }
-        .padding(Grid.m)
-        .background(ModernCardBackground(radius: 12))
+        // Ruhig: die Aktion zeigt sich erst, wenn du auf der Zeile bist (an der Stelle der Randnotiz) – sonst steht in jeder Zeile ein Knopf
+        .overlay(alignment: .trailing) {
+            if closable, calm, hover {
+                Button("Abschließen") { store.archive(rec.id, agents: agents, tasks: tasks) }
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, calm ? Grid.s : Grid.m).padding(.vertical, calm ? 6 : Grid.m)
+        .background {
+            if calm { RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(hover ? 0.07 : 0)) }
+            else { ModernCardBackground(radius: 12) }
+        }
+        .onHover { hover = $0 }
     }
 }
 
@@ -900,16 +985,25 @@ struct OverviewRow: View {
 struct MissionRow: View {
     let rec: MissionRecord
     var helpers: Int = 0
+    @AppStorage("ui.calm") private var calm = true
     @EnvironmentObject private var agents: AgentManager
     var body: some View {
         let s = agents.sessions.first { $0.id.uuidString == rec.id }
         TimelineView(.periodic(from: .now, by: 5)) { _ in
             let ph = rec.phase(session: s)
+            let detail = "\(rec.delegated == true ? (rec.routeReason?.hasPrefix("Mod:") == true ? "↳ Mod · " : "↳ Helfer · ") : "")\(rec.agentTitle) · \(ph.title)"
             HStack(spacing: Grid.s) {
+                if calm {
+                    // Ruhig: eine Zeile je Auftrag – Agent und Stand stehen im Tooltip und im Zeichen rechts
+                    // Fertiges tritt zurück (grau, ohne Zeichen) – ein Zeichen bekommt nur, was läuft oder dich braucht
+                    Text(MissionRow.plain(rec.title)).lineLimit(1).help(detail)
+                        .foregroundStyle(ph == .review ? .secondary : .primary)
+                } else {
                 Image(systemName: rec.agentSymbol).frame(width: 16).foregroundStyle(ph == .running ? Color.green : .secondary)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(rec.title).lineLimit(1)
-                    Text("\(rec.delegated == true ? (rec.routeReason?.hasPrefix("Mod:") == true ? "↳ Mod · " : "↳ Helfer · ") : "")\(rec.agentTitle) · \(ph.title)").font(.caption2).foregroundStyle(ph == .running || ph == .waiting ? ph.color : .secondary).lineLimit(1)
+                    Text(detail).font(.caption2).foregroundStyle(ph == .running || ph == .waiting ? ph.color : .secondary).lineLimit(1)
+                }
                 }
                 Spacer(minLength: 0)
                 if helpers > 0 {
@@ -918,9 +1012,24 @@ struct MissionRow: View {
                         .background(Capsule().fill(Color.secondary.opacity(0.15)))
                         .help(String(format: L("%d Helfer"), helpers))
                 }
-                PhaseBadge(phase: ph)
+                Text(Self.age(rec.started)).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                    .help(rec.started.formatted(date: .abbreviated, time: .shortened))
+                if !calm || ph != .review { PhaseBadge(phase: ph) }
             }
         }
+    }
+
+    /// Titel ohne vorangestelltes Kennzeichen (z. B. das Betreuer-Symbol) – für die ruhige Liste.
+    static func plain(_ title: String) -> String {
+        var t = Substring(title)
+        while let f = t.unicodeScalars.first, !(f.properties.isAlphabetic || f.properties.numericType != nil || "\"„“#(".unicodeScalars.contains(f)) { t = t.dropFirst() }
+        return t.isEmpty ? title : String(t)
+    }
+
+    /// Kurzes Alter: 5m, 3h, 2d
+    static func age(_ d: Date) -> String {
+        let s = Int(max(0, Date().timeIntervalSince(d)))
+        return s < 3600 ? "\(max(1, s / 60))m" : s < 86400 ? "\(s / 3600)h" : "\(s / 86400)d"
     }
 }
 
@@ -1208,5 +1317,15 @@ struct DraftField: View {
                 .disabled(draft.text.trimmingCharacters(in: .whitespaces).isEmpty)
                 .keyboardShortcut(.return, modifiers: .command)
         }
+    }
+}
+
+/// Umschaltbarer Label-Stil: ausgeschrieben oder nur Symbol (für Leisten, die nie umbrechen sollen).
+struct AnyLabelStyle: LabelStyle {
+    private let iconOnly: Bool
+    init(_ s: IconOnlyLabelStyle) { iconOnly = true }
+    init(_ s: TitleAndIconLabelStyle) { iconOnly = false }
+    func makeBody(configuration: Configuration) -> some View {
+        if iconOnly { configuration.icon } else { HStack(spacing: 4) { configuration.icon; configuration.title } }
     }
 }

@@ -1,0 +1,10 @@
+{
+  "name": "salenta-harness",
+  "version": "0.1.0",
+  "description": "Salenta Harness – the agent runtime of Salenta Code: model + tools + policies + sessions",
+  "type": "module",
+  "bin": { "salenta-harness": "cli.mjs" },
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "license": "Apache-2.0"
+}

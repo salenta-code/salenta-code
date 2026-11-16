@@ -64,11 +64,21 @@ enum PerfProbe {
             if let s = try? String(contentsOf: tmp, encoding: .utf8) {
                 out += "\nThreads (sample 3 s) – die beschäftigtsten mit ihren eigenen Funktionen:\n" + threads(s)
                 try? s.write(to: Paths.root.appendingPathComponent("logs/perf-sample.txt"), atomically: true, encoding: .utf8)
+                if Paths.isDevBuild { try? s.write(to: Paths.source.appendingPathComponent("logs/perf-sample.txt"), atomically: true, encoding: .utf8) }
                 try? FileManager.default.removeItem(at: tmp)
             }
 
+            // 5. Speicherdruck (Auslagern macht den ganzen Mac zäh) und GPU-Last durch lokale Modelle
+            let vm = Proc.zsh("memory_pressure -Q 2>/dev/null | tail -1; sysctl -n hw.memsize; vm_stat | egrep 'Pages (free|active|wired down|occupied by compressor)|Swapouts'; sysctl vm.swapusage; (pgrep -x ollama >/dev/null && (ollama ps 2>/dev/null || true))", in: NSTemporaryDirectory(), timeout: 20).out
+            out += "\nSpeicher und lokale Modelle:\n" + vm
+
             let url = Paths.root.appendingPathComponent("logs/perf.txt")
             try? out.write(to: url, atomically: true, encoding: .utf8)
+            // Entwickler-Build: zusätzlich in den Quellordner (dort liest die Analyse mit)
+            if Paths.source != Paths.root {
+                try? FileManager.default.createDirectory(at: Paths.source.appendingPathComponent("logs"), withIntermediateDirectories: true)
+                try? out.write(to: Paths.source.appendingPathComponent("logs/perf.txt"), atomically: true, encoding: .utf8)
+            }
             DispatchQueue.main.async { running = false; completion?(url) }
         }
     }

@@ -41,13 +41,21 @@ Agents dürfen Dateien im Projekt ändern und übliche Befehle ausführen (Tests
 
 Unter **Einstellungen › Regeln** legst du eigene Sperr-Regeln fest (global oder pro Projekt). In der Menüleiste kannst du „Agents ohne Rückfrage arbeiten lassen“ zeitlich begrenzt einschalten – Sperr-Regeln gelten trotzdem.
 
+**Salenta Harness** (unser eigener Agent) stellst du unter **Einstellungen › Modelle** ein:
+
+- **Arbeitsweise:** „Selbstständig“ fragt nur bei riskanten Schritten. „Mit Freigabe“ legt dir zusätzlich jeden Befehl vor, der etwas verändern kann.
+- **Browser-Steuerung:** Seiten öffnen, lesen, klicken und tippen. **Computer-Steuerung:** Apps öffnen, Fenster lesen, klicken, tippen und Menüs bedienen. Vor der ersten Nutzung fragt Salenta Code, für wie lange (15 Minuten, 1 Stunde, ganzer Tag). Absenden, Kaufen, Bezahlen, Löschen und Posten fragen immer einzeln – auch im Auto-Modus.
+- Für die Computer-Steuerung erlaubst du Salenta Code einmal in den Systemeinstellungen unter „Datenschutz & Sicherheit › Bedienungshilfen“ und bestätigst die Abfrage zu „System Events“.
+- **Harness prüfen** testet Schlüssel, Modell, Werkzeuge, Browser und Computer-Steuerung auf deinem Mac – ohne etwas zu verändern.
+
 ## Änderungen prüfen und übernehmen
 
 Jeder Code-Auftrag arbeitet in einer **eigenen Arbeitskopie** deines Projekts. Dein Projektordner bleibt unberührt, bis du übernimmst – so können auch mehrere Agents gleichzeitig arbeiten.
 
 - `.env`-Dateien, lokale Einstellungen und `node_modules` kommen automatisch mit, damit Bauen und Testen funktioniert. Weitere Dateien trägst du in eine Datei `.worktreeinclude` im Projekt ein (eine pro Zeile).
-- Am Ende siehst du **Änderungen** mit allen Dateien und dem Diff. Hinterlegte Prüfbefehle (Tests, Build) laufen automatisch; auf Wunsch macht ein zweiter Agent ein Review.
+- Am Ende siehst du **Änderungen** mit allen Dateien und dem Diff. Hinterlegte Prüfbefehle (Tests, Build) laufen automatisch; auf Wunsch macht ein zweiter Agent ein Review. Bei Änderungen an der Oberfläche macht Salenta Code Aufnahmen in Desktop- und echter Handybreite (390 px), und das Review sieht sie sich an – kaputte Layouts fallen durch. Ob etwas über den Rand läuft, wird gemessen. Was schon vor dem Auftrag rot oder kaputt war, blockiert nicht.
 - **Übernehmen** – die Änderungen kommen in deinen Branch. Danach fragt Salenta Code, ob sie **auch auf GitHub hochgeladen** werden sollen (normaler Push, nie Force).
+- **Commits gehören zu deinem GitHub-Konto:** In GitHub-Projekten ordnet Salenta Code seine Commits und die der Helfer deinem Konto zu (über die Noreply-Adresse von GitHub; an deiner Git-Konfiguration ändert sich nichts). Sonst blockieren Vorschau-Dienste wie Vercel den Pull Request.
 - **Pull Request …** – ein Klick für Commit, Push und Pull Request. Titel, Beschreibung und Changelog sind schon fertig geschrieben (aus Auftrag und Änderungen), du kannst alles ändern. Im selben Fenster siehst du jede geänderte Datei mit Diff, wählst **Als Entwurf** und die **Basis**: dein Branch – oder der Branch eines anderen Auftrags, dann bauen die PRs aufeinander auf (gestapelt). Genutzt wird deine GitHub-Anmeldung (`gh`).
 - **Nachschieben:** Solange der PR offen ist, bleibt der Auftrag offen. Arbeitet der Agent weiter, lädt **Nachschieben** die neuen Änderungen in denselben PR – auf Wunsch mit neu geschriebener Beschreibung. **Abschließen** räumt die Arbeitskopie auf; PR und Branch bleiben auf GitHub.
 - **Verwerfen** – die Arbeitskopie wird gelöscht, dein Projekt bleibt wie es war.
@@ -59,7 +67,9 @@ Unter **Projekte** zeigt ein blauer Pfeil mit Zahl, wie viele Commits noch nicht
 - **Projekte** zeigt alle deine Projekte mit Branch, offenen Änderungen, CI-Status, Live-Vorschau, Terminal und Regeln.
 - **Weiterarbeiten** öffnet einen neuen Auftrag direkt in diesem Projekt.
 - **Projektwissen** (Gehirn-Symbol): was alle Agents über das Projekt gelernt haben – angeheftete Einträge bekommt jeder Agent mit.
-- **Projekt-Betreuer:** Gib ein Projekt in Betreuung. Ein Koordinator plant Aufgaben, startet Helfer, beobachtet die CI und meldet sich, wenn er dich braucht. Du bestimmst, wie viel er selbst darf.
+- **Entscheidungsmodell:** Vor jedem Auftrag entscheidet das stärkste Modell, das du schon hast (Claude oder Codex, je nachdem, was gerade verfügbar ist), welcher Agent ihn mit welchem Modell und welcher Denktiefe ausführt. Dafür ist kein eigener Schlüssel nötig. Abschaltbar unter Einstellungen › Modelle – dann entscheidet ein kleines, schnelles Modell.
+- **Agent, Modell, Skills und Erweiterungen in einem Zug:** Das Entscheidungsmodell hat keinen festen Favoriten. Es vergleicht alle installierten Agents (Claude Code, Codex, Cursor und weitere) mit den Modellen, die ihre CLI gerade anbietet, und dem Stand ihrer Limits, und nimmt die Kombination, die für diesen Auftrag am stärksten ist. Dazu geht es alle installierten Skills und Erweiterungen durch – auch die Repos, die du unter Erweiterungen selbst hinzugefügt hast – und gibt dem Agent die mit, die zum Auftrag passen: mehrere zusammen, wenn sie sich ergänzen (zum Beispiel ein Token-Sparer, ein Design-Skill und ein Browser-Test). Ein Agent bekommt nur, was er laden kann: Plugins und Claude-Skills gehen an Claude Code, MCP-Server an jeden Agent. Läuft Claude Code selbstständig, stehen die Anleitungen der gewählten Skills direkt im Auftrag (bis zu sechs, die gewählten zuerst); was nicht geladen wurde, steht dabei. Im Vorschlag vor dem Start siehst du Agent, Modell, Skills und Erweiterungen und kannst jedes einzeln entfernen. Agents mit Kosten pro Nutzung wählt es nur, wenn du das unter Kosten erlaubst. Der Projekt-Betreuer plant seine Helfer nach derselben Regel.
+- **Projekt-Betreuer:** Gib ein Projekt in Betreuung. Längere Aufträge (auch nummerierte Listen) arbeitet er der Reihe nach ab und nennt dir den Stand je Punkt. Liegt ein Ergebnis schon als Pull Request vor, heißt der Knopf „PR #… mergen“ und mergt genau diesen PR. Seine Helfer laufen unbeaufsichtigt: Auf eine Freigabe warten sie höchstens vier Minuten und arbeiten dann ohne den Schritt weiter. Agents mit Kosten pro Nutzung (z. B. Salenta Harness) setzt er nur ein, wenn du den Agent in deiner Nachricht ausdrücklich nennst. Ein Koordinator plant Aufgaben, startet Helfer, beobachtet die CI und meldet sich, wenn er dich braucht. Du bestimmst, wie viel er selbst darf.
 
 ## Agents, Skills und Erweiterungen
 

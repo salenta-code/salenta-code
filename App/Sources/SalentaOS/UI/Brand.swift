@@ -47,6 +47,7 @@ struct BrandHeader: View {
     var active = false
     @AppStorage("theme.planet") private var planetRaw = Planet.salenta.rawValue
     @State private var picking = false
+    @AppStorage("ui.calm") private var calm = true
     var body: some View {
         let planet = Planet(rawValue: planetRaw) ?? .salenta
         HStack(spacing: 8) {
@@ -57,18 +58,19 @@ struct BrandHeader: View {
                     .padding(.horizontal, 4).padding(.vertical, 1)
                     .background(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.secondary.opacity(0.4)))
                 if Paths.isDevBuild {
-                    Text("DEV").font(.system(size: 10, weight: .heavy, design: .rounded)).foregroundStyle(.white)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.orange))
+                    Text("DEV").font(.system(size: 10, weight: .heavy, design: .rounded)).foregroundStyle(.orange)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.orange.opacity(0.6)))
                         .help(L("Deine Entwickler-Version – hier testest du und veröffentlichst neue Versionen"))
                 }
             }
             Spacer()
         }
         .padding(.horizontal, 14).padding(.top, 6).padding(.bottom, 6)
-        .frame(height: 64, alignment: .center)
+        .frame(height: calm ? 44 : 64, alignment: .center)
         // eigener Hintergrund: die Liste scrollt sonst sichtbar unter dem Logo durch – mit Sternen und deinem Planeten
-        .background(ZStack { Rectangle().fill(.bar); PlanetBackdrop(planet: planet) })
+        // (ruhige Oberfläche: nur die Fläche, ohne Sternenhimmel)
+        .background(ZStack { Rectangle().fill(.bar); if !calm { PlanetBackdrop(planet: planet) } })
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { picking = true }
         .contextMenu { Button(L("Planet wählen …")) { picking = true } }

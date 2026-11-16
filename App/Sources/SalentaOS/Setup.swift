@@ -172,7 +172,7 @@ struct SetupView: View {
             }
             .padding(Grid.l)
         }
-        .frame(width: 640, height: 560)
+        .frame(minWidth: 680, idealWidth: 780, maxWidth: 1100, minHeight: 600, idealHeight: 820, maxHeight: 1200)
         .onAppear {
             system.checkCLIs()
             if name.isEmpty { name = Profile.name == "du" ? "" : Profile.name }
@@ -230,6 +230,7 @@ struct SetupView: View {
                     }
                 }
             }
+            .frame(minHeight: 220)
         }
     }
 

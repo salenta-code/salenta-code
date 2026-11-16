@@ -47,7 +47,11 @@ struct ContentView: View {
     @AppStorage("sidebar.apps") private var showApps = true
     @AppStorage("sidebar.tech") private var showTech = false
     @AppStorage("sidebar.tools") private var showTools = true
+    @AppStorage("sidebar.insights") private var showInsights = false
+    @AppStorage("sidebar.day") private var showDay = true
+    @AppStorage("ui.calm") private var calm = true
     @State private var collapsedMissions: Set<String> = []
+    @State private var showAllMissions = false
 
     /// Wurde ein Auftrag fortgesetzt (Weitermachen/Übergabe), hängen seine Helfer am neuesten offenen Teil der Kette.
     private func hostID(_ id: String, open: [MissionRecord]) -> String {
@@ -99,12 +103,35 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $app.page) {
-                Label("Neuer Auftrag", systemImage: "square.and.pencil").tag(Page.home)
                 Label(L("Übersicht"), systemImage: "rectangle.3.group")
                     .badge(attentionCount)
                     .tag(Page.cockpit)
 
-                // Coden: Aufträge, Projekte und alles, was die Agents gerade tun
+                // Ruhige Oberfläche: oben nur, was man täglich braucht – Planung und Auswertung liegen eingeklappt darunter
+                if calm {
+                    Label("Projekte", systemImage: "square.grid.2x2").tag(Page.projects)
+                    Label(L("Projekt-Betreuer"), systemImage: "safari")
+                        .badge(steward.projects.reduce(0) { $0 + $1.count(.review) + $1.count(.red) })
+                        .tag(Page.stewards)
+                    ForEach(steward.projects) { sp in
+                        HStack(spacing: 6) {
+                            // gleiche Namen (z. B. zwei Klone desselben Repos) am Elternordner unterscheiden
+                            let twin = steward.projects.contains { $0.id != sp.id && $0.name == sp.name }
+                            let parent = URL(fileURLWithPath: sp.id).deletingLastPathComponent().lastPathComponent
+                            (Text(sp.name) + (twin ? Text(" · " + L("Ordner") + " „" + parent + "“").foregroundColor(.secondary) : Text(""))).lineLimit(1)
+                                .help(sp.id.replacingOccurrences(of: Paths.home.path, with: "~"))
+                            Spacer()
+                            if sp.count(.running) > 0 { LiveMark(size: 10, active: true) }
+                        }
+                        .padding(.leading, 22)
+                        .font(.callout)
+                        .badge(sp.count(.review) + sp.count(.red))
+                        .tag(Page.steward(sp.id))
+                    }
+                    Label("Läuft gerade", systemImage: "dot.radiowaves.left.and.right")
+                        .badge(agents.runningCount + live.active.count)
+                        .tag(Page.mission)
+                } else {
                 Section(L("Coden")) {
                     Label("Projekte", systemImage: "square.grid.2x2").tag(Page.projects)
                     Label(L("Projekt-Betreuer"), systemImage: "safari")
@@ -135,6 +162,7 @@ struct ContentView: View {
                     UsageSidebarLabel().tag(Page.usage)
                     Label(L("Wochenrückblick"), systemImage: "sparkles.rectangle.stack").tag(Page.recap)
                 }
+                }
                 Section("Aufträge") {
                     if missions.open.isEmpty {
                         Text("Nichts offen – oben „Neuer Auftrag“").font(.callout).foregroundStyle(.tertiary)
@@ -151,7 +179,11 @@ struct ContentView: View {
                         guard m.delegated == true, let p = m.parent else { return false }
                         return open.contains { $0.id == hostID(p, open: open) }
                     }
-                    ForEach(open.filter { !isHelper($0) }) { m in
+                    // Ruhig: die neuesten zwölf – und alles, was noch läuft oder dich braucht. Der Rest auf Klick.
+                    let top = open.filter { !isHelper($0) }
+                    let busy: (MissionRecord) -> Bool = { m in m.phase(session: agents.sessions.first { $0.id.uuidString == m.id }) != .review }
+                    let shown = calm && !showAllMissions && top.count > 14 ? top.enumerated().filter { $0.offset < 12 || busy($0.element) }.map(\.element) : top
+                    ForEach(shown) { m in
                         let kids = helpers(of: m.id, in: open)
                         if kids.isEmpty {
                             missionRow(m)
@@ -164,10 +196,24 @@ struct ContentView: View {
                             }
                         }
                     }
+                    if shown.count < top.count {
+                        Button(String(format: L("Alle %d anzeigen"), top.count)) { showAllMissions = true }
+                            .buttonStyle(.plain).font(.callout).foregroundStyle(.secondary)
+                    }
                 }
 
+                if calm {
+                    Section(L("Planen & Auswerten"), isExpanded: $showInsights) {
+                    Label(L("Nachtschicht"), systemImage: "moon.stars")
+                        .badge(NightShift.shared.items.filter { $0.state == .queued || $0.state == .running }.count)
+                        .tag(Page.nightshift)
+                    Label(L("Verlauf"), systemImage: "clock.arrow.circlepath").tag(Page.history)
+                    UsageSidebarLabel().tag(Page.usage)
+                    Label(L("Wochenrückblick"), systemImage: "sparkles.rectangle.stack").tag(Page.recap)
+                    }
+                }
                 // Dein Tag: Aufgaben, Mails, Termine, Wissen
-                Section(L("Mein Tag")) {
+                Section(L("Mein Tag"), isExpanded: calm ? $showDay : .constant(true)) {
                     Label("Aufgaben", systemImage: "checklist")
                         .badge(Focus.isOn ? 0 : tasks.focus.count)
                         .tag(Page.tasks)
@@ -220,7 +266,14 @@ struct ContentView: View {
                     Label(L("Claude-Connectors"), systemImage: "link").tag(Page.connectors)
                 }
             }
-            .safeAreaInset(edge: .top, spacing: 0) { BrandHeader(active: agents.runningCount > 0) }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: Grid.s) {
+                    BrandHeader(active: agents.runningCount > 0)
+                    NewMissionButton(active: app.page == .home) { app.page = .home }
+                        .padding(.horizontal, Grid.s).padding(.bottom, Grid.xs)
+                }
+            }
+            .quietSidebar(calm)
             .pureBlackSurface(sidebar: true)
             .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
         } detail: {
@@ -310,10 +363,29 @@ struct ContentView: View {
                 }
             }
             let store = tasks, model = app, mgr = agents, mcp = hub
+            // Anbieter pausiert → laufende Aufträge nicht abbrechen, sondern an den nächsten Agent übergeben, der sie fertig macht
+            NotificationCenter.default.addObserver(forName: Usage.pausedNote, object: nil, queue: .main) { n in
+                guard let raw = n.object as? String, let kind = AgentKind(rawValue: raw) else { return }
+                for s in mgr.sessions where s.running && s.kind == kind && s.mode == .autonom && !s.isOSAgent {
+                    let mid = s.id.uuidString
+                    guard let rec = MissionStore.shared.mission(mid),
+                          let alt = Usage.alternatives(kind).first(where: { OpenModels.available($0) && !Usage.isPaused($0) && !AgentHealth.unavailable($0) }) else { continue }
+                    MissionStore.shared.setOutcome(mid, "paused")
+                    Usage.shared.record(from: kind.title, to: alt.title, why: L("von dir pausiert"))
+                    Handoff.continueMission(rec, message: L("Der vorherige Agent wurde pausiert. Mach genau da weiter, wo er war – prüfe zuerst, was schon geändert ist – und erledige den Auftrag vollständig."),
+                                            target: alt.rawValue, agents: mgr, hub: mcp, note: "\(kind.title) " + L("pausiert") + " → \(alt.title)") { new in
+                        if mgr.sessions.contains(where: { $0.id == s.id && $0.running }) { mgr.close(s.id) }
+                        model.show("⇄ \(kind.title) " + L("pausiert – \(alt.title) macht weiter"))
+                        if model.page == .chat(mid) { model.page = .chat(new.id.uuidString) }
+                    }
+                }
+            }
             agents.onFinish = { s in
                 let mid = s.id.uuidString
                 Billing.record(s.kind, seconds: (s.endedAt ?? Date()).timeIntervalSince(s.startedAt))
                 if s.kind == .ollama { LocalStats.record(s) }
+                if MissionStore.shared.mission(mid)?.outcome == "paused" { return }   // wegen Pause übergeben – kein Fehler
+                if MissionStore.shared.mission(mid)?.outcome == "stopped" { return }  // von dir gestoppt – nicht prüfen, nicht melden
                 // Startoption, die die installierte CLI nicht (mehr) kennt? Merken und einmal ohne sie neu starten.
                 if !s.succeeded, let text = s.resultTail(maxChars: 4000), !s.isOSAgent,
                    let flag = CLIFlags.shared.learn(s.kind, from: text),
@@ -358,13 +430,58 @@ struct ContentView: View {
                     return
                 }
                 if s.succeeded, !s.isOSAgent { AgentHealth.clear(s.kind) }
+                // Modell gibt es für diesen Agent nicht (z. B. nach einem Wechsel)? Einmal mit dem Standardmodell neu starten.
+                if !s.succeeded, s.mode == .autonom, !s.isOSAgent, let text = s.resultTail(maxChars: 4000)?.lowercased(),
+                   ["issue with the selected model", "model is not supported", "model_not_found", "unknown model", "invalid model",
+                    "cannot use this model", "available models:", "model not available", "is not a valid model", "no such model"].contains(where: { text.contains($0) }),
+                   let rec = MissionStore.shared.mission(mid), rec.outcome != "badmodel" {
+                    MissionStore.shared.setOutcome(mid, "badmodel")
+                    if let m = rec.cleanModel { CLIFlags.log("\(s.kind.title): Modell \(m) nicht verfügbar – Standardmodell") }
+                    if ModelCatalog.selected(for: s.kind) == (rec.cleanModel ?? "") { ModelCatalog.select("", for: s.kind) }
+                    Handoff.continueMission(rec, message: L("Das gewählte Modell war nicht verfügbar – erledige den Auftrag mit deinem Standardmodell vollständig."),
+                                            target: s.kind.rawValue, agents: mgr, hub: mcp, note: L("Modell nicht verfügbar → Standardmodell"), defaultModel: true) { n in
+                        model.show("↻ " + L("Modell nicht verfügbar – neu gestartet mit Standardmodell"))
+                        if model.page == .chat(mid) { model.page = .chat(n.id.uuidString) }
+                    }
+                    return
+                }
+                // Netz weg mitten im Lauf? Nicht als Fehler werten – sobald Internet da ist, macht derselbe Agent weiter.
+                if !s.succeeded, s.mode == .autonom, !s.isOSAgent, let text = s.resultTail(maxChars: 3000)?.lowercased(),
+                   ["can't reach the api server", "enotfound", "fetch failed", "econnreset", "network error", "etimedout", "connection error",
+                    "http 502", "http 503", "http 504", "[unavailable]", "bad gateway", "service unavailable", "overloaded_error", "server is overloaded"].contains(where: { text.contains($0) }),
+                   !Usage.shared.noteOutput(s.kind, text: text), let rec = MissionStore.shared.mission(mid), rec.outcome != "netretry" {
+                    MissionStore.shared.setOutcome(mid, "netretry")
+                    model.show("📡 " + L("Verbindung weg – der Auftrag geht weiter, sobald Internet da ist: ") + s.label)
+                    func resume(_ tries: Int) {
+                        guard tries < 240 else { return }   // höchstens 2 Stunden warten
+                        guard LocalFirst.shared.isOnline else { DispatchQueue.main.asyncAfter(deadline: .now() + 30) { resume(tries + 1) }; return }
+                        Handoff.continueMission(rec, message: L("Die Internetverbindung war kurz weg. Mach genau da weiter, wo du warst – prüfe zuerst, was schon geändert ist."),
+                                                target: s.kind.rawValue, agents: mgr, hub: mcp, note: L("Nach Verbindungsabbruch fortgesetzt")) { n in
+                            if model.page == .chat(mid) { model.page = .chat(n.id.uuidString) }
+                        }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) { resume(0) }
+                    return
+                }
                 // Limit erkannt? Dann übernimmt automatisch ein anderer Agent.
+                let otherAccount = !s.isOSAgent && Accounts.shared.hasFreeAlternative(s.kind)   // vor dem Wechsel prüfen
                 if !s.succeeded, s.mode == .autonom, let text = s.resultTail(maxChars: 4000),
                    Usage.shared.noteOutput(s.isOSAgent ? .claude : s.kind, text: text),
                    Usage.shared.autoSwitch, let rec = MissionStore.shared.mission(mid), rec.outcome != "limit" {
                     MissionStore.shared.setOutcome(mid, "limit")
                     let installed = Set(AgentKind.allCases.filter { OpenModels.available($0) })
-                    if let alt = Usage.alternatives(s.isOSAgent ? .claude : s.kind).first(where: { installed.contains($0) && !Usage.shared.isTight($0) }), !s.isOSAgent {
+                    // Weiteres Abo desselben Anbieters frei → derselbe Agent macht mit dem nächsten Abo weiter
+                    if otherAccount {
+                        Handoff.continueMission(rec, message: L("Das Nutzungslimit dieses Abos war erreicht. Mach genau da weiter, wo du warst, und erledige den Auftrag vollständig."),
+                                                target: s.kind.rawValue, agents: mgr, hub: mcp, note: "\(s.kind.title): " + L("nächstes Abo")) { n in
+                            model.show("⇄ \(s.kind.title): " + L("nächstes Abo macht weiter"))
+                            if model.page == .chat(mid) { model.page = .chat(n.id.uuidString) }
+                        }
+                        return
+                    }
+                    let candidates = Usage.alternatives(s.isOSAgent ? .claude : s.kind).filter { installed.contains($0) && !Usage.isPaused($0) && !AgentHealth.unavailable($0) }
+                    // Lieber ein knapper Agent als ein abgebrochener Auftrag
+                    if let alt = candidates.first(where: { !Usage.shared.isTight($0) }) ?? candidates.first, !s.isOSAgent {
                         Usage.shared.record(from: s.kind.title, to: alt.title, why: L("Limit erreicht"))
                         Handoff.continueMission(rec, message: L("Der vorherige Agent hat sein Nutzungslimit erreicht. Mach bitte an seiner Stelle weiter und erledige den Auftrag vollständig."),
                                                 target: alt.rawValue, agents: mgr, hub: mcp, note: "\(s.kind.title) " + L("im Limit") + " → \(alt.title)") { n in
@@ -373,6 +490,20 @@ struct ContentView: View {
                         }
                         return
                     }
+                }
+                // Ohne erkennbaren Grund abgebrochen (Absturz, Prozess beendet)? Einmal automatisch weitermachen lassen –
+                // mit einem anderen Agent, damit derselbe Fehler nicht zweimal passiert. Nie in einer Schleife.
+                if !s.succeeded, s.mode == .autonom, !s.isOSAgent, let rec = MissionStore.shared.mission(mid), rec.outcome == nil,
+                   AutoRetry.allowed(rec, store: MissionStore.shared) {
+                    let installed = Set(AgentKind.allCases.filter { OpenModels.available($0) })
+                    let alt = Usage.alternatives(s.kind).first { installed.contains($0) && !Usage.isPaused($0) && !AgentHealth.unavailable($0) && !Usage.shared.isTight($0) } ?? s.kind
+                    MissionStore.shared.setOutcome(mid, "retried")
+                    Handoff.continueMission(rec, message: L("Der vorherige Lauf ist ohne Ergebnis abgebrochen. Prüfe zuerst, was schon geändert ist, und erledige den Auftrag dann vollständig."),
+                                            target: alt.rawValue, agents: mgr, hub: mcp, note: L("Abgebrochen – automatisch neu versucht") + " → \(alt.title)") { n in
+                        model.show("↻ " + String(format: L("Lauf abgebrochen – %@ versucht es noch einmal: "), alt.title) + s.label)
+                        if model.page == .chat(mid) { model.page = .chat(n.id.uuidString) }
+                    }
+                    return
                 }
                 // Prüfschleife für Coding-Aufträge mit eigener Arbeitskopie.
                 if s.succeeded, s.mode == .autonom, s.worktree != nil, Verifier.autoRun {
@@ -601,5 +732,29 @@ struct CommandPalette: View {
             first.run()
         }
         dismiss()
+    }
+}
+
+
+/// Großer, klarer Einstieg oben in der Seitenleiste: ein neuer Auftrag ist immer einen Klick entfernt.
+struct NewMissionButton: View {
+    var active: Bool
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            Label(L("Neuer Auftrag"), systemImage: "plus.circle")
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(active ? 0.16 : hover ? 0.13 : 0.10)))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(L("Neuen Auftrag anlegen"))
     }
 }

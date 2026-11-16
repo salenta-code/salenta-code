@@ -33,6 +33,7 @@ final class CLIFlags {
         .kiro: ["chat": "kiro-cli chat --help"],
         .pi: ["": "pi --help"],
         .kimi: ["": "kimi --help"],
+        .deepseek: ["": "dsh --help"],
     ]
 
     init() {
@@ -148,7 +149,8 @@ final class CLIFlags {
 enum AgentHealth {
     static let loginPatterns = ["no model configured", "use /login", "not logged in", "please log in", "please login", "login required",
                                 "authentication required", "not authenticated", "you are not signed in", "sign in to continue",
-                                "invalid api key", "no api key", "run `[a-z-]+ (auth )?login`", "credentials not found"]
+                                "invalid api key", "no api key", "run `[a-z-]+ (auth )?login`", "credentials not found",
+                                "set an auth method", "auth_error", "subscription does not have access", "upgrade your plan to"]
 
     private static func key(_ a: AgentKind) -> String { "health.login.\(a.rawValue)" }
 
@@ -159,6 +161,24 @@ enum AgentHealth {
     }
 
     static func clear(_ a: AgentKind) { UserDefaults.standard.removeObject(forKey: key(a)) }
+
+    /// Vorprüfung ohne Aufruf: fehlen die Anmeldedaten sichtbar (keine Datei, kein Schlüssel), wird der Agent gar nicht erst
+    /// eingeplant – statt dass ein Helfer startet, sofort scheitert und die Aufgabe rot wird. nil = nicht feststellbar.
+    static func credentialsMissing(_ a: AgentKind) -> Bool? {
+        let home = NSHomeDirectory(), fm = FileManager.default, env = ProcessInfo.processInfo.environment
+        func any(_ paths: [String]) -> Bool { paths.contains { fm.fileExists(atPath: home + "/" + $0) } }
+        switch a {
+        case .codex: return !(any([".codex/auth.json"]) || env["OPENAI_API_KEY"] != nil)
+        case .gemini: return !(any([".gemini/oauth_creds.json", ".gemini/google_accounts.json"]) || env["GEMINI_API_KEY"] != nil || env["GOOGLE_API_KEY"] != nil)
+        case .deepseek: return !(any([".dsh/settings.yaml", ".dsh/credentials.json"]) || env["DEEPSEEK_API_KEY"] != nil || env["DSH_HOME"] != nil)
+        case .kimi: return !(any([".kimi/credentials.json", ".kimi/auth.json", ".kimi/config.toml", ".kimi/config.json"]) || env["KIMI_API_KEY"] != nil || env["MOONSHOT_API_KEY"] != nil)
+        case .grok: return !(any([".grok/auth.json", ".grok/config.json"]) || env["XAI_API_KEY"] != nil)
+        default: return nil
+        }
+    }
+
+    /// Nicht angemeldet (gemerkt) oder Anmeldedaten sichtbar fehlend.
+    static func unavailable(_ a: AgentKind) -> Bool { needsLogin(a) || credentialsMissing(a) == true || Usage.isPaused(a) }
 
     /// Nur kurze Ausgaben eines gescheiterten Starts prüfen (lange Läufe reden oft selbst über Logins im Code).
     @discardableResult

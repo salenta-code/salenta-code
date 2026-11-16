@@ -18,6 +18,23 @@ extension Color {
     init(hex: UInt32) { self.init(nsColor: NSColor(hex: hex)) }
 }
 
+/// Seitenleiste in der ruhigen Oberfläche: Symbole neutral statt in Akzentfarbe, etwas mehr Luft je Zeile.
+/// Farbe bleibt dem vorbehalten, was dich braucht (Rückfrage, Fehler) oder gerade läuft.
+struct QuietSidebarLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 10) {
+            configuration.icon.foregroundStyle(.secondary).frame(width: 18, alignment: .center)
+            configuration.title
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder func quietSidebar(_ on: Bool) -> some View {
+        if on { labelStyle(QuietSidebarLabelStyle()).environment(\.defaultMinListRowHeight, 30) } else { self }
+    }
+}
+
 extension NSColor {
     convenience init(hex: UInt32) {
         self.init(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
@@ -104,20 +121,16 @@ struct StatTile: View {
 struct ModernCardBackground: View {
     var tint: Color = .accentColor
     var radius: CGFloat = 16
-    var accent = true
+    var accent = true            // bleibt für bestehende Aufrufe; die Fläche ist bewusst ruhig und flach
     @Environment(\.colorScheme) private var scheme
     @Environment(\.pureBlack) private var black
     var body: some View {
+        // Flache, neutrale Fläche mit feiner Kante – kein Farbverlauf, keine farbigen Ränder
         RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .fill(black ? SC.card : scheme == .dark ? Color(nsColor: .underPageBackgroundColor) : Color.white)
+            .fill(black ? SC.card : scheme == .dark ? Color.white.opacity(0.055) : Color.white)
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(LinearGradient(colors: [tint.opacity(accent ? (scheme == .dark ? 0.10 : 0.06) : 0), .clear], startPoint: .top, endPoint: .center))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(LinearGradient(colors: [accent ? tint.opacity(0.35) : (scheme == .dark ? SC.line : Color.black.opacity(0.08)), (scheme == .dark ? SC.line : Color.black.opacity(0.08))],
-                                                 startPoint: .top, endPoint: .bottom), lineWidth: 1)
+                    .strokeBorder(scheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.07), lineWidth: 1)
             )
     }
 }

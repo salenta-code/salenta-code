@@ -30,6 +30,8 @@ final class Supervisor: ObservableObject {
     var autoRecover: Bool { d.object(forKey: "sup.recover") as? Bool ?? true }
     /// Minuten ohne jede Ausgabe, bis der Supervisor eingreift (Warnung bei der Hälfte)
     var stallMinutes: Int { d.object(forKey: "sup.stall") as? Int ?? 20 }
+    /// Harte Obergrenze je Lauf (auch mit Ausgabe): ein Helfer, der nach so vielen Minuten nicht fertig ist, dreht sich – übergeben
+    var maxMinutes: Int { d.object(forKey: "sup.max") as? Int ?? 150 }
 
     func start(agents: AgentManager, hub: MCPHub) {
         self.agents = agents; self.hub = hub
@@ -58,7 +60,9 @@ final class Supervisor: ObservableObject {
                 lastSize[s.id] = (size, now)
                 warned.remove(s.id)
             }
-            if let loop = Self.loopingError(rec.log) { recover(s, rec, why: L("dreht sich im Kreis: ") + loop) }
+            if let loop = Self.loopingError(rec.log) { recover(s, rec, why: L("dreht sich im Kreis: ") + loop); continue }
+            let total = now.timeIntervalSince(s.startedAt) / 60
+            if total >= Double(maxMinutes) { recover(s, rec, why: String(format: L("läuft seit %d Minuten ohne Ergebnis"), Int(total))) }
         }
         // Aufräumen
         let live = Set(agents.sessions.filter(\.running).map(\.id))
@@ -88,6 +92,13 @@ final class Supervisor: ObservableObject {
             return
         }
         s.terminate()
+        // Schon zweimal vom Supervisor übergeben? Dann nicht ein drittes Mal – der Auftrag wird rot und der Betreuer plant ihn neu
+        var hops = 0, cur: MissionRecord? = rec
+        while let c = cur, (c.routeReason ?? "").hasPrefix("Supervisor:"), hops < 5 { hops += 1; cur = c.parent.flatMap { MissionStore.shared.mission($0) } }
+        if hops >= 2 {
+            NotifyCenter.shared.post(.runFailed, title: String(format: L("%@ hängt"), s.displayName), body: why + " – " + L("nach 2 Übergaben abgebrochen"), route: .page("chat:" + rec.id))
+            return
+        }
         let other = Verifier.reviewer(for: rec.agent)
         let target = other.rawValue == rec.agent ? rec.agent : other.rawValue
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {

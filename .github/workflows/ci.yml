@@ -1,17 +1,37 @@
 name: CI
+# macOS-Minuten zählen 10-fach – deshalb: nur bei App-Änderungen, nie doppelt für denselben Stand, Schnellprüfungen vor dem Bauen
 on:
   push:
     branches: [main]
+    paths-ignore: ["website/**", "**.md", "docs/**", "packaging/dmg/**"]
   pull_request:
+    paths-ignore: ["website/**", "**.md", "docs/**", "packaging/dmg/**"]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  build:
-    runs-on: macos-15
+  schnell:
+    # Billige Prüfungen auf Linux zuerst – scheitern sie, wird gar kein macOS-Runner gestartet
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Keine Schlüssel im Repo
         run: bash scripts/privacy-check.sh
       - name: Jeder Symbol-Knopf hat einen Mouse-over-Hinweis
         run: python3 scripts/check-tooltips.py
+  build:
+    needs: schnell
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift-Build-Cache
+        uses: actions/cache@v4
+        with:
+          path: App/.build
+          key: swift-${{ runner.os }}-${{ hashFiles('App/Package.resolved') }}
+          restore-keys: swift-${{ runner.os }}-
       - name: Build
         run: swift build -c release --package-path App
       - name: Test

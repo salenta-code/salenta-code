@@ -57,7 +57,7 @@ final class LiveMonitor: ObservableObject {
     private static let cacheLock = NSLock()
 
     private func scan() {
-        guard !scanning, Energy.due("live", every: 90) else { return }
+        guard !scanning, Energy.due("live", every: 240) else { return }   // listet tausende Dateien – nicht öfter als alle 4 min
         scanning = true
         DispatchQueue.global(qos: .utility).async {
             let files = Self.recentFiles(days: 30)
@@ -83,7 +83,9 @@ final class LiveMonitor: ObservableObject {
         let cutoff = Date().addingTimeInterval(-days * 86400)
         var out: [TranscriptFile] = []
         let claudeRoot = Paths.home.appendingPathComponent(".claude/projects")
-        for dir in (try? fm.contentsOfDirectory(at: claudeRoot, includingPropertiesForKeys: nil)) ?? [] {
+        for dir in (try? fm.contentsOfDirectory(at: claudeRoot, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+            // Ordner ohne neue Dateien im Zeitraum überspringen (spart das Auflisten tausender alter Verläufe)
+            if let dm = try? dir.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, dm < cutoff { continue }
             for f in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] where f.pathExtension == "jsonl" {
                 let d = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 if d > cutoff { out.append(TranscriptFile(url: f, agent: .claude, modified: d)) }

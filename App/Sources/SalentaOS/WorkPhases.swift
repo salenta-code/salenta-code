@@ -96,8 +96,9 @@ enum WorkPhases {
             if ui { build += ext(["frontend-design"]) + (lower.contains("figma") ? ext(["figma"]) : []) + skill(["design", "frontend", "ui"]) }
             for (id, words) in [("supabase", ["supabase"]), ("stripe", ["stripe", "zahlung", "payment", "checkout"]), ("vercel", ["vercel"]), ("github", ["github actions", "workflow", "ci"])]
                 where words.contains(where: { lower.contains($0) }) { build += ext([id]) }
-            out.append(phase(&n, L("Umsetzen"),
-                             L("Halte dich an Stil und Muster des Projekts. Kleine, nachvollziehbare Schritte; aktuelle Doku statt Vermutungen."), build))
+            var doWhat = L("Halte dich an Stil und Muster des Projekts. Kleine, nachvollziehbare Schritte; aktuelle Doku statt Vermutungen.")
+            if ui { doWhat += "\n   " + L("Gestaltung:") + "\n" + DesignGuide.rules(tweak: DesignGuide.isSmallTweak(lower)) }
+            out.append(phase(&n, L("Umsetzen"), doWhat, build))
             out.append(phase(&n, L("Aufräumen"),
                              L("Vereinfache, was du geändert hast, ohne das Verhalten zu ändern: keine Debug-Ausgaben, kein toter Code, keine Doppelungen."),
                              ext(["code-simplifier"]) + skill(["simplify", "simplifier", "refactor", "clean"])))
@@ -116,6 +117,13 @@ enum WorkPhases {
         var testTools = skill(["test", "tdd", "testing"])
         if ui { testTools += ext(["playwright", "chrome-devtools"]); checkText += " " + L("Öffne die geänderte Seite im Browser und prüfe Darstellung, Klicks und Konsole.") }
         out.append(phase(&n, L("Prüfen wie die CI"), checkText, testTools))
+        // Sichtbares Design: nicht nur „funktioniert“, sondern „überzeugt“ – mit Screenshots selbst kritisch bewerten, dann nachschärfen
+        let visual = ["design", "redesign", "landing", "startseite", "homepage", "hero", "website", "webseite", "optik", "look", "motion", "animation", "layout"]
+            .contains { lower.contains($0) }
+        if ui, visual, !readOnly, !DesignGuide.isSmallTweak(lower) {
+            out.append(phase(&n, L("Design-Kritik"), L("Mach Screenshots der geänderten Seiten (Desktop 1440 px und Mobil 390 px, hell und dunkel) und bewerte sie streng wie ein Art Director, je 1–10: Eigenständigkeit (sieht es aus wie jede KI-Vorlage?), visuelle Hierarchie, Typografie, Wirkung des ersten Bildschirms, Motion mit Zweck. Alles unter 8: konkret nachschärfen (mutigere Typo-Größen, Kontraste, Bildsprache, Rhythmus, eine prägende Idee) und neu bewerten. Schreib die Bewertung ans Ende deiner Antwort. Screenshots nicht ins Repo legen."),
+                             ext(["playwright"]) + skill(["design", "frontend", "ui", "ux"])))
+        }
 
         if role.sensitive || role.review {
             out.append(phase(&n, L("Sicherheit"), L("Prüfe die Änderungen auf Lücken (Eingaben, Rechte, Schlüssel, Abhängigkeiten) und behebe Gefundenes."),

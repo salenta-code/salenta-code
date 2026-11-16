@@ -35,10 +35,11 @@ final class LocalFirst: ObservableObject {
 
     /// Bestes Code-Modell unter den geladenen.
     var model: String? {
-        let models = installedModels
-        if !chosen.isEmpty, models.contains(chosen) { return chosen }
+        // Nur Modelle, die bequem in den Speicher passen – ein 30B-Modell (22 GB) auf einem 24-GB-Mac ließ alles auslagern und hängen
+        let models = installedModels.filter { Self.fitsComfortably($0) }
+        if !chosen.isEmpty, installedModels.contains(chosen) { return chosen }
         // das beste geladene laut Katalog (aktualisiert sich täglich)
-        for c in LocalCatalog.shared.models.sorted(by: { $0.rank > $1.rank }) {
+        for c in LocalCatalog.shared.models.sorted(by: { $0.rank > $1.rank }) where LocalCatalog.comfortable(c) {
             let base = c.pull.split(separator: ":").first.map(String.init) ?? c.pull
             if let m = models.first(where: { $0 == c.pull || $0.hasPrefix(base + ":") || $0 == base }) { return m }
         }
@@ -47,6 +48,18 @@ final class LocalFirst: ObservableObject {
                     "qwen2.5-coder", "codestral", "gpt-oss", "deepseek-coder", "qwen3", "llama3"]
         for p in pref { if let m = models.first(where: { $0.lowercased().hasPrefix(p) }) { return m } }
         return models.first
+    }
+
+    /// Passt das Modell bequem (≤ 75 % des Grafikspeichers)? Größe aus dem Katalog, sonst aus „…14b“ im Namen geschätzt.
+    static func fitsComfortably(_ name: String) -> Bool {
+        let base = name.split(separator: ":").first.map(String.init) ?? name
+        if let c = LocalCatalog.shared.models.first(where: { $0.pull == name || $0.pull == base || $0.pull.hasPrefix(base + ":") }) {
+            return LocalCatalog.comfortable(c)
+        }
+        if let r = name.range(of: #"(\d+(\.\d+)?)b"#, options: [.regularExpression, .caseInsensitive]), let b = Double(name[r].dropLast()) {
+            return b * 0.65 <= OllamaApp.gpuGB * 0.75   // ~0,65 GB je Milliarde Parameter (Q4)
+        }
+        return name.lowercased().hasPrefix("qwen3-coder") ? 19 <= OllamaApp.gpuGB * 0.75 : true
     }
 
     init() {
@@ -109,7 +122,7 @@ final class LocalFirst: ObservableObject {
 
     // MARK: Entscheidungen
 
-    static let cloudKinds: Set<AgentKind> = [.claude, .codex, .gemini, .cursor, .kimi, .openrouter, .grok, .kiro, .opencode, .pi, .junie]
+    static let cloudKinds: Set<AgentKind> = [.claude, .codex, .gemini, .cursor, .kimi, .deepseek, .harness, .openrouter, .grok, .kiro, .opencode, .pi, .junie]
 
     /// Offline? Dann diesen Agent gegen den lokalen tauschen.
     func offlineSwap(_ kind: AgentKind) -> (AgentKind, String)? {
@@ -132,7 +145,9 @@ final class LocalFirst: ObservableObject {
     /// Claude Code schickt allein als Anweisungen ~20.000 Tokens. Ollama schneidet sonst je nach Start bei 4–8k ab –
     /// das Modell sieht dann seine Werkzeuge nicht und liefert Unsinn. Darum eine eigene Variante „<modell>-sc“ mit festem
     /// Kontext anlegen (kostet keinen Speicher, nutzt dieselben Gewichte). Größe passend zum Arbeitsspeicher.
-    static var contextSize: Int { LocalCatalog.ramGB >= 32 ? 65536 : LocalCatalog.ramGB >= 16 ? 32768 : 16384 }
+    // Kontext kostet Arbeitsspeicher (bei 8B-Modellen ~4–5 GB pro 32k). Auf 16/24-GB-Macs blieb mit 32k zu wenig für den Rest –
+    // macOS lagerte aus und alles wurde zäh. Daher eine Stufe kleiner.
+    static var contextSize: Int { LocalCatalog.ramGB >= 64 ? 65536 : LocalCatalog.ramGB >= 32 ? 32768 : 16384 }
     private static var variants: [String: String] = [:]
     private static let variantLock = NSLock()
 
@@ -412,7 +427,7 @@ final class LocalCatalog: ObservableObject {
     func warmUp(_ name: String) {
         var r = URLRequest(url: URL(string: "http://localhost:11434/api/generate")!, timeoutInterval: 300)
         r.httpMethod = "POST"
-        r.httpBody = try? JSONSerialization.data(withJSONObject: ["model": name, "prompt": "", "keep_alive": "30m"])
+        r.httpBody = try? JSONSerialization.data(withJSONObject: ["model": LocalFirst.contextVariant(name), "prompt": "", "keep_alive": "5m"])
         URLSession.shared.dataTask(with: r).resume()
     }
 
@@ -524,5 +539,72 @@ struct LocalFirstSettings: View {
             LocalSetupRow()
         }
         .onAppear { local.loadModels() }
+    }
+}
+
+
+/// Kurze Hilfsaufrufe (Planung, Agent-Wahl, Zusammenfassungen, PR-Texte, Recherche): normalerweise Claude.
+/// Ist Claude pausiert, im Limit oder abgemeldet, beantwortet Codex dieselbe Frage im selben Ausgabeformat –
+/// so verbraucht nichts im Hintergrund weiter Claude, obwohl du es abgeschaltet hast.
+enum HelperLLM {
+    static var useCodex: Bool {
+        !LocalFirst.shared.useLocal && AgentManager.claudeOff && OpenModels.available(.codex) && !AgentHealth.unavailable(.codex)
+    }
+    /// Das Entscheidungsmodell von Salenta Code läuft dauerhaft mit: Vor jedem Auftrag entscheidet es, welcher Agent ihn mit welchem
+    /// Modell und welcher Denktiefe ausführt (und wer eine rote Prüfung behebt). Es braucht keinen eigenen Schlüssel: Es nutzt das
+    /// stärkste Modell, das du schon hast – Claude oder Codex, je nachdem, was gerade verfügbar ist. Abschaltbar in den Einstellungen
+    /// (dann entscheidet wie früher ein kleines, schnelles Modell).
+    static var harnessDecides: Bool { UserDefaults.standard.object(forKey: "harness.decides") as? Bool ?? true }
+
+    /// Wer entscheidet gerade? Reihenfolge: Claude (stärkstes Modell; knapp am Limit das mittlere), sonst Codex; ganz ohne beides
+    /// der Salenta Harness mit eingetragenem Schlüssel oder lokalem Modell.
+    static func decider(claudeOn: Bool, claudeTight: Bool, codexOn: Bool, harnessOn: Bool) -> (who: String, model: String)? {
+        if claudeOn { return ("claude", claudeTight ? "sonnet" : "opus") }
+        if codexOn { return ("codex", "") }
+        if harnessOn { return ("harness", "") }
+        return nil
+    }
+    static var currentDecider: (who: String, model: String)? {
+        let claudeOn = !AgentManager.claudeOff && !LocalFirst.shared.useLocal && Detection.which("claude") != nil
+        let codexOn = !LocalFirst.shared.useLocal && OpenModels.available(.codex) && !AgentHealth.unavailable(.codex) && !Usage.isPaused(.codex)
+        return decider(claudeOn: claudeOn, claudeTight: Usage.shared.isTight(.claude), codexOn: codexOn, harnessOn: HarnessSetup.ready)
+    }
+    /// Für die Anzeige: „Claude Opus“, „Codex“ …
+    static var deciderLabel: String {
+        guard let d = currentDecider else { return "" }
+        return d.who == "claude" ? "Claude " + d.model.capitalized : d.who == "codex" ? "Codex" : "Salenta Harness"
+    }
+
+    /// Befehl, der die Frage aus `file` beantwortet und JSON im Format von `claude -p --output-format json` ausgibt.
+    /// `decision`: eine Entscheidungsfrage – sie geht an das stärkste vorhandene Modell; antwortet es nicht (Limit, kein Netz),
+    /// übernimmt das nächste in der Reihe.
+    static func command(model: String, maxTurns: Int, file: String, extra: String = "", web: Bool = false, decision: Bool = false) -> String {
+        let base = helper(model: model, maxTurns: maxTurns, file: file, extra: extra, web: web)
+        guard decision, harnessDecides, !web, extra.isEmpty, let d = currentDecider else { return base }
+        let claude = { (m: String) in LocalFirst.cliEnv() + "claude -p --model \(m) --output-format json --max-turns \(maxTurns) --strict-mcp-config < " + Shell.quote(file) }
+        let codex = Accounts.shared.exports() + Shell.quote(Paths.root.appendingPathComponent("bin/aos-ask").path) + " --effort medium"
+            + (Detection.which("codex").map { " --codex " + Shell.quote($0) } ?? "") + " < " + Shell.quote(file)
+        let harness = HarnessSetup.exports() + Shell.quote(HarnessSetup.script.path) + " ask < " + Shell.quote(file) + " 2>/dev/null"
+        var chain: [String] = []
+        switch d.who {
+        case "claude":
+            chain.append(claude(d.model))
+            if OpenModels.available(.codex), !AgentHealth.unavailable(.codex), !Usage.isPaused(.codex) { chain.append(codex) }
+        case "codex": chain.append(codex)
+        default: chain.append(harness)
+        }
+        if d.who != "harness", HarnessSetup.ready, HarnessSetup.hasKey { chain.append(harness) }
+        return chain.map { "{ " + $0 + "; }" }.joined(separator: " || ")
+    }
+
+    private static func helper(model: String, maxTurns: Int, file: String, extra: String, web: Bool) -> String {
+        if useCodex {
+            let effort = model == "haiku" ? "low" : "medium"
+            return Accounts.shared.exports() + Shell.quote(Paths.root.appendingPathComponent("bin/aos-ask").path)
+                + " --effort \(effort)" + (web ? " --web" : "")
+                + (Detection.which("codex").map { " --codex " + Shell.quote($0) } ?? "") + " < " + Shell.quote(file)
+        }
+        return LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns \(maxTurns)" + (extra.isEmpty ? "" : " " + extra)
+            + " --strict-mcp-config < " + Shell.quote(file)
     }
 }

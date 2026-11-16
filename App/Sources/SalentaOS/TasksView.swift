@@ -15,103 +15,214 @@ enum HandOff {
     }
 }
 
-/// Kanban-Board über alle Bereiche. Karten per Drag & Drop zwischen Spalten schieben.
+/// Eine ruhige Liste als Standard; das Board bleibt für die Wochenplanung verfügbar.
 struct TasksView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var tasks: TaskStore
     @EnvironmentObject private var agents: AgentManager
     @EnvironmentObject private var system: SystemStatus
     @State private var search = ""
-    @State private var showDone = true
+    @State private var selectedStatus: TaskStatus?
+    @AppStorage("tasks.layout.board") private var showBoard = false
     @State private var dropTarget: TaskStatus?
+    @State private var showPhone = false
 
-    private var columns: [TaskStatus] {
-        showDone ? TaskStatus.allCases : TaskStatus.allCases.filter { $0 != .erledigt }
+    private var statuses: [TaskStatus] {
+        if let selectedStatus { return [selectedStatus] }
+        return TaskStatus.allCases.filter { $0 != .erledigt }
     }
+
+    private func items(_ status: TaskStatus) -> [TaskItem] {
+        tasks.tasks(in: status, company: app.taskFilter, search: search)
+    }
+
+    private var visibleCount: Int { statuses.reduce(0) { $0 + items($1).count } }
 
     var body: some View {
         VStack(spacing: 0) {
             if let err = tasks.lastError {
                 Label(err, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
-                    .padding(Grid.s)
+                    .foregroundStyle(.red).padding(Grid.s)
             }
+            header
+            Divider()
             GeometryReader { geo in
-                let count = CGFloat(columns.count)
-                let width = max(230, (geo.size.width - Grid.l * 2 - Grid.m * (count - 1)) / count)
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: Grid.m) {
-                        ForEach(columns) { status in column(status, width: width) }
-                    }
-                    .padding(Grid.l)
-                    .frame(height: geo.size.height)
+                if showBoard && geo.size.width >= 960 {
+                    board(height: geo.size.height, availableWidth: geo.size.width)
+                } else {
+                    taskList
                 }
             }
         }
         .navigationTitle("Aufgaben")
-        .navigationSubtitle(app.taskFilter?.title ?? "Alle Bereiche")
+        .navigationSubtitle(app.taskFilter?.title ?? L("Alle Bereiche"))
         .searchable(text: $search, placement: .toolbar, prompt: "Aufgaben suchen")
+        .sheet(isPresented: $showPhone) {
+            VStack(alignment: .trailing, spacing: 0) {
+                phoneInfo
+                Button("Schließen") { showPhone = false }
+                    .keyboardShortcut(.cancelAction)
+                    .padding([.horizontal, .bottom], Grid.xl)
+            }
+        }
         .toolbar {
             ToolbarItemGroup {
                 Picker("Bereich", selection: $app.taskFilter) {
                     Text("Alle Bereiche").tag(Company?.none)
                     Divider()
-                    ForEach(Company.allCases) { c in
-                        Text(c.title).tag(Company?.some(c))
-                    }
+                    ForEach(Company.allCases) { c in Text(c.title).tag(Company?.some(c)) }
                 }
-                .frame(width: 160)
-                Toggle(isOn: $showDone) { Label("Erledigte", systemImage: "checkmark.circle") }
-                RemindersToggle()
-                Button { app.editing = TaskItem(title: "", company: app.taskFilter ?? .privat, status: .heute) } label: {
+                .frame(maxWidth: 160)
+                Button { showBoard.toggle() } label: {
+                    Label(showBoard ? L("Liste anzeigen") : L("Board anzeigen"),
+                          systemImage: showBoard ? "list.bullet" : "rectangle.split.3x1")
+                }
+                .help(L("Auf schmalen Fenstern werden Aufgaben immer als Liste angezeigt"))
+                Button { showPhone.toggle() } label: { Label("Auf dem iPhone", systemImage: "iphone") }
+                Button { newTask(selectedStatus ?? .heute) } label: {
                     Label("Neue Aufgabe", systemImage: "plus")
                 }
-                Button { Launcher.reveal(Paths.tasks) } label: { Label("tasks.json zeigen", systemImage: "doc.text") }.help(L("Aufgaben-Datei im Finder zeigen"))
             }
         }
     }
 
-    private func column(_ status: TaskStatus, width: CGFloat) -> some View {
-        let list = tasks.tasks(in: status, company: app.taskFilter, search: search)
-        return VStack(alignment: .leading, spacing: Grid.s) {
-            HStack(spacing: Grid.s) {
-                Image(systemName: status.symbol).foregroundStyle(.secondary)
-                Text(status.title).font(.headline)
-                Text("\(list.count)").font(.caption).foregroundStyle(.secondary)
+    private var header: some View {
+        VStack(alignment: .leading, spacing: Grid.m) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(selectedStatus?.title ?? L("Offene Aufgaben")).font(.title2.bold())
                 Spacer()
-                Button {
-                    app.editing = TaskItem(title: "", company: app.taskFilter ?? .privat, status: status)
-                } label: { Image(systemName: "plus") }.help(L("Neue Aufgabe in dieser Spalte"))
-                .buttonStyle(.borderless)
+                Text("\(visibleCount)").font(.title2.monospacedDigit()).foregroundStyle(.secondary)
             }
-            .padding(.horizontal, Grid.xs)
-            ScrollView {
-                LazyVStack(spacing: Grid.s) {
-                    ForEach(list) { t in
-                        TaskCard(task: t) { kind in
-                            HandOff.run(t, to: kind, tasks: tasks, agents: agents, system: system, app: app)
-                        }
-                        .draggable(t.id)
-                    }
-                    if list.isEmpty {
-                        Text("Leer").font(.callout).foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, minHeight: 60)
+            ScrollView(.horizontal) {
+                HStack(spacing: Grid.s) {
+                    statusButton(nil, title: L("Offen"), symbol: "tray.full",
+                                 count: TaskStatus.allCases.filter { $0 != .erledigt }.reduce(0) { $0 + items($1).count })
+                    ForEach(TaskStatus.allCases) { status in
+                        statusButton(status, title: status.title, symbol: status.symbol, count: items(status).count)
                     }
                 }
-                .padding(.bottom, Grid.l)
             }
+            .scrollIndicators(.hidden)
         }
-        .padding(Grid.s)
-        .frame(width: width)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(dropTarget == status ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.06)))
-        .dropDestination(for: String.self) { ids, _ in
-            for id in ids { tasks.move(id, to: status) }
-            return !ids.isEmpty
-        } isTargeted: { inside in
-            dropTarget = inside ? status : (dropTarget == status ? nil : dropTarget)
+        .padding(Grid.l)
+    }
+
+    private func statusButton(_ status: TaskStatus?, title: String, symbol: String, count: Int) -> some View {
+        Button { selectedStatus = status } label: {
+            HStack(spacing: Grid.s) {
+                Label(title, systemImage: symbol)
+                Text("\(count)").monospacedDigit().foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, Grid.m).frame(minHeight: 44)
+            .background(selectedStatus == status ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: Grid.s))
+            .overlay(RoundedRectangle(cornerRadius: Grid.s)
+                .strokeBorder(selectedStatus == status ? Color.accentColor.opacity(0.5) : .clear))
         }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selectedStatus == status ? .isSelected : [])
+    }
+
+    private var taskList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: Grid.l) {
+                if visibleCount == 0 {
+                    ContentUnavailableView {
+                        Label(search.isEmpty ? L("Hier ist alles erledigt") : L("Keine Aufgaben gefunden"),
+                              systemImage: search.isEmpty ? "checkmark.circle" : "magnifyingglass")
+                    } description: {
+                        Text(search.isEmpty ? L("Lege eine Aufgabe an oder wähle einen anderen Status.")
+                             : L("Versuche einen anderen Suchbegriff oder Bereich."))
+                    } actions: {
+                        if search.isEmpty { Button("Neue Aufgabe") { newTask(selectedStatus ?? .heute) } }
+                        else { Button("Suche zurücksetzen") { search = "" } }
+                    }
+                    .frame(maxWidth: .infinity).padding(.vertical, Grid.xxl)
+                }
+                ForEach(statuses) { status in
+                    let list = items(status)
+                    if !list.isEmpty {
+                        VStack(alignment: .leading, spacing: Grid.s) {
+                            HStack {
+                                Label(status.title, systemImage: status.symbol).font(.headline)
+                                Text("\(list.count)").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Button { newTask(status) } label: { Image(systemName: "plus") }
+                                    .buttonStyle(.borderless).help(L("Neue Aufgabe in diesem Status"))
+                            }
+                            .padding(.horizontal, Grid.xs)
+                            ForEach(list) { task in card(task) }
+                        }
+                    }
+                }
+            }
+            .padding(Grid.l)
+            .frame(maxWidth: 880)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func board(height: CGFloat, availableWidth: CGFloat) -> some View {
+        let count = CGFloat(statuses.count)
+        let width = max(240, (availableWidth - Grid.l * 2 - Grid.m * (count - 1)) / count)
+        return ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: Grid.m) {
+                ForEach(statuses) { status in
+                    VStack(alignment: .leading, spacing: Grid.s) {
+                        HStack {
+                            Label(status.title, systemImage: status.symbol).font(.headline)
+                            Text("\(items(status).count)").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button { newTask(status) } label: { Image(systemName: "plus") }
+                                .buttonStyle(.borderless).help(L("Neue Aufgabe in diesem Status"))
+                        }
+                        ScrollView {
+                            LazyVStack(spacing: Grid.s) {
+                                ForEach(items(status)) { task in card(task).draggable(task.id) }
+                                if items(status).isEmpty {
+                                    Text("Keine Aufgaben").foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, minHeight: 80)
+                                }
+                            }
+                        }
+                    }
+                    .padding(Grid.m).frame(width: width)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .background(dropTarget == status ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.06),
+                                in: RoundedRectangle(cornerRadius: Grid.m))
+                    .dropDestination(for: String.self) { ids, _ in
+                        let known = ids.filter { id in tasks.tasks.contains { $0.id == id } }
+                        for id in known { tasks.move(id, to: status) }
+                        return !known.isEmpty
+                    } isTargeted: { inside in
+                        dropTarget = inside ? status : (dropTarget == status ? nil : dropTarget)
+                    }
+                }
+            }
+            .padding(Grid.l).frame(height: height)
+        }
+    }
+
+    private func card(_ task: TaskItem) -> some View {
+        TaskCard(task: task) { kind in
+            HandOff.run(task, to: kind, tasks: tasks, agents: agents, system: system, app: app)
+        }
+    }
+
+    private func newTask(_ status: TaskStatus) {
+        app.editing = TaskItem(title: "", company: app.taskFilter ?? .privat, status: status)
+    }
+
+    private var phoneInfo: some View {
+        VStack(alignment: .leading, spacing: Grid.l) {
+            Label("Aufgaben auf dem iPhone", systemImage: "iphone").font(.headline)
+            Text("Über Apple Erinnerungen kannst du Aufgaben unterwegs ansehen, bearbeiten und abhaken.")
+                .fixedSize(horizontal: false, vertical: true)
+            RemindersToggle()
+            Text("Verwende dafür auf Mac und iPhone denselben iCloud-Account und eine iCloud-Erinnerungsliste. Der Mac gleicht ab, solange Salenta Code läuft.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(Grid.xl).frame(width: 320)
     }
 }
 
@@ -127,62 +238,70 @@ struct TaskCard: View {
             HStack(alignment: .top, spacing: Grid.s) {
                 Button { tasks.toggleDone(task.id) } label: {
                     Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(task.isDone ? Color.green : Color.secondary)
+                        .font(.title3).foregroundStyle(task.isDone ? Color.green : Color.secondary)
+                        .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
-                Text(task.title)
-                    .strikethrough(task.isDone)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                if task.priority == .hoch { Image(systemName: "flag.fill").foregroundStyle(.red).font(.caption) }
-            }
-            if !task.notes.isEmpty {
-                Text(task.notes).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-            }
-            if let s = agents.session(forTask: task.id) {
-                AgentStatusLine(session: s)
+                .accessibilityLabel(task.isDone ? L("Als offen markieren") : L("Aufgabe erledigen"))
+                Button { app.editing = task } label: {
+                    VStack(alignment: .leading, spacing: Grid.xs) {
+                        Text(task.title).font(.body.weight(.medium))
+                            .strikethrough(task.isDone).lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if !task.notes.isEmpty {
+                            Text(task.notes).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .frame(minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(L("Aufgabe öffnen"))
+                Menu { actions } label: {
+                    Image(systemName: "ellipsis").frame(width: 32, height: 44)
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                .accessibilityLabel(L("Aufgabenaktionen"))
             }
             HStack(spacing: Grid.s) {
                 CompanyChip(company: task.company)
-                if let a = task.agent {
-                    Label(a.title, systemImage: a.symbol).font(.caption).foregroundStyle(.secondary)
+                if task.priority == .hoch {
+                    Label("Hohe Priorität", systemImage: "flag.fill").foregroundStyle(.red)
                 }
-                Spacer()
                 if let due = task.due {
                     Label(due.formatted(.dateTime.day().month(.abbreviated)), systemImage: "calendar")
-                        .font(.caption)
                         .foregroundStyle(task.isOverdue() ? Color.red : Color.secondary)
                 }
+                if let a = task.agent { Text(a.title).foregroundStyle(.secondary) }
             }
+            .font(.caption)
+            if let session = agents.session(forTask: task.id) { AgentStatusLine(session: session) }
         }
         .padding(Grid.m)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.background))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(.separator.opacity(0.6)))
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) { app.editing = task }
-        .contextMenu {
-            Button("Bearbeiten …") { app.editing = task }
-            Menu("Verschieben nach") {
-                ForEach(TaskStatus.allCases) { s in
-                    Button(s.title) { tasks.move(task.id, to: s) }.disabled(s == task.status)
-                }
+        .background(RoundedRectangle(cornerRadius: Grid.m).fill(.background))
+        .overlay(RoundedRectangle(cornerRadius: Grid.m).strokeBorder(.separator.opacity(0.6)))
+        .contextMenu { actions }
+    }
+
+    @ViewBuilder private var actions: some View {
+        Button("Aufgabe öffnen") { app.editing = task }
+        Menu("Verschieben nach") {
+            ForEach(TaskStatus.allCases) { s in
+                Button(s.title) { tasks.move(task.id, to: s) }.disabled(s == task.status)
             }
-            Menu("Bereich") {
-                ForEach(Company.allCases) { c in
-                    Button(c.title) {
-                        var t = task
-                        t.company = c
-                        tasks.update(t)
-                    }
-                }
-            }
-            Divider()
-            ForEach([AgentKind.claude, .codex, .junie]) { k in
-                Button { onAgent(k) } label: { Label("An \(k.title) übergeben", systemImage: k.symbol) }
-            }
-            Divider()
-            Button("Löschen", role: .destructive) { tasks.delete(task.id) }
         }
+        Menu("Bereich") {
+            ForEach(Company.allCases) { c in
+                Button(c.title) { var t = task; t.company = c; tasks.update(t) }
+            }
+        }
+        Divider()
+        ForEach([AgentKind.claude, .codex, .junie]) { k in
+            Button { onAgent(k) } label: { Label("An \(k.title) übergeben", systemImage: k.symbol) }
+        }
+        Divider()
+        Button("Löschen", role: .destructive) { tasks.delete(task.id) }
     }
 }
 

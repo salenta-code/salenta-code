@@ -16,8 +16,8 @@ struct StewardsView: View {
                     Image(systemName: "safari").font(.largeTitle).foregroundStyle(Color.accentColor)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Projekt-Betreuer").font(.largeTitle.weight(.semibold))
-                        Text("Ein Koordinator pro Projekt: plant, schickt Helfer los, prüft und pflegt – über Wochen. Schreibt selbst keinen Code.")
-                            .foregroundStyle(.secondary)
+                        Text("Plant, schickt Helfer los, prüft und pflegt – pro Projekt.")
+                            .foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
                 StewardHowItWorks(expanded: steward.projects.isEmpty)
@@ -81,13 +81,20 @@ struct StewardsView: View {
                     if p.paused { Text("pausiert").font(.caption).foregroundStyle(.secondary) }
                 }
                 Text(p.goal.isEmpty ? L("Noch kein Ziel") : p.goal).font(.callout).foregroundStyle(.secondary).lineLimit(2)
-                HStack(spacing: Grid.m) {
-                    stat(p.count(.running), L("läuft"), .blue)
-                    stat(p.count(.review), L("zum Übernehmen"), .green)
-                    stat(p.count(.red), L("rot"), .red)
-                    stat(p.count(.queued) + p.count(.idea), L("geplant"), .secondary)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Grid.m) {
+                        stat(p.count(.running), L("läuft"), .blue)
+                        stat(p.count(.review), L("zum Übernehmen"), .green)
+                        stat(p.count(.red), L("rot"), .red)
+                        stat(p.count(.queued) + p.count(.idea), L("geplant"), .secondary)
+                    }
+                    HStack(spacing: Grid.s) {
+                        stat(p.count(.running), L("läuft"), .blue)
+                        stat(p.count(.review), L("fertig"), .green)
+                        stat(p.count(.red), L("rot"), .red)
+                    }
                 }
-                .font(.caption)
+                .font(.caption).lineLimit(1)
             }
             .padding(Grid.m)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -117,16 +124,33 @@ struct StewardProjectView: View {
     @AppStorage("steward.collapsed") private var collapsedRaw = ""          // eingeklappte Abschnitte (gemerkt)
     @State private var openRows: Set<String> = []                          // aufgeklappte Einträge
     enum BoardTab: String { case now, tasks, prs, done }
+    @AppStorage("steward.narrowPane") private var narrowPane = "board"     // schmales Fenster: Gespräch oder Tafel
 
     var body: some View {
         if let p = steward.project(id) {
             VStack(spacing: 0) {
                 header(p)
                 Divider()
-                HStack(spacing: 0) {
-                    chat(p).frame(minWidth: 340, idealWidth: 460)
-                    Divider()
-                    board(p).frame(minWidth: 380)
+                GeometryReader { geo in
+                    if geo.size.width >= 820 {
+                        HStack(spacing: 0) {
+                            chat(p).frame(minWidth: 340, idealWidth: 460)
+                            Divider()
+                            board(p).frame(minWidth: 380)
+                        }
+                    } else {
+                        // Schmal: eine Spalte, oben umschalten statt zwei gequetschter Spalten
+                        VStack(spacing: 0) {
+                            Picker("", selection: $narrowPane) {
+                                Text(L("Gespräch")).tag("chat")
+                                Text(L("Aufgaben")).tag("board")
+                            }
+                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                            .padding(.vertical, Grid.s)
+                            Divider()
+                            if narrowPane == "chat" { chat(p) } else { board(p) }
+                        }
+                    }
                 }
             }
         } else {
@@ -151,8 +175,27 @@ struct StewardProjectView: View {
                         .textFieldStyle(.plain).foregroundStyle(.secondary)
                         .onSubmit { steward.save() }
                 }
-                Spacer()
-                Menu {
+                Spacer(minLength: Grid.s)
+                ViewThatFits(in: .horizontal) {
+                    headerControls(p, small: false)
+                    headerControls(p, small: true)
+                }
+                .layoutPriority(1)   // Bedienelemente zuerst, das Ziel-Feld nimmt den Rest
+            }
+            if p.continuous { continuousBar(p) }
+            ViewThatFits(in: .horizontal) {
+                statusLine(p, small: false)
+                statusLine(p, small: true)
+            }
+        }
+        .padding(.horizontal, Grid.l).padding(.vertical, Grid.m)
+    }
+
+    // MARK: Kopf-Bausteine (passen sich der Breite an, nichts bricht um)
+
+    @ViewBuilder private func headerControls(_ p: StewardProject, small: Bool) -> some View {
+        HStack(spacing: small ? 6 : Grid.s) {
+            Menu {
                     Picker(L("Vertrauen"), selection: binding(\.trust)) {
                         Text("Nur vorschlagen").tag(0)
                         Text("Selbst starten, du übernimmst").tag(1)
@@ -173,6 +216,9 @@ struct StewardProjectView: View {
                                                                                     set: { v in steward.update(id) { $0.autoMerge = v } }))
                         Toggle(L("Auch PRs von anderen mergen"), isOn: optBinding(\.mergeAll, false))
                         Toggle(L("Review als Kommentar auf GitHub schreiben"), isOn: optBinding(\.postReviews, true))
+                        TextField(L("Label nach grünem Review (leer = aus)"), text: Binding(get: { steward.project(id)?.reviewLabel ?? "" },
+                                                                                            set: { v in steward.update(id) { $0.reviewLabel = v.isEmpty ? nil : v } }))
+                            .help(L("Verlangt dein Repo eine Freigabe per Label, bevor ein PR grün wird? Trag den Namen ein – der Betreuer setzt es nach seinem grünen Review."))
                         let def = p.setup?.defaultBranch ?? "main"
                         let options = Array(Set([def, "main", p.prBase ?? def])).sorted()
                         Picker(L("Pull Requests gehen nach"), selection: Binding(get: { steward.project(id)?.prBase ?? def },
@@ -185,87 +231,77 @@ struct StewardProjectView: View {
                     Toggle(L("Danach selbst verbessern"), isOn: Binding(get: { steward.project(id)?.improve == true }, set: { steward.setImprove(id, $0) }))
                     Divider()
                     Button(L("Betreuung beenden"), role: .destructive) { steward.release(id); app.page = .stewards }
-                } label: {
-                    Label(trustLabel(p.trust), systemImage: p.trust == 2 ? "checkmark.shield.fill" : "shield.lefthalf.filled")
-                }
-                .fixedSize()
-                extensionMenu(p)
-                // Echte Schalter mit Beschriftung: man sieht sofort, was an und was aus ist
-                Toggle(isOn: Binding(get: { steward.project(id)?.continuous == true }, set: { steward.setContinuous(id, $0) })) {
-                    Text(L("Bis zum Ziel")).font(.callout)
-                }
-                .toggleStyle(.switch).controlSize(.small).fixedSize()
-                .help(L("Dauerbetrieb: Der Betreuer plant immer wieder neu und arbeitet weiter, bis das Ziel erreicht ist – im Rahmen von Tagesbudget und Limits. Nur wenn er dich wirklich braucht, hält er an."))
-                Toggle(isOn: Binding(get: { steward.project(id)?.paused != true }, set: { v in steward.update(id) { $0.paused = !v }; if v { steward.dispatch(id) } })) {
-                    Text(p.paused ? L("Aus") : L("An")).font(.callout.weight(.semibold)).foregroundStyle(p.paused ? Color.secondary : Color.green)
-                }
-                .toggleStyle(.switch).tint(.green).fixedSize()
-                .help(p.paused ? L("Betreuer ist aus – einschalten, damit er plant, Helfer startet und liefert") : L("Betreuer ist an – ausschalten startet nichts Neues (laufende Helfer machen fertig)"))
+            } label: {
+                if small { Image(systemName: p.trust == 2 ? "checkmark.shield.fill" : "shield.lefthalf.filled") }
+                else { Label(trustLabel(p.trust), systemImage: p.trust == 2 ? "checkmark.shield.fill" : "shield.lefthalf.filled") }
             }
-            Text(trustExplain(p.trust)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            if p.continuous { continuousBar(p) }
-            summaryBar(p)
-            HStack(spacing: Grid.m) {
-                chip("bolt.fill", p.budgetText, L("Gestartete Helfer heute / Tagesbudget"))
-                if !p.budgetLeft {
-                    Button(L("Heute +10")) { steward.update(id) { q in var e = q.extraToday ?? [:]; e[q.today, default: 0] += 10; q.extraToday = e }; steward.dispatch(id) }
-                        .buttonStyle(.borderless).help(L("Nur für heute 10 Aufträge mehr – morgen gilt wieder das normale Budget"))
-                    Button(L("Unbegrenzt")) { steward.update(id) { $0.dailyRuns = 0 }; steward.dispatch(id) }
-                        .buttonStyle(.borderless).help(L("Tagesbudget ganz abschalten – gebremst wird nur noch durch Parallel-Grenze, Limits und Energiesparen"))
-                }
-                chip("square.stack.3d.up", "\(p.parallel) " + L("parallel"), L("Höchstens so viele Helfer gleichzeitig"))
-                if p.greenStreak > 0 { chip("checkmark.seal", "\(p.greenStreak) " + L("grün in Folge"), L("Grüne Ergebnisse hintereinander")) }
-                if p.hasGitHub {
-                    chip("checkmark.shield", L("GitHub-Wächter") + ((p.prs ?? []).isEmpty ? "" : " · \((p.prs ?? []).count) PR"),
-                         L("Prüft jeden Pull Request (Review + CI), lässt Fehler beheben, merged Grünes und überwacht Haupt-Branch und Veröffentlichungen"))
-                }
-                chip("sunrise", L("Rundgang") + " \(p.roundHour):00", L("Täglicher Rundgang: der Betreuer plant den Tag"))
-                if !p.chosenExtensions.isEmpty {
-                    chip("puzzlepiece.extension", "\(p.chosenExtensions.count) " + L("Erweiterungen"), p.chosenExtensions.map(\.name).joined(separator: ", "))
-                }
-                Spacer()
-                Button { showSetup.toggle() } label: { Label(L("Einrichtung"), systemImage: "wrench.and.screwdriver") }
-                    .buttonStyle(.borderless).popover(isPresented: $showSetup) { setupView(p) }
-                Button { showMemory = true } label: { Label(L("Projektwissen"), systemImage: "brain.head.profile") }
-                    .buttonStyle(.borderless).help(L("Was die Agents über dieses Projekt gelernt haben – gilt für alle Agents"))
-                    .sheet(isPresented: $showMemory) { ProjectMemorySheet(directory: id) }
+            .fixedSize()
+            .help(trustExplain(p.trust))
+            extensionMenu(p)
+            Toggle(isOn: Binding(get: { steward.project(id)?.continuous == true }, set: { steward.setContinuous(id, $0) })) {
+                if small { Image(systemName: "infinity") } else { Text(L("Bis zum Ziel")).font(.callout) }
             }
-            .font(.caption)
+            .toggleStyle(.switch).controlSize(.small).fixedSize()
+            .help(L("Dauerbetrieb: Der Betreuer plant immer wieder neu und arbeitet weiter, bis das Ziel erreicht ist – im Rahmen von Tagesbudget und Limits. Nur wenn er dich wirklich braucht, hält er an."))
+            Toggle(isOn: Binding(get: { steward.project(id)?.paused != true }, set: { v in steward.update(id) { $0.paused = !v }; if v { steward.dispatch(id) } })) {
+                Text(p.paused ? L("Aus") : L("An")).font(.callout.weight(.semibold)).foregroundStyle(p.paused ? Color.secondary : Color.green)
+            }
+            .toggleStyle(.switch).tint(.green).fixedSize()
+            .help(p.paused ? L("Betreuer ist aus – einschalten, damit er plant, Helfer startet und liefert") : L("Betreuer ist an – ausschalten startet nichts Neues (laufende Helfer machen fertig)"))
         }
-        .padding(.horizontal, Grid.l).padding(.vertical, Grid.m)
+        .lineLimit(1)
     }
 
-    // MARK: Übersicht: bisher erledigt, in Bearbeitung, braucht dich
+    // MARK: Statuszeile – das Wichtige als Zahlen (ein Klick öffnet die Übersicht), rechts Einrichtung und Projektwissen
 
-    private func summaryBar(_ p: StewardProject) -> some View {
+    @ViewBuilder private func statusLine(_ p: StewardProject, small: Bool) -> some View {
         let done = p.tasks.filter { $0.state == .done }
         let working = p.tasks.filter { [.running, .queued].contains($0.state) || ($0.state == .review && $0.pr != nil) }
         let needs = p.tasks.filter { ($0.state == .review && $0.pr == nil) || $0.state == .red }
         let week = done.filter { ($0.finished ?? $0.created) > Date().addingTimeInterval(-7 * 86400) }.count
-        return HStack(spacing: Grid.s) {
-            tile("checkmark.seal.fill", .green, "\(done.count)", L("bisher erledigt") + (week > 0 ? " · \(week) " + L("diese Woche") : ""), .done)
-            tile("gearshape.2.fill", .blue, "\(working.count)", L("in Bearbeitung"), .working)
-            tile("hand.raised.fill", needs.isEmpty ? .secondary : .orange, "\(needs.count)", L("braucht dich"), .needs)
-            if p.hasGitHub, steward.isGitHubWatcher(id) { tile("arrow.triangle.pull", .purple, "\((p.prs ?? []).count)", L("offene PRs"), .prs) }
+        let details = [L("Gestartete Helfer heute / Tagesbudget") + ": " + p.budgetText, "\(p.parallel) " + L("parallel"),
+                       p.greenStreak > 0 ? "\(p.greenStreak) " + L("grün in Folge") : "", L("Rundgang") + " \(p.roundHour):00"]
+            .filter { !$0.isEmpty }.joined(separator: " · ")
+        HStack(spacing: small ? Grid.s : Grid.m) {
+            count("hand.raised.fill", .orange, needs.count, small ? "" : L("braucht dich"), .needs, strong: !needs.isEmpty)
+            count("gearshape.2.fill", .blue, working.count, small ? "" : L("in Arbeit"), .working)
+            if p.hasGitHub, steward.isGitHubWatcher(id) { count("arrow.triangle.pull", .purple, (p.prs ?? []).count, small ? "" : L("PRs offen"), .prs) }
+            count("checkmark.seal.fill", .green, done.count, small ? "" : L("erledigt") + (week > 0 ? " · \(week) " + L("diese Woche") : ""), .done)
+            Spacer(minLength: Grid.s)
+            if !p.budgetLeft {
+                Button(L("Heute +10")) { steward.update(id) { q in var e = q.extraToday ?? [:]; e[q.today, default: 0] += 10; q.extraToday = e }; steward.dispatch(id) }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary).fixedSize().help(L("Nur für heute 10 Aufträge mehr – morgen gilt wieder das normale Budget"))
+                Button(L("Unbegrenzt")) { steward.update(id) { $0.dailyRuns = 0 }; steward.dispatch(id) }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary).fixedSize().help(L("Tagesbudget ganz abschalten – gebremst wird nur noch durch Parallel-Grenze, Limits und Energiesparen"))
+            }
+            if !small { Label(p.budgetText, systemImage: "bolt.fill").foregroundStyle(.secondary).help(details) }
+            Button { showSetup.toggle() } label: {
+                if small { Image(systemName: "wrench.and.screwdriver") } else { Label(L("Einrichtung"), systemImage: "wrench.and.screwdriver") }
+            }
+            .buttonStyle(.borderless).foregroundStyle(.secondary).fixedSize().help(L("Einrichtung"))
+            .popover(isPresented: $showSetup) { setupView(p) }
+            Button { showMemory = true } label: {
+                if small { Image(systemName: "brain.head.profile") } else { Label(L("Projektwissen"), systemImage: "brain.head.profile") }
+            }
+            .buttonStyle(.borderless).foregroundStyle(.secondary).fixedSize().help(L("Was die Agents über dieses Projekt gelernt haben – gilt für alle Agents"))
+            .sheet(isPresented: $showMemory) { ProjectMemorySheet(directory: id) }
         }
+        .font(.callout).lineLimit(1)
         .sheet(item: $overview) { f in StewardOverview(id: id, filter: f) }
     }
 
-    private func tile(_ icon: String, _ color: Color, _ value: String, _ label: String, _ f: StewardOverview.Filter) -> some View {
+    private func count(_ icon: String, _ color: Color, _ n: Int, _ label: String, _ f: StewardOverview.Filter, strong: Bool = false) -> some View {
         Button { overview = f } label: {
-            HStack(spacing: 8) {
-                Image(systemName: icon).foregroundStyle(color)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(value).font(.title3.weight(.semibold).monospacedDigit())
-                    Text(label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 0)
+            HStack(spacing: 5) {
+                Image(systemName: icon).font(.caption).foregroundStyle(n > 0 ? color : Color.secondary)
+                Text("\(n)").fontWeight(.semibold).monospacedDigit()
+                if !label.isEmpty { Text(label).foregroundStyle(.secondary) }
             }
-            .padding(.horizontal, Grid.m).padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).fill(color.opacity(0.08)))
+            .padding(.horizontal, strong ? 8 : 0).padding(.vertical, strong ? 3 : 0)
+            .background { if strong { Capsule().fill(color.opacity(0.16)) } }
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plain).fixedSize()
         .help(L("Übersicht öffnen"))
     }
 
@@ -282,19 +318,18 @@ struct StewardProjectView: View {
             if reached { return ("sparkles", .purple, L("Ziel erreicht – verbessert weiter"), p.progress ?? L("Sucht selbst nach Fehlern, Tests, Tempo, Sicherheit und Bedienung.")) }
             return ("infinity", .accentColor, L("Arbeitet bis zum Ziel"), p.progress ?? L("Plant nach jeder Runde sofort die nächste."))
         }()
-        HStack(alignment: .top, spacing: Grid.s) {
-            Image(systemName: icon).foregroundStyle(color).padding(.top, 1)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.callout.weight(.semibold))
-                Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
+        HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
+            Image(systemName: icon).foregroundStyle(color)
+            (Text(title).fontWeight(.semibold) + Text("  " + text).foregroundStyle(.secondary))
+                .font(.callout).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .help(text)
+            Spacer(minLength: 0)
             if p.blocked != nil {
                 Button(L("Weiter versuchen")) { steward.setContinuous(id, true) }.controlSize(.small)
             }
         }
-        .padding(Grid.s)
-        .background(RoundedRectangle(cornerRadius: 10).fill(color.opacity(0.08)))
+        .padding(.horizontal, Grid.s).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(color.opacity(0.08)))
     }
 
     private func extensionMenu(_ p: StewardProject) -> some View {
@@ -317,10 +352,6 @@ struct StewardProjectView: View {
         }
         .fixedSize()
         .help(L("Plugins, Skills und MCP-Server, die jeder Helfer in diesem Projekt nutzen soll. Plugins und Skills gehen an Claude Code, MCP-Server an alle Agents."))
-    }
-
-    private func chip(_ icon: String, _ text: String, _ help: String) -> some View {
-        Label(text, systemImage: icon).foregroundStyle(.secondary).help(help)
     }
 
     private func trustExplain(_ t: Int) -> String {
@@ -460,13 +491,17 @@ struct StewardProjectView: View {
                     let done = p.tasks.filter { $0.state == .done || $0.state == .dropped }
                     let watcher = p.hasGitHub && steward.isGitHubWatcher(id)
                     // Reiter: Jetzt (das Wichtige) · Aufgaben · Pull Requests · Erledigt
-                    Picker("", selection: $tab) {
-                        Text(L("Jetzt") + (needs.isEmpty ? "" : " (\(needs.count))")).tag(BoardTab.now)
-                        Text(L("Aufgaben") + " (\(queued.count + ideas.count))").tag(BoardTab.tasks)
-                        if p.hasGitHub { Text("PRs" + (watcher ? " (\((p.prs ?? []).count))" : "")).tag(BoardTab.prs) }
-                        Text(L("Erledigt") + " (\(done.filter { $0.state == .done }.count))").tag(BoardTab.done)
+                    HStack(spacing: Grid.s) {
+                        ViewThatFits(in: .horizontal) {
+                            boardTabs(p, counts: (needs.count, queued.count + ideas.count, watcher ? (p.prs ?? []).count : -1, done.filter { $0.state == .done }.count))
+                            boardTabs(p, counts: nil)
+                        }
+                        Spacer(minLength: 0)
+                        Button { steward.think(id, trigger: L("Bitte prüf den Stand und plan die nächsten Schritte.")) } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                        }
+                        .buttonStyle(.borderless).foregroundStyle(.secondary).help(L("Neu planen")).disabled(p.thinking == true)
                     }
-                    .pickerStyle(.segmented).labelsHidden()
                     StewardOrderComposer(projectID: id, busy: p.thinking == true)
                     switch tab {
                     case .now:
@@ -499,19 +534,30 @@ struct StewardProjectView: View {
                 }
                 .padding(Grid.l)
             }
-            Divider()
-            HStack {
-                TextField(L("Kleine Einzelaufgabe direkt einreihen (ohne Planung) …"), text: $newTask).textFieldStyle(.plain)
-                    .onSubmit { steward.addTask(id, title: newTask); newTask = "" }
-                Button(L("Einreihen")) { steward.addTask(id, title: newTask); newTask = "" }
-                    .disabled(newTask.trimmingCharacters(in: .whitespaces).isEmpty)
-                Button { steward.think(id, trigger: L("Bitte prüf den Stand und plan die nächsten Schritte.")) } label: {
-                    Label(L("Neu planen"), systemImage: "arrow.triangle.2.circlepath")
+            // Eine einzelne Aufgabe direkt einreihen – nur im Reiter „Aufgaben“, damit die Startansicht ruhig bleibt
+            if tab == .tasks {
+                Divider()
+                HStack {
+                    TextField(L("Einzelaufgabe einreihen …"), text: $newTask).textFieldStyle(.plain)
+                        .onSubmit { steward.addTask(id, title: newTask); newTask = "" }
+                    Button { steward.addTask(id, title: newTask); newTask = "" } label: { Image(systemName: "plus") }
+                        .help(L("Einreihen"))
+                        .disabled(newTask.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                .disabled(p.thinking == true)
+                .padding(Grid.m)
             }
-            .padding(Grid.m)
         }
+    }
+
+    private func boardTabs(_ p: StewardProject, counts: (Int, Int, Int, Int)?) -> some View {
+        func n(_ v: Int?) -> String { guard let v, v > 0 else { return "" }; return " \(v)" }
+        return Picker("", selection: $tab) {
+            Text(L("Jetzt") + n(counts?.0)).tag(BoardTab.now)
+            Text(L("Aufgaben") + n(counts?.1)).tag(BoardTab.tasks)
+            if p.hasGitHub { Text("PRs" + n(counts.map { $0.2 })).tag(BoardTab.prs) }
+            Text(L("Erledigt") + n(counts?.3)).tag(BoardTab.done)
+        }
+        .pickerStyle(.segmented).labelsHidden().fixedSize()
     }
 
     @ViewBuilder private func section(_ title: String, _ items: [StewardTask], _ p: StewardProject) -> some View {
@@ -569,7 +615,7 @@ struct StewardProjectView: View {
                 case .review:
                     if let m = t.missionID { Button(L("Ansehen")) { app.page = .chat(m) } }
                     Button(L("Verwerfen")) { steward.resolve(id, task: t.id, accept: false) { app.show($0) } }
-                    Button(L("Übernehmen")) { steward.resolve(id, task: t.id, accept: true) { app.show($0) } }
+                    Button(t.pr.map { String(format: L("PR #%d mergen"), $0) } ?? L("Übernehmen")) { steward.resolve(id, task: t.id, accept: true) { app.show($0) } }
                         .buttonStyle(.borderedProminent).tint(.green)
                 case .red:
                     if let m = t.missionID { Button(L("Ansehen")) { app.page = .chat(m) } }
@@ -579,7 +625,7 @@ struct StewardProjectView: View {
                     if let m = t.missionID { Button(L("Ansehen")) { app.page = .chat(m) } }
                 }
             }
-            .controlSize(.small) }
+            .controlSize(.small).lineLimit(1).fixedSize() }
         }
         .padding(.horizontal, Grid.s).padding(.vertical, open || urgent ? Grid.s : 6)
         .background(ModernCardBackground(radius: 10, accent: false))
@@ -745,6 +791,11 @@ struct StewardInput: View {
     @State private var text = ""
     @FocusState private var focused: Bool
 
+    static func height(for text: String) -> CGFloat {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).reduce(0) { $0 + max(1, ($1.count + 69) / 70) }
+        return min(140, max(22, CGFloat(lines) * 17 + 5))
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: Grid.s) {
             ZStack(alignment: .topLeading) {
@@ -755,8 +806,9 @@ struct StewardInput: View {
                     .font(.body)
                     .scrollContentBackground(.hidden)
                     .focused($focused)
-                    .frame(minHeight: 22, maxHeight: 140)
-                    .fixedSize(horizontal: false, vertical: text.count < 400)
+                    // Feste, geschätzte Höhe statt fixedSize: sonst misst SwiftUI bei langem Text die ganze Seite
+                    // immer wieder neu (Hänger von mehreren Sekunden beim Einfügen langer Nachrichten)
+                    .frame(height: Self.height(for: text))
             }
             MicButton { t in text += (text.isEmpty || text.hasSuffix(" ") ? "" : " ") + t }
             Button { submit() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }
@@ -818,6 +870,7 @@ struct StewardLivePanel: View {
             last = j["last"] as? String ?? ""; steps = j["steps"] as? Int ?? 0
         }
         if last.isEmpty, let s { last = s.screenTail(1).first?.trimmingCharacters(in: .whitespaces) ?? "" }
+        // Fertig, aber noch nicht (fertig) geprüft – auch wenn die Prüfung nach einem Neustart nachgeholt wird
         let verifying = t.missionID.flatMap { MissionStore.shared.mission($0) }.map { $0.ended != nil && $0.verify?.finished == nil } ?? false
         return Button { if let m = t.missionID { app.page = .chat(m) } } label: {
             VStack(alignment: .leading, spacing: 1) {
@@ -933,8 +986,7 @@ struct StewardOrderComposer: View {
                 HStack {
                     Label(L("Neuer Auftrag"), systemImage: "plus.circle.fill").font(.callout.weight(.semibold)).foregroundStyle(Color.accentColor)
                     Spacer()
-                    Button { withAnimation(.snappy) { open = false } } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
-                    .help(L("Schließen"))
+                    Button { withAnimation(.snappy) { open = false } } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).help(L("Schließen"))
                 }
                 ZStack(alignment: .topLeading) {
                     if text.isEmpty {

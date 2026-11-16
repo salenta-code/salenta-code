@@ -45,7 +45,7 @@ enum OllamaApp {
         if let a = appPath {
             _ = Proc.zsh("open -gja \(Shell.quote(a))", in: NSTemporaryDirectory(), timeout: 10)
         } else if let b = binary {
-            _ = Proc.zsh("OLLAMA_CONTEXT_LENGTH=\(LocalFirst.contextSize) nohup \(Shell.quote(b)) serve >/dev/null 2>&1 &", in: NSTemporaryDirectory(), timeout: 10)
+            _ = Proc.zsh("OLLAMA_CONTEXT_LENGTH=\(LocalFirst.contextSize) OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_KEEP_ALIVE=5m nohup \(Shell.quote(b)) serve >/dev/null 2>&1 &", in: NSTemporaryDirectory(), timeout: 10)
         } else { return false }
         for _ in 0..<15 { if serverUp() { return true }; Thread.sleep(forTimeInterval: 1) }
         return serverUp()

@@ -33,6 +33,29 @@ struct Extension: Identifiable, Hashable {
     var essential = false
 
     var pluginKey: String? { kind == .plugin ? (install.components(separatedBy: "plugin install ").last?.components(separatedBy: " ").first) : nil }
+
+    /// Wie ein Agent diese Erweiterung im Auftrag nutzt. Selbst hinzugefügte Repos haben keinen festen Satz – für sie entsteht er
+    /// aus Art und Beschreibung, damit Agentenwahl, Betreuer und Automatik sie genauso einplanen wie die kuratierten.
+    var howTo: String {
+        if !usage.isEmpty { return usage }
+        guard id.hasPrefix("custom:") else { return "" }
+        let what = purpose.isEmpty || purpose == L("Ohne Beschreibung im Repo.") ? "" : " (" + String(purpose.prefix(140)) + ")"
+        switch kind {
+        case .plugin: return String(format: L("Das Plugin „%@“ ist installiert%@ – nutze seine Befehle und Skills überall dort, wo sie zu diesem Auftrag passen."), name, what)
+        case .skill: return String(format: L("Der Skill /%@ ist installiert%@ – nutze ihn, wo er zu diesem Auftrag passt."), name, what)
+        case .mcp: return String(format: L("Der MCP-Server „%@“ ist verbunden%@ – nutze seine Werkzeuge, statt es von Hand zu machen."), name, what)
+        case .cli, .tool: return String(format: L("Das Werkzeug „%@“ ist installiert%@ – nutze es, wo es hilft."), name, what)
+        }
+    }
+
+    /// Plugins und Skills kennt nur Claude Code (und was darauf läuft), MCP-Server und Werkzeuge jeder Agent.
+    /// (Ein Werkzeug, das nur ein Befehl von Claude Code oder ein anderer Agent ist, zählt für fremde Agents nicht.)
+    func usable(claudeBased: Bool) -> Bool {
+        if claudeBased { return true }
+        guard kind == .mcp || kind == .tool else { return false }
+        let u = usage.lowercased()
+        return !(u.contains("/" + id.lowercased()) || u.contains("claude ") || u.contains("junie"))
+    }
 }
 
 enum ExtensionCatalog {
@@ -256,11 +279,57 @@ final class ExtensionStore: ObservableObject {
         }
     }
 
+    /// Wie wird sie wieder entfernt? nil = nicht automatisch (CLI-Agents und Werkzeuge entfernst du über ihren eigenen Weg).
+    /// Skills landen im Papierkorb statt endgültig gelöscht zu werden.
+    static func uninstallCommand(_ e: Extension) -> String? {
+        switch e.kind {
+        case .plugin:
+            guard let key = e.pluginKey?.trimmingCharacters(in: CharacterSet(charactersIn: "'\"")), !key.isEmpty else { return nil }
+            return "claude plugin uninstall \(Shell.quote(key))"
+        case .mcp:
+            var name = e.id
+            if let r = e.install.range(of: #"mcp add (--scope \S+ )?(\S+)"#, options: .regularExpression) {
+                let parts = e.install[r].split(separator: " ").map(String.init)
+                if let last = parts.last { name = last.trimmingCharacters(in: CharacterSet(charactersIn: "'\"")) }
+            }
+            let n = Shell.quote(name)
+            return "claude mcp remove --scope user \(n); (command -v codex >/dev/null && codex mcp remove \(n) >/dev/null 2>&1 || true)"
+                + "; (command -v gemini >/dev/null && gemini mcp remove -s user \(n) >/dev/null 2>&1 || true)"
+        case .skill:
+            guard e.id.hasPrefix("custom:"), !e.name.isEmpty, !e.name.contains("/"), e.name != ".", e.name != ".." else { return nil }
+            let dir = "$HOME/.claude/skills/" + Shell.quote(e.name)
+            return "[ -d \(dir) ] && mv \(dir) \"$HOME/.Trash/\"\(Shell.quote(e.name + "-" + String(Int(Date().timeIntervalSince1970))))"
+        case .cli, .tool:
+            return nil
+        }
+    }
+
+    func canUninstall(_ e: Extension) -> Bool { isInstalled(e) && Self.uninstallCommand(e) != nil }
+
+    /// Entfernt im Hintergrund (Fortschritt im Log) und liest den Stand danach neu ein.
+    func uninstall(_ e: Extension, completion: ((Bool) -> Void)? = nil) {
+        guard let cmd = Self.uninstallCommand(e), !busy.contains(e.id) else { completion?(false); return }
+        busy.insert(e.id)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = Proc.zsh(cmd, in: FileManager.default.homeDirectoryForCurrentUser.path, timeout: 180)
+            let logURL = Paths.root.appendingPathComponent("logs/extensions.log")
+            let entry = "\n=== \(Date()) \(e.id) entfernen, exit \(r.code)\n$ \(cmd)\n\(r.out.suffix(3000))\n"
+            if let h = try? FileHandle(forWritingTo: logURL) { h.seekToEndOfFile(); h.write(Data(entry.utf8)); try? h.close() }
+            else { try? entry.write(to: logURL, atomically: true, encoding: .utf8) }
+            DispatchQueue.main.async {
+                self.busy.remove(e.id)
+                self.lastLog[e.id] = r.code == 0 ? nil : String(r.out.suffix(1500))
+                self.refresh()
+                completion?(r.code == 0)
+            }
+        }
+    }
+
     /// Für die Agentenwahl: installiert + passend / nicht installiert + passend.
     func matches(_ text: String) -> (use: [Extension], suggest: [Extension]) {
         let t = text.lowercased()
         let hits = ExtensionCatalog.all.filter { e in e.when.contains { t.contains($0) } }
-        return (hits.filter { isInstalled($0) && !$0.usage.isEmpty }, hits.filter { !isInstalled($0) && !$0.install.isEmpty })
+        return (hits.filter { isInstalled($0) && !$0.howTo.isEmpty }, hits.filter { !isInstalled($0) && !$0.install.isEmpty })
     }
 
     var installedList: [Extension] { ExtensionCatalog.all.filter { isInstalled($0) } }
@@ -298,7 +367,14 @@ struct ExtensionsView: View {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: Grid.m)], spacing: Grid.m) {
                             ForEach(CustomExtensions.shared.extensions.filter { ExtensionSearchBar.matches($0, filter) }) { e in
                                 ExtensionCard(ext: e)
-                                    .contextMenu { Button(L("Aus „Von dir hinzugefügt“ entfernen")) { CustomExtensions.shared.remove(e.id) } }
+                                    .contextMenu {
+                                        if store.canUninstall(e) {
+                                            Button(L("Vom Mac entfernen und aus der Liste löschen")) {
+                                                store.uninstall(e) { ok in if ok { CustomExtensions.shared.remove(e.id) } }
+                                            }
+                                        }
+                                        Button(L("Aus „Von dir hinzugefügt“ entfernen")) { CustomExtensions.shared.remove(e.id) }
+                                    }
                             }
                         }
                     }
@@ -331,6 +407,7 @@ struct ExtensionCard: View {
     let ext: Extension
     var compact = false
     @ObservedObject private var store = ExtensionStore.shared
+    @State private var confirmRemove = false
 
     var body: some View {
         let ok = store.isInstalled(ext)
@@ -340,10 +417,15 @@ struct ExtensionCard: View {
                 Text(L(ext.kind.rawValue)).font(.caption2).padding(.horizontal, 6).padding(.vertical, 1)
                     .background(Capsule().fill(Color.secondary.opacity(0.12)))
                 Spacer()
-                if ok {
-                    Label("installiert", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
-                } else if store.busy.contains(ext.id) {
+                if store.busy.contains(ext.id) {
                     ProgressView().controlSize(.small)
+                } else if ok {
+                    Label("installiert", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+                    if store.canUninstall(ext) {
+                        Button(L("Entfernen")) { confirmRemove = true }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .help(L("Vom Mac entfernen – Salenta Code nutzt sie danach nicht mehr"))
+                    }
                 } else if !ext.install.isEmpty {
                     Button(ext.install.hasPrefix("open ") ? L("Anleitung") : L("Installieren")) { store.install(ext) }
                         .buttonStyle(.borderedProminent).controlSize(.small)
@@ -364,6 +446,11 @@ struct ExtensionCard: View {
         .padding(Grid.m)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ModernCardBackground(radius: 12))
+        .confirmationDialog(String(format: L("„%@“ vom Mac entfernen?"), ext.name), isPresented: $confirmRemove) {
+            Button(L("Entfernen"), role: .destructive) { store.uninstall(ext) }
+        } message: {
+            Text(ext.kind == .skill ? L("Der Skill-Ordner kommt in den Papierkorb.") : L("Du kannst sie später jederzeit wieder installieren."))
+        }
     }
 }
 
@@ -436,13 +523,13 @@ struct ProposalCard: View {
             HStack(spacing: Grid.m) {
                 Menu {
                     ForEach(visible.filter { $0 != .auto }) { t in
-                        Button { decision.target = t; if t != .claude && t != .osAgent { decision.model = nil } } label: { Label(t.title, systemImage: t.symbol) }
+                        Button { decision.target = t; if !(t == .claude || t == .osAgent) || !["opus", "sonnet", "haiku"].contains(decision.model ?? "") { decision.model = nil } } label: { Label(t.title, systemImage: t.symbol) }
                     }
                 } label: { Label(decision.target.title, systemImage: decision.target.symbol).font(.callout.weight(.semibold)) }
                     .menuStyle(.borderlessButton).fixedSize()
                 let agent = decision.target == .osAgent ? AgentKind.claude : decision.target.agent
                 let chosen = agent.map { ModelCatalog.selected(for: $0) } ?? ""
-                Label(chosen.isEmpty ? (decision.model?.capitalized ?? L("Standardmodell")) : chosen, systemImage: "cpu").font(.callout)
+                Label(chosen.isEmpty ? (decision.model.map { ["opus", "sonnet", "haiku"].contains($0) ? $0.capitalized : $0 } ?? L("Standardmodell")) : chosen, systemImage: "cpu").font(.callout)
                 if let e = decision.effort { Label(L("Denktiefe ") + e, systemImage: "brain").font(.callout) }
                 if decision.target != .osAgent && decision.target != .chatgpt && decision.target != .claudeWeb {
                     // Projekt sichtbar und änderbar – oder lösen
@@ -492,7 +579,7 @@ struct ProposalCard: View {
                         if ext.busy.contains(e.id) { ProgressView().controlSize(.small) } else {
                             Button(e.install.hasPrefix("open ") ? L("Anleitung") : L("Installieren")) {
                                 ext.install(e) { ok in
-                                    if ok, !e.usage.isEmpty { decision.extensions = (decision.extensions ?? []) + [e.id] }
+                                    if ok, !e.howTo.isEmpty { decision.extensions = (decision.extensions ?? []) + [e.id] }
                                 }
                             }.controlSize(.small)
                         }
@@ -501,7 +588,7 @@ struct ProposalCard: View {
             }
 
             HStack {
-                Button(L("Ohne Vorschläge – normal mit Claude")) { plain() }
+                Button(AgentManager.claudeOff ? L("Ohne Vorschläge – direkt mit Codex") : L("Ohne Vorschläge – normal mit Claude")) { plain() }
                     .buttonStyle(.link).font(.caption)
                     .help(L("Startet Claude Code im Dialog, ohne Skills, Erweiterungen oder automatische Modellwahl"))
                 Spacer()

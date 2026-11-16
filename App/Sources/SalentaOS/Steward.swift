@@ -71,6 +71,7 @@ struct StewardOrder: Codable, Identifiable, Hashable {
     var finished: Date? = nil
     var summary: String? = nil
     var rounds: Int? = nil                // Fortsetzungsrunden: nach jeder Runde prüft der Betreuer, was noch fehlt
+    var waveSig: String? = nil            // Teilaufgaben, nach denen zuletzt weitergeplant wurde (keine Doppel-Runde)
 }
 
 struct StewardProject: Codable, Identifiable, Hashable {
@@ -97,6 +98,7 @@ struct StewardProject: Codable, Identifiable, Hashable {
     var created = Date()
     // Optional, damit ältere stewards.json weiter laden
     var extensions: [String]? = nil      // ausgewählte Erweiterungen – jeder Helfer nutzt sie
+    var mainRed: Bool? = nil             // CI auf dem Haupt-Branch rot? Dann sind PR-CIs meist nur deshalb rot – keine PR-Korrekturen
     var untilDone: Bool? = nil           // arbeitet ohne Pause weiter, bis das Ziel erreicht ist
     var improve: Bool? = nil             // danach selbst Verbesserungen suchen
     var goalReached: Date? = nil
@@ -104,10 +106,12 @@ struct StewardProject: Codable, Identifiable, Hashable {
     var blocked: String? = nil           // braucht dich, bevor es weitergeht
     var idleThinks: Int? = nil           // Planungen ohne neue Aufgaben in Folge
     var lastContinue: Date? = nil
+    var followUp: Bool? = nil            // ohne Dauerbetrieb: nach dieser Welle noch einmal fragen, ob von deinem Wunsch etwas fehlt
     // GitHub (über die GitHub CLI)
     var github: Bool? = nil              // Ergebnisse als Pull Request liefern (nil = automatisch, wenn GitHub da ist)
     var autoMerge: Bool? = nil           // grüne, geprüfte PRs selbst mergen (nil = wie Vertrauen „Grünes übernehmen“)
     var mergeAll: Bool? = nil            // auch PRs von anderen mergen (Standard: nur eigene)
+    var reviewLabel: String? = nil       // Label, das nach einem grünen Betreuer-Review gesetzt wird (z. B. wenn das Repo eine Freigabe per Label verlangt)
     var postReviews: Bool? = nil         // Review als Kommentar auf GitHub (Standard: an)
     var prs: [StewardPR]? = nil
     var lastPRScan: Date? = nil
@@ -140,22 +144,63 @@ final class Steward: ObservableObject {
 
     init() {
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
-        if let d = try? Data(contentsOf: url), let p = try? dec.decode([StewardProject].self, from: d) {
+        guard let d = try? Data(contentsOf: url) else {
+            if FileManager.default.fileExists(atPath: url.path) { Steward.log("stewards.json vorhanden, aber nicht lesbar – nichts geladen") }
+            return
+        }
+        if let p = try? dec.decode([StewardProject].self, from: d) {
             projects = p.map { var x = $0; x.thinking = nil; return x }
+        } else {
+            // Nie still alle Betreuer verlieren: lesbare einzeln übernehmen, die Datei vorher sichern
+            try? d.write(to: url.deletingPathExtension().appendingPathExtension("defekt-\(Int(Date().timeIntervalSince1970)).json"))
+            if let raw = try? JSONSerialization.jsonObject(with: d) as? [Any] {
+                var ok: [StewardProject] = []
+                for item in raw {
+                    guard let one = try? JSONSerialization.data(withJSONObject: item),
+                          var x = try? dec.decode(StewardProject.self, from: one) else { continue }
+                    x.thinking = nil
+                    ok.append(x)
+                }
+                projects = ok
+            }
         }
     }
 
     func attach(agents: AgentManager, hub: MCPHub, tasks: TaskStore, projects: ProjectCatalog) {
+        Git.primeIdentity()   // Commit-Identität (GitHub-Noreply) im Hintergrund nachschlagen
+        GH.prime()   // gh-Anmeldung früh prüfen – entscheidet, ob Ergebnisse als Pull Request gehen
         self.agents = agents; self.hub = hub; self.tasks = tasks; self.projectsCatalog = projects
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.tick() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.tick() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.recoverIfLost() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in self?.resumeInterruptedFixes() }
     }
+
+    /// Du hast gerade selbst einen Betreuer beendet – nur dann darf die Liste kleiner gespeichert werden, ohne zu fragen.
+    private var releasing = false
+    private static let saveQueue = DispatchQueue(label: "steward.save", qos: .utility)
 
     func save() {
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601; enc.outputFormatting = .prettyPrinted
         let snapshot = projects
-        DispatchQueue.global(qos: .utility).async { [url] in
+        let allowShrink = releasing
+        releasing = false
+        Self.saveQueue.async { [url] in
+            // Was liegt schon auf der Platte? Nie still Betreuer verlieren:
+            //  • eine leere Liste über vorhandene Betreuer schreiben wir nur, wenn du sie selbst beendet hast
+            //  • fallen Betreuer weg, wird die alte Datei vorher gesichert
+            let before = ((try? Data(contentsOf: url)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [Any] })?.count ?? 0
+            if snapshot.count < before {
+                if snapshot.isEmpty && !allowShrink {
+                    Steward.log("Speichern übersprungen: leere Betreuer-Liste würde \(before) vorhandene überschreiben")
+                    return
+                }
+                let backup = url.deletingPathExtension().appendingPathExtension("backup.json")
+                try? FileManager.default.removeItem(at: backup)
+                try? FileManager.default.copyItem(at: url, to: backup)
+                Steward.log("Betreuer-Liste \(before) → \(snapshot.count) (Sicherung: stewards.backup.json)")
+            }
             if let d = try? enc.encode(snapshot) { try? d.write(to: url, options: .atomic) }
         }
     }
@@ -194,6 +239,9 @@ final class Steward: ObservableObject {
     func adopt(_ path: String) -> String {
         let root = Git.root(of: path) ?? path
         if projects.contains(where: { $0.id == root }) { return root }
+        if var gone = UserDefaults.standard.stringArray(forKey: "steward.released"), gone.contains(root) {
+            gone.removeAll { $0 == root }; UserDefaults.standard.set(gone, forKey: "steward.released")
+        }
         var p = StewardProject(id: root, name: (root as NSString).lastPathComponent)
         p.messages.append(StewardMessage(role: "betreuer", text: L("Hallo! Ich betreue ab jetzt dieses Projekt. Ich schaue mir gerade an, wie es aufgebaut ist und wie man es baut und testet. Was ist das Ziel für die nächsten Wochen?")))
         projects.append(p)
@@ -202,7 +250,51 @@ final class Steward: ObservableObject {
         return root
     }
 
-    func release(_ id: String) { projects.removeAll { $0.id == id }; save() }
+    func release(_ id: String) {
+        projects.removeAll { $0.id == id }
+        var gone = Set(UserDefaults.standard.stringArray(forKey: "steward.released") ?? [])
+        gone.insert(id)
+        UserDefaults.standard.set(Array(gone), forKey: "steward.released")
+        releasing = true
+        save()
+    }
+
+    /// Notfall: Die Betreuer-Liste ist leer, obwohl es frische Helfer-Aufträge gibt (z. B. Datei überschrieben).
+    /// Dann die Betreuer daraus wiederherstellen: Projekt, Ziel (steht in jedem Helfer-Auftrag) und Vertrauen
+    /// (hat er schon selbst gemergt, durfte er Grünes übernehmen). Von dir beendete Betreuer kommen nicht zurück.
+    func recoverIfLost() {
+        guard projects.isEmpty else { return }
+        let gone = Set(UserDefaults.standard.stringArray(forKey: "steward.released") ?? [])
+        let cutoff = Date().addingTimeInterval(-14 * 86400)
+        let recs = MissionStore.shared.missions.filter { $0.title.hasPrefix("🧭") && $0.started > cutoff }
+        var byRepo: [String: [MissionRecord]] = [:]
+        for r in recs {
+            let dir = r.worktree?.base ?? r.directory
+            guard let root = Git.root(of: dir), !root.contains("/.salenta-os/worktrees/") else { continue }
+            byRepo[root, default: []].append(r)
+        }
+        let marker = L("Ziel des Projekts") + ": "
+        for (repo, rs) in byRepo.sorted(by: { $0.key < $1.key }) where !gone.contains(repo) {
+            var goal = ""
+            for r in rs.sorted(by: { $0.started > $1.started }) {
+                let f = FileManager.default.temporaryDirectory.appendingPathComponent("aos-prompt-\(r.id).md")
+                guard let t = try? String(contentsOf: f, encoding: .utf8),
+                      let line = t.components(separatedBy: "\n").first(where: { $0.contains(marker) }),
+                      let range = line.range(of: marker) else { continue }
+                let g = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                if !g.isEmpty, g != "–" { goal = g; break }
+            }
+            let merged = rs.contains { $0.outcome == "merged" }
+            let id = adopt(repo)
+            update(id) { p in
+                if p.goal.isEmpty { p.goal = goal }
+                if merged { p.trust = 2 }
+                p.paused = true   // erst nach deinem OK wieder aktiv – er soll nichts tun, was du vielleicht beendet hattest
+                p.messages.append(StewardMessage(role: "status", text: "♻︎ " + L("Betreuer wiederhergestellt – die gespeicherte Liste war leer. Ziel und Vertrauen aus den letzten Aufträgen übernommen. Er ist pausiert: kurz prüfen und oben einschalten – oder „Betreuung beenden“.")))
+            }
+            Steward.log("Wiederhergestellt: \((repo as NSString).lastPathComponent) · Ziel \(goal.isEmpty ? "fehlt" : "übernommen") · Vertrauen \(merged ? 2 : 1)")
+        }
+    }
 
     // MARK: Aufträge von dir – ein Prompt, ein Team, ein fertiges Ergebnis
 
@@ -231,7 +323,7 @@ final class Steward: ObservableObject {
             return
         }
         if followUp {
-            let done = p.tasks.filter { $0.order == o.id && $0.state == .done }.map { "- " + $0.title }.joined(separator: "\n")
+            let done = p.tasks.filter { $0.order == o.id && ($0.state == .done || $0.state == .review) }.map { "- " + $0.title }.joined(separator: "\n")
             var f = "[[order:\(o.id)]] " + String(format: L("Fortsetzung deines Auftrags (Runde %d). Schon erledigt:"), (o.rounds ?? 0) + 1) + "\n" + done + "\n\n"
             f += L("Prüfe gegen den ursprünglichen Auftrag, was noch fehlt, und plane nur das. Ist alles umgesetzt – oder bleibt nur, was der Nutzer selbst entscheiden muss –, plane keine Aufgaben und nenne das Offene unter „blocked“.") + "\n\"\"\"\n" + o.text + "\n\"\"\""
             think(id, trigger: f)
@@ -256,13 +348,21 @@ final class Steward: ObservableObject {
         for o in p.orders ?? [] where o.planned && o.finished == nil {
             let mine = p.tasks.filter { $0.order == o.id }
             guard !mine.isEmpty else { continue }
-            let open = mine.filter { ![.done, .dropped].contains($0.state) }
-            guard open.isEmpty else { continue }
-            let done = mine.filter { $0.state == .done }
+            // Grüne Ergebnisse, die nur noch auf dein „Übernehmen“ warten, blockieren die nächste Welle nicht –
+            // sonst bleibt der Rest des Auftrags liegen, bis du zufällig vorbeischaust.
+            let busy = mine.contains { [.idea, .queued, .running, .red].contains($0.state) }
+            guard !busy else { continue }
+            let waiting = mine.contains { $0.state == .review }
+            let done = mine.filter { $0.state == .done || $0.state == .review }
+            let sig = mine.filter { $0.state != .dropped }.map(\.id).sorted().joined(separator: ",")
+            if o.waveSig == sig {   // nach genau diesen Teilaufgaben wurde schon weitergeplant
+                if !waiting { finishOrder(id, o) }
+                continue
+            }
             // Noch eine Runde? Der Betreuer prüft gegen den Auftrag, ob noch etwas fehlt (große Pläne in Wellen)
             if !done.isEmpty, (o.rounds ?? 0) < 6 {
                 update(id) { q in
-                    if let i = q.orders?.firstIndex(where: { $0.id == o.id }) { q.orders?[i].rounds = (o.rounds ?? 0) + 1; q.orders?[i].planned = false }
+                    if let i = q.orders?.firstIndex(where: { $0.id == o.id }) { q.orders?[i].rounds = (o.rounds ?? 0) + 1; q.orders?[i].planned = false; q.orders?[i].waveSig = sig }
                 }
                 planOrder(id, o.id, followUp: true)
                 continue
@@ -376,30 +476,42 @@ final class Steward: ObservableObject {
         guard !t.isEmpty else { return }
         say(id, "du", t)
         update(id) { p in p.blocked = nil; p.idleThinks = 0; if p.goalReached != nil, p.continuous, t.count > 12 { p.goalReached = nil } }
+        // Denkt der Betreuer gerade? Dann geht deine Nachricht nicht verloren – er antwortet direkt danach darauf.
+        if project(id)?.thinking == true { waitingAsk[id] = t; return }
+        ownerAsk.insert(id)
         think(id, trigger: t)
     }
+    /// Nachrichten von dir, die während des Nachdenkens ankamen (Antwort folgt gleich danach).
+    private var waitingAsk: [String: String] = [:]
+    /// Diese Planung wurde durch eine Nachricht von dir ausgelöst: Was er dir zusagt, wird auch eingereiht.
+    private var ownerAsk = Set<String>()
 
     /// Der Betreuer denkt nach: liest Ziel, Stand, Ergebnisse, Projektwissen und Signale – antwortet und plant.
     func think(_ id: String, trigger: String) {
         guard let p = project(id), p.thinking != true else { return }
         update(id) { $0.thinking = true }
-        let installed = AgentKind.coders.filter { OpenModels.available($0) && !AgentHealth.needsLogin($0) && Billing.autoOK($0) && !Self.isBroken($0) }
+        // Lokale Modelle nur, wenn du „lokal“ eingeschaltet hast – sonst bremsen sie den Mac und schaffen Coding-Aufgaben selten
+        // Agents mit Kosten pro Nutzung plant er nicht von sich aus ein – nennst du einen in deiner Nachricht ausdrücklich, gilt das als dein Ja.
+        let usable = AgentKind.coders.filter { OpenModels.available($0) && !AgentHealth.unavailable($0) && !Self.isBroken($0)
+            && ($0 != .ollama || LocalFirst.shared.useLocal) }
+        let named = ownerAsk.contains(id) ? Self.namedAgents(in: trigger, among: usable) : []
+        let installed = usable.filter { Billing.autoOK($0) || named.contains($0) }
+        let metered = usable.filter { !installed.contains($0) }
         var models: [AgentKind: [String]] = [:]
-        for a in installed { models[a] = ModelCatalog.shared.latest(for: a, limit: 5).map(\.value) }
+        for a in installed { models[a] = a == .ollama ? [LocalFirst.shared.model].compactMap { $0 } : ModelCatalog.shared.latest(for: a, limit: 5).map(\.value) }
         let tight = Set(installed.filter { Usage.shared.isTight($0) })
         let customerNotes: [String] = []
         // Wissen für gute Planung: Modellhinweise, passende Skills, alle installierten Erweiterungen, Erfahrungswerte
         var hints: [AgentKind: [String]] = [:]
-        for a in installed { hints[a] = ModelCatalog.shared.latest(for: a, limit: 5).map { $0.value + ($0.hint.isEmpty ? "" : " (" + $0.hint + ")") } }
+        for a in installed { hints[a] = a == .ollama ? (models[a] ?? []) : ModelCatalog.shared.latest(for: a, limit: 5).map { $0.value + ($0.hint.isEmpty ? "" : " (" + $0.hint + ")") } }
         let context = p.goal + " " + trigger + " " + p.tasks.filter { [.queued, .red, .idea].contains($0.state) }.map(\.title).joined(separator: " ")
-        let skills = Router.suggestSkills(context, skills: SkillCatalog.current?.skills ?? []).prefix(25)
-            .map { "- \($0.name) [\($0.source)]: \(String($0.description.prefix(120)))" }
-        let exts = ExtensionStore.shared.installedList.filter { !$0.usage.isEmpty }
-            .map { "- \($0.id) (\($0.kind.rawValue)): \($0.purpose) · when: \($0.when.prefix(6).joined(separator: ", "))" }
+        let skills = [Router.skillCatalogText(context, skills: SkillCatalog.current?.skills ?? [], detailed: 40, describe: 100)]
+        let exts = ExtensionStore.shared.installedList.filter { !$0.howTo.isEmpty }
+            .map { "- \($0.id) (\($0.kind.rawValue)\($0.id.hasPrefix("custom:") ? ", added by the owner" : "")\($0.usable(claudeBased: false) ? "" : ", agent claude only")): \($0.purpose.prefix(140)) · when: \($0.when.prefix(6).joined(separator: ", "))" }
         let experience = Learning.routerHint(MissionStore.shared.missions)
         let know = Knowledge(models: hints, skills: Array(skills), extensions: exts, experience: experience, missions: MissionStore.shared.missions)
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Self.ask(p, trigger: trigger, installed: installed, models: models, tight: tight, customers: customerNotes, know: know)
+            let result = Self.ask(p, trigger: trigger, installed: installed, metered: metered, models: models, tight: tight, customers: customerNotes, know: know)
             DispatchQueue.main.async { self.apply(id, result, trigger: trigger) }
         }
     }
@@ -407,9 +519,13 @@ final class Steward: ObservableObject {
     private static var lastFailure = ""
 
     // Agents, die sofort scheitern (nicht angemeldet, kaputt, kein Abo) – 6 Stunden nicht einplanen
-    private static var broken: [String: Date] = [:]
-    static func markBroken(_ k: AgentKind) { broken[k.rawValue] = Date().addingTimeInterval(6 * 3600) }
-    static func isBroken(_ k: AgentKind) -> Bool { (broken[k.rawValue] ?? .distantPast) > Date() }
+    static func markBroken(_ k: AgentKind) {
+        UserDefaults.standard.set(Date().addingTimeInterval(6 * 3600).timeIntervalSince1970, forKey: "steward.broken." + k.rawValue)
+    }
+    static func isBroken(_ k: AgentKind) -> Bool {
+        UserDefaults.standard.double(forKey: "steward.broken." + k.rawValue) > Date().timeIntervalSince1970
+    }
+    static func clearBroken(_ k: AgentKind) { UserDefaults.standard.removeObject(forKey: "steward.broken." + k.rawValue) }
 
     /// Wie viele Tokens jeder Agent hier pro Auftrag braucht (Median, 7 Tage) – damit der Planer günstig delegiert.
     static func tokenHint(_ missions: [MissionRecord]) -> String {
@@ -441,6 +557,7 @@ final class Steward: ObservableObject {
     private struct Plan {
         var reply: String
         var goal: String?
+        var clearGoal = false
         var tasks: [StewardTask]
         var drop: [String]
         var learnings: [(text: String, kind: String)]
@@ -451,7 +568,7 @@ final class Steward: ObservableObject {
 
     struct Knowledge { var models: [AgentKind: [String]]; var skills: [String]; var extensions: [String]; var experience: String; var missions: [MissionRecord] = [] }
 
-    private static func ask(_ p: StewardProject, trigger: String, installed: [AgentKind], models: [AgentKind: [String]],
+    private static func ask(_ p: StewardProject, trigger: String, installed: [AgentKind], metered: [AgentKind] = [], models: [AgentKind: [String]],
                             tight: Set<AgentKind>, customers: [String], know: Knowledge) -> Plan? {
         guard Detection.which("claude") != nil else { lastFailure = L("Claude Code ist nicht installiert"); return nil }
         let lang = Profile.languageCode == "de" ? "German (informal du, short and direct)" : "English"
@@ -464,7 +581,7 @@ final class Steward: ObservableObject {
             .joined(separator: "\n")
         let recent = p.tasks.filter { $0.state == .done || $0.state == .dropped }.suffix(10)
             .map { "- \($0.state.rawValue): \($0.title)" + ($0.note.map { " — \($0.prefix(120))" } ?? "") }.joined(separator: "\n")
-        let chat = p.messages.suffix(12).map { "\($0.role): \($0.text.prefix(600))" }.joined(separator: "\n")
+        let chat = chatContext(p.messages)
         let memory = ProjectMemory.promptBlock(p.id)?.text ?? ""
         let setup = p.setup.map { s in
             "Stack: \(s.stack.joined(separator: ", ")). Commands: " + s.commands.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ")
@@ -493,7 +610,7 @@ final class Steward: ObservableObject {
         \(open.isEmpty ? "(none)" : open)
 
         Open pull requests on GitHub (the GitHub watcher reviews, fixes and merges them automatically – do not duplicate that work):
-        \((p.prs ?? []).isEmpty ? "(none)" : (p.prs ?? []).map { "- #\($0.number) \($0.title) · CI \($0.ci) · \($0.mergeable)" + ($0.reviewOK.map { $0 ? " · review ok" : " · review issues" } ?? "") }.joined(separator: "\n"))
+        \((p.prs ?? []).isEmpty ? "(none)" : (p.prs ?? []).map { prLine($0, p) }.joined(separator: "\n"))
 
         Recently finished:
         \(recent.isEmpty ? "(none)" : recent)
@@ -511,18 +628,37 @@ final class Steward: ObservableObject {
         - Tasks must be concrete, small enough for one agent run (≤ ~1 hour), independent where possible, with clear done criteria in "detail". \
         Done criteria describe the change itself (behaviour, affected tests) – never "full test suite green", "CI green", "PR created" or "pushed": the pipeline does that automatically afterwards.
         - Do not duplicate open tasks. Prefer fixing red tasks (re-plan them) before adding new features.
+        - Tasks that run at the same time must not change the same files (parallel edits of one file collide when they are merged). \
+        If several tasks would add to the same file, give each its own file/module in "detail", or plan only the first one now and the rest after it.
+        - Plan at most \(planLimit(p.parallel)) new tasks per answer – the next most important ones only. You are asked again as soon as the queue is empty.
+        - If the owner gave a list of work (numbered points), that list is your backlog: work through it in his order, skip nothing silently, \
+        and say in "progress" which points are done and which come next. Points that need his decision go into "reply" as a question, once.
+        - Only promise in "reply" what this answer really does: a task counts as planned only if it is in "tasks" here or already open.
+        - Pages a helper changes are screenshotted (desktop and phone width, overflow measured) and reviewed automatically after the run. \
+        Never tell a helper to open or drive a browser to check its page, and never promise that in "reply": helpers run unattended, \
+        and browser tools wait for an approval nobody answers.
+        - Do NOT plan fixes for open pull requests or red CI: the GitHub watcher does that on its own.
         - Pick the best agent per task from the list and a fitting model (cheap/fast for small fixes, strong for hard work).
         - Never plan work on the tool that runs you ("Salenta Code"); only on this project.
         - Never plan deploys to production, publishing, deleting data or sending messages to customers – propose those to the owner in "reply".
         - If the goal is unclear, ask ONE question in "reply" and return no tasks.
-        - "drop": ids (6 chars) of open tasks that are obsolete.
+        - Visual redesigns (new look, landing pages, brand feel) without a concrete style direction from the owner (reference sites, mood, \
+        colours, examples he likes): do NOT let a helper guess – the result becomes generic. Plan first ONE task "Design-Richtungen": three clearly \
+        different directions as one static page each, with screenshots, nothing merged; then set "blocked" so the owner picks one. Only after his \
+        choice plan the build tasks, and split them small (first hero + home page, then the system, then sub-pages).
+        - Done criteria describe the result (what works, which checks pass) – do not forbid helper files or folders unless really needed; \
+        over-narrow rules ("only these directories") make good work fail the review.
+        - "drop": ids (6 chars) of open tasks that are obsolete – also running ones (they are stopped). If the owner says to stop or skip something, put its id here; never only promise it in "reply".
         - "learnings": durable project facts worth remembering (decisions, conventions, pitfalls). Max 3.
+        - "clear_goal": true only if the owner asks to remove or reset the goal (e.g. a message was meant for another project); else false.
         - "goal_reached": true only if the goal is really fully met (verified by finished green tasks), else false.
         - "progress": one short sentence how far the goal is, e.g. "about 60 % – payments still missing".
         - "blocked": fill ONLY if you cannot continue without the owner (missing access, decision, account, payment, deploy); else "".
 
         Available agents:
         \(agentList)
+        \(metered.isEmpty ? "" : "Installed but paid per use – you may NOT plan these on your own: " + metered.map { "\($0.rawValue) (\($0.title))" }.joined(separator: ", ")
+            + ". If the owner asks for one of them, say it costs per use and that he can allow it by naming that agent for the task in his message (or in the settings under costs); never guess another reason.")
 
         Model choice: use the strongest model (e.g. opus) for architecture, tricky bugs, security and large refactors;
         a mid model (sonnet) for normal features; small/fast models only for trivial edits, renames, copy changes and lint fixes.
@@ -531,14 +667,21 @@ final class Steward: ObservableObject {
 
         \(know.experience.isEmpty ? "" : know.experience + "\nPrefer the agent that historically succeeds for this kind of task here.")
 
-        Installed extensions (pick per task in "extensions" by id, max 2, only if clearly useful; plugins/skills only work with agent claude):
+        Skills and extensions are part of the plan: for every task go through both lists and give the helper everything that
+        clearly helps – several together when they cover different needs (for example a token saver + a design skill + a test
+        skill). Nothing that merely sounds related.
+
+        Installed extensions, including repos the owner added himself (pick per task in "extensions" by id, up to 4;
+        those marked "agent claude only" do nothing for other agents):
         \(know.extensions.isEmpty ? "(none)" : know.extensions.joined(separator: "\n"))
 
-        Relevant installed skills (pick per task in "skills" by exact name, max 3, only if they clearly match):
+        Installed skills – all of them, the closest word matches first with a description (pick per task in "skills" by
+        exact name, up to 5; the source in brackets says which agent can load it: Claude Code, Plugin, Agents → claude ·
+        Codex, Agents → codex):
         \(know.skills.isEmpty ? "(none)" : know.skills.joined(separator: "\n"))
 
         Answer ONLY with JSON in \(lang):
-        {"reply":"","goal":"","tasks":[{"title":"short imperative","detail":"what + done criteria","agent":"<id>","model":"","priority":2,"effort":"medium","skills":[],"extensions":[]}],"drop":[""],"learnings":[{"text":"","kind":"regel"}],"goal_reached":false,"progress":"","blocked":""}
+        {"reply":"","goal":"","tasks":[{"title":"short imperative","detail":"what + done criteria","agent":"<id>","model":"","priority":2,"effort":"medium","skills":[],"extensions":[]}],"drop":[""],"learnings":[{"text":"","kind":"regel"}],"clear_goal":false,"goal_reached":false,"progress":"","blocked":""}
         """
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("aos-steward-\(UUID().uuidString).md")
         try? prompt.write(to: file, atomically: true, encoding: .utf8)
@@ -550,7 +693,7 @@ final class Steward: ObservableObject {
         var j: [String: Any]?
         var why = ""
         for model in (first == "opus" ? ["opus", "sonnet"] : ["sonnet"]) {
-            let r = Proc.zsh(LocalFirst.cliEnv() + "claude -p --model \(model) --output-format json --max-turns 3 --strict-mcp-config < \(Shell.quote(file.path))",
+            let r = Proc.zsh(HelperLLM.command(model: model, maxTurns: 3, file: file.path),
                              in: NSTemporaryDirectory(), timeout: 420)
             if let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"), a < b,
                let parsed = try? JSONSerialization.jsonObject(with: Data(res[a...b].utf8)) as? [String: Any] {
@@ -567,8 +710,13 @@ final class Steward: ObservableObject {
             if AgentKind(rawValue: agent).map({ installed.contains($0) }) != true { agent = "auto" }
             var model = t["model"] as? String ?? ""
             if let k = AgentKind(rawValue: agent), !model.isEmpty, !(models[k] ?? []).contains(model) { model = "" }
-            let sk = (t["skills"] as? [String] ?? []).prefix(3).map { $0 }
-            let ex = (t["extensions"] as? [String] ?? []).filter { id in ExtensionStore.shared.installedList.contains { $0.id == id } }.prefix(2).map { $0 }
+            // Nur Skills, die es gibt und die der geplante Agent laden kann (bei „auto“ entscheidet sich der Agent erst beim Start)
+            let catalog = SkillCatalog.current?.skills ?? []
+            let planned = AgentKind(rawValue: agent)
+            let sk = (t["skills"] as? [String] ?? []).filter { n in
+                catalog.isEmpty || catalog.contains { $0.name == n && (planned == nil || Router.loadable($0, by: planned)) }
+            }.prefix(5).map { $0 }
+            let ex = (t["extensions"] as? [String] ?? []).filter { id in ExtensionStore.shared.installedList.contains { $0.id == id } }.prefix(4).map { $0 }
             let eff = (t["effort"] as? String ?? "medium").lowercased()
             return StewardTask(title: title, detail: t["detail"] as? String ?? "", agent: agent, model: model,
                                priority: t["priority"] as? Int ?? 2, skills: sk.isEmpty ? nil : sk, exts: ex.isEmpty ? nil : ex,
@@ -581,13 +729,14 @@ final class Steward: ObservableObject {
         let goal = (j["goal"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         func str(_ k: String) -> String? { let v = (j[k] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines); return v.isEmpty ? nil : v }
         return Plan(reply: (j["reply"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                    goal: goal.isEmpty ? nil : goal, tasks: tasks, drop: (j["drop"] as? [String]) ?? [], learnings: learnings,
+                    goal: goal.isEmpty ? nil : goal, clearGoal: j["clear_goal"] as? Bool ?? false, tasks: tasks, drop: (j["drop"] as? [String]) ?? [], learnings: learnings,
                     reached: j["goal_reached"] as? Bool ?? false, progress: str("progress"), blocked: str("blocked"))
     }
 
     private func apply(_ id: String, _ plan: Plan?, trigger: String = "") {
         update(id) { $0.thinking = nil }
         guard let plan else {
+            if let t = waitingAsk.removeValue(forKey: id) { ownerAsk.insert(id); think(id, trigger: t); return }
             let why = Self.lastFailure.isEmpty ? L("unbekannter Grund") : Self.lastFailure
             let retryMin = why == L("Claude ist im Limit") ? 30 : 3
             say(id, "system", String(format: L("Der Betreuer konnte gerade nicht nachdenken: %@. Neuer Versuch in %d Minuten."), why, retryMin))
@@ -602,11 +751,18 @@ final class Steward: ObservableObject {
             return
         }
         failStreak[id] = 0
+        let fromOwner = ownerAsk.remove(id) != nil
         var finishedOrder: StewardOrder?
+        var stopMissions: [String] = []
         update(id) { p in
-            if let g = plan.goal, p.goal.isEmpty || plan.goal != p.goal { if p.goal.isEmpty { p.goal = g } }
+            if plan.clearGoal { p.goal = ""; p.goalReached = nil }
+            else if let g = plan.goal, p.goal.isEmpty { p.goal = g }
+            // Verworfen wird auch, was gerade läuft – sonst sagt der Betreuer „breche ich ab“ und der Helfer arbeitet weiter
             for d in plan.drop where !d.isEmpty {
-                if let i = p.tasks.firstIndex(where: { $0.id.hasPrefix(d) && $0.state != .running }) { p.tasks[i].state = .dropped; p.tasks[i].note = L("vom Betreuer verworfen") }
+                if let i = p.tasks.firstIndex(where: { $0.id.hasPrefix(d) && ![.done, .dropped].contains($0.state) }) {
+                    if [.running, .review].contains(p.tasks[i].state), let mid = p.tasks[i].missionID { stopMissions.append(mid) }
+                    p.tasks[i].state = .dropped; p.tasks[i].note = L("vom Betreuer verworfen"); p.tasks[i].finished = Date()
+                }
             }
             let known = Set(p.tasks.filter { $0.state != .dropped && $0.state != .done }.map { $0.title.lowercased() })
             let recentlyDropped = Set(p.tasks.filter { $0.state == .dropped && ($0.finished ?? $0.created) > Date().addingTimeInterval(-86400) }.map { $0.title.lowercased() })
@@ -614,8 +770,26 @@ final class Steward: ObservableObject {
             let orderID = trigger.range(of: #"\[\[order:([A-Za-z0-9-]+)\]\]"#, options: .regularExpression).map { String(trigger[$0].dropFirst(8).dropLast(2)) }
             let order = orderID.flatMap { oid in p.orders?.first { $0.id == oid } }
             var teamAgents: [String] = []
+            // Nicht mehr einplanen, als heute und parallel überhaupt laufen kann – sonst wird das meiste später nur verworfen
+            let room = max(2, min(p.parallel + 1, p.unlimited ? 6 : max(0, p.dailyRuns + (p.extraToday?[p.today] ?? 0) - p.runsToday)))
+            // PR-Korrekturen reiht der GitHub-Wächter ein – sie nehmen deinen geplanten Aufgaben keinen Platz weg
+            let openNow = p.tasks.filter { [.queued, .idea].contains($0.state) && $0.prBranch == nil }.count
+            var added = 0
+            // Offene PR-Korrekturen: der GitHub-Wächter führt sie schon – der Plan darf sie nicht ein zweites Mal einreihen
+            var openPRs = Set(p.tasks.filter { ![.done, .dropped].contains($0.state) }.compactMap { $0.pr })
+            var seen = known
             for (n, var t) in plan.tasks.enumerated() where !known.contains(t.title.lowercased()) && !recentlyDropped.contains(t.title.lowercased()) {
+                // Antwort auf deine Nachricht: Was er dir zusagt, wird eingereiht (höchstens so viele, wie eine Planung liefern darf)
+                if order == nil, fromOwner ? added >= Self.planLimit(p.parallel) : openNow + added >= room { break }
+                if seen.contains(t.title.lowercased()) { continue }                       // doppelt im selben Plan
+                if let r = t.title.range(of: #"#(\d+)"#, options: .regularExpression), let num = Int(t.title[r].dropFirst()),
+                   t.title.lowercased().contains("pr"), openPRs.contains(num) { continue }
+                seen.insert(t.title.lowercased())
+                if let r = t.title.range(of: #"#(\d+)"#, options: .regularExpression), let num = Int(t.title[r].dropFirst()), t.title.lowercased().contains("pr") { openPRs.insert(num) }
+                added += 1
                 t.state = p.trust == 0 ? .idea : .queued
+                // Du hast für diese Runde einen Agent mit Kosten pro Nutzung ausdrücklich genannt: dann bleibt es bei ihm
+                if fromOwner, let k = AgentKind(rawValue: t.agent), Billing.isMetered(k) { t.source = "du" }
                 if let order {
                     t.order = order.id
                     t.source = "du"
@@ -630,16 +804,68 @@ final class Steward: ObservableObject {
                 }
                 p.tasks.append(t)
             }
+            // Mehr geplant, als in diese Runde passte (oder „kommt in der nächsten Runde“ versprochen)? Dann nachfragen, sobald alles durch ist
+            // Nur setzen, nie hier löschen: eine spätere Planung ohne neue Aufgaben (z. B. nach einem Neustart oder Rundgang)
+            // darf das Versprechen „kommt in der nächsten Runde“ nicht vergessen. Gelöscht wird es erst beim Nachfassen selbst.
+            if order == nil, !p.continuous, added > 0 || plan.tasks.count > added { p.followUp = true }
             if let order, let i = p.orders?.firstIndex(where: { $0.id == order.id }) {
                 p.orders?[i].planned = true
                 if !p.tasks.contains(where: { $0.order == order.id && ![.done, .dropped].contains($0.state) }) { finishedOrder = order }
             }
+        }
+        for mid in stopMissions {
+            if let s = agents?.sessions.first(where: { $0.id.uuidString == mid }) { agents?.close(s.id) }
+            finishMission(mid, outcome: "dropped")
         }
         if !plan.reply.isEmpty { say(id, "betreuer", plan.reply) }
         if let o = finishedOrder { finishOrder(id, o) }   // nichts mehr zu tun → Ergebnis melden
         afterPlan(id, plan)
         if !plan.learnings.isEmpty { ProjectMemory.add(id, plan.learnings, source: L("Projekt-Betreuer")) }
         dispatch(id)
+        // Kam währenddessen eine Nachricht von dir? Jetzt darauf antworten.
+        if let t = waitingAsk.removeValue(forKey: id) { ownerAsk.insert(id); think(id, trigger: t) }
+    }
+
+    /// Ein offener PR für die Planung – mit der Angabe, wer ihn übernimmt. Sonst verspricht der Betreuer „übernehme ich selbst“,
+    /// obwohl PRs, die das Aussehen ändern, immer auf dich warten.
+    static func prLine(_ pr: StewardPR, _ p: StewardProject) -> String {
+        var s = "- #\(pr.number) \(pr.title) · CI \(pr.ci) · \(pr.mergeable)" + (pr.reviewOK.map { $0 ? " · review ok" : " · review issues" } ?? "")
+        let auto = p.mergesPRs && (pr.ours || p.mergeAll == true)
+        if pr.changesLook { s += " · changes the look: ONLY THE OWNER merges it (never say you will merge it; ask him to look at the preview)" }
+        else if !auto { s += " · the owner merges it" }
+        else { s += " · merged automatically once green and reviewed" }
+        return s
+    }
+
+    /// Welche Agents nennt dieser Text ausdrücklich? Erst die vollen Namen, dann die Kurzform – aber nie eine Kurzform,
+    /// die nur als Teil des Namens eines anderen Agents vorkommt.
+    static func namedAgents(in text: String, among agents: [AgentKind]) -> Set<AgentKind> {
+        var rest = text.lowercased()
+        var out = Set<AgentKind>()
+        for a in agents.sorted(by: { $0.title.count > $1.title.count }) where Router.mentions(rest, a.title.lowercased()) {
+            out.insert(a)
+            rest = rest.replacingOccurrences(of: a.title.lowercased(), with: " ")
+        }
+        for a in agents where !out.contains(a) && Router.mentions(rest, a.rawValue) { out.insert(a) }
+        return out
+    }
+
+    /// So viele neue Aufgaben darf eine Planung liefern.
+    static func planLimit(_ parallel: Int) -> Int { max(2, parallel + 1) }
+
+    /// Gesprächs-Ausschnitt für die Planung. Deine Nachrichten bleiben ausführlich und auch dann im Blick, wenn viele
+    /// Statusmeldungen dazwischenliegen – sonst ist ein längerer Auftrag nach wenigen Läufen vergessen.
+    static func chatContext(_ messages: [StewardMessage]) -> String {
+        let recent = Array(messages.suffix(12))
+        let shown = Set(recent.map(\.id))
+        let older = messages.filter { $0.role == "du" && !shown.contains($0.id) && $0.text.count > 40 }.suffix(3)
+        func line(_ m: StewardMessage) -> String { "\(m.role): \(m.text.prefix(m.role == "du" ? 4000 : 600))" }
+        var out = ""
+        if !older.isEmpty {
+            out += "Earlier messages from the owner (still valid unless a later message replaces them):\n"
+                + older.map(line).joined(separator: "\n") + "\n\nLatest messages:\n"
+        }
+        return out + recent.map(line).joined(separator: "\n")
     }
 
     // MARK: Dauerbetrieb – bis das Ziel erreicht ist
@@ -670,6 +896,13 @@ final class Steward: ObservableObject {
 
     /// Ist alles abgearbeitet, plant der Betreuer im Dauerbetrieb sofort die nächste Runde.
     private func continueIfIdle(_ id: String) {
+        // Ohne Dauerbetrieb: einmal nachfassen, wenn die geplante Welle fertig ist – sonst bleibt „kommt in der nächsten Runde“ liegen
+        if let p = project(id), !p.continuous, p.followUp == true, !p.paused, p.thinking != true, p.blocked == nil,
+           p.count(.running) == 0, p.count(.queued) == 0, p.budgetLeft, (Usage.shared.blocked["claude"] ?? .distantPast) <= Date() {
+            update(id) { $0.followUp = false }
+            think(id, trigger: L("Die Aufgaben der letzten Runde sind durch. Fehlt von dem, was der Nutzer zuletzt wollte, noch etwas (auch was du für „die nächste Runde“ angekündigt hast)? Dann plane genau das jetzt; sonst keine Aufgaben."))
+            return
+        }
         guard let p = project(id), p.continuous, !p.paused, p.thinking != true, !p.goal.isEmpty, p.blocked == nil,
               p.count(.running) == 0, p.count(.queued) == 0,
               !p.tasks.contains(where: { $0.state == .review && $0.pr != nil }) else { return }   // offene PRs erst durchlaufen lassen
@@ -722,9 +955,71 @@ final class Steward: ObservableObject {
         return projects.first { p in p.tasks.contains { t in t.missionID.map(ids.contains) == true } }
     }
 
+    /// Prüfung war rot, aber die Korrekturrunde ist nie gestartet, weil die App in dem Moment beendet wurde (Update, Neustart)?
+    static func fixInterrupted(passed: Bool?, fixRound: Int, ended: Date?, archived: Bool, outcome: String?, hasWorktree: Bool, hasChild: Bool,
+                               now: Date = Date()) -> Bool {
+        guard passed == false, fixRound < 2, !archived, outcome == nil, hasWorktree, !hasChild, let ended else { return false }
+        let age = now.timeIntervalSince(ended)
+        return age >= 0 && age < 60 * 60
+    }
+
+    /// Nach dem Start: liegen gebliebene Korrekturrunden nachholen – sonst bleibt ein Ergebnis rot, das eine Runde später grün wäre.
+    func resumeInterruptedFixes() {
+        guard Verifier.autoFix, let agents, let hub else { return }
+        let all = MissionStore.shared.missions
+        for rec in all where Self.fixInterrupted(passed: rec.verify?.passed, fixRound: rec.fixRound ?? 0, ended: rec.ended, archived: rec.archived == true,
+                                                 outcome: rec.outcome, hasWorktree: rec.worktree != nil,
+                                                 hasChild: all.contains { $0.parent == rec.id && $0.delegated != true }) {
+            guard !agents.sessions.contains(where: { $0.id.uuidString == rec.id && $0.running }) else { continue }
+            let second = (rec.fixRound ?? 0) >= 1
+            Verifier.fix(rec, agents: agents, hub: hub, agent: second ? Verifier.reviewer(for: rec.agent).rawValue : nil) { n in
+                // Gehört der Auftrag zu einer Betreuer-Aufgabe? Dann läuft sie wieder (statt rot liegen zu bleiben)
+                guard let p = self.owner(ofMission: rec.id) else { return }
+                self.update(p.id) { q in
+                    if let i = q.tasks.firstIndex(where: { $0.missionID == rec.id && [.red, .running, .review].contains($0.state) && $0.pr == nil }) {
+                        q.tasks[i].state = .running; q.tasks[i].missionID = n.id.uuidString; q.tasks[i].started = Date()
+                    }
+                }
+                self.say(p.id, "status", "↻ " + L("Korrekturrunde nachgeholt (die App wurde währenddessen neu gestartet): ") + rec.title)
+            }
+        }
+    }
+
     // MARK: Takt
 
+    private var lastBeat: Date?
+    /// Nur für den Test in der Entwickler-Version: so tun, als hätte der Mac `minutes` lang geschlafen, während die Aufgaben
+    /// dieses Projekts liefen (Startzeit und letzter Takt liegen entsprechend zurück). Der nächste Takt muss das ausgleichen.
+    func testSleep(_ id: String, minutes: Double) -> Int {
+        guard Paths.isDevBuild else { return 0 }
+        var n = 0
+        update(id) { q in
+            for i in q.tasks.indices where q.tasks[i].state == .running {
+                q.tasks[i].started = (q.tasks[i].started ?? Date()).addingTimeInterval(-minutes * 60); n += 1
+            }
+        }
+        lastBeat = Date().addingTimeInterval(-minutes * 60)
+        return n
+    }
+    private var mergeRetried = Set<String>()
+    /// Wie lange stand alles still (Mac im Ruhezustand)? 0, wenn der Takt normal weiterlief.
+    static func sleptGap(last: Date?, now: Date, beat: TimeInterval = 30) -> TimeInterval {
+        guard let last else { return 0 }
+        let gap = now.timeIntervalSince(last)
+        return gap > max(300, beat * 6) ? gap - beat : 0
+    }
+
     private func tick() {
+        // Ruhezustand zählt nicht als Laufzeit: Sonst gilt ein Helfer nach dem Aufwachen als „hing fest“ und wird gestoppt,
+        // obwohl er kaum gearbeitet hat.
+        let now = Date()
+        let gap = Self.sleptGap(last: lastBeat, now: now)
+        lastBeat = now
+        if gap > 0 {
+            for p in projects where p.tasks.contains(where: { $0.state == .running }) {
+                update(p.id) { q in for i in q.tasks.indices where q.tasks[i].state == .running { q.tasks[i].started = q.tasks[i].started?.addingTimeInterval(gap) } }
+            }
+        }
         guard Energy.due("steward", every: 120) else { return }
         for p in projects where !p.paused {
             evaluate(p.id)
@@ -744,6 +1039,8 @@ final class Steward: ObservableObject {
         guard let agents, var p = project(id), !p.paused, Energy.backgroundAgentsOK, p.tasks.contains(where: { $0.state == .queued }) else { return }
         var running = p.count(.running)
         var launched = false
+        // Alle Helfer-Anbieter von dir pausiert → nichts starten, Aufgaben warten
+        guard AgentKind.coders.contains(where: { OpenModels.available($0) && !Usage.isPaused($0) }) else { return }
         while running < PowerProfile.capParallel(p.parallel), p.budgetLeft,
               let i = p.tasks.indices.filter({ p.tasks[$0].state == .queued }).min(by: { p.tasks[$0].priority < p.tasks[$1].priority }) {
             launch(&p, i, agents: agents)
@@ -763,11 +1060,15 @@ final class Steward: ObservableObject {
         // Von dir gewählter Agent: nicht still austauschen – nur, wenn er wirklich gesperrt ist oder fehlt
         let yours = t.source == "du" && t.agent != "auto"
         let hardBlocked = (Usage.shared.blocked[k.rawValue] ?? .distantPast) > Date()
-        if !OpenModels.available(k) || AgentHealth.needsLogin(k) || hardBlocked || (!yours && Usage.shared.isTight(k)) {
-            k = ([k] + Usage.alternatives(k)).first { OpenModels.available($0) && !Usage.shared.isTight($0) && !AgentHealth.needsLogin($0) && ($0 != k || !hardBlocked) } ?? .claude
+        let broken = Self.isBroken(k)
+        if !OpenModels.available(k) || AgentHealth.unavailable(k) || hardBlocked || broken || (!yours && Usage.shared.isTight(k)) {
+            k = ([k] + Usage.alternatives(k)).first { OpenModels.available($0) && !Usage.shared.isTight($0) && !AgentHealth.unavailable($0)
+                && ($0 != .ollama || LocalFirst.shared.useLocal)
+                && !Self.isBroken($0) && ($0 != k || (!hardBlocked && !broken)) }
+                ?? AgentKind.coders.first { OpenModels.available($0) && !Usage.isPaused($0) && !AgentHealth.needsLogin($0) } ?? .claude
         }
         if k != wanted {
-            let why = hardBlocked ? L("im Limit") : (!OpenModels.available(wanted) || AgentHealth.needsLogin(wanted)) ? L("nicht verfügbar") : String(format: L("fast am Limit (%d %%)"), Int(Usage.shared.cachedPressure(wanted) * 100))
+            let why = Usage.isPaused(wanted) ? L("von dir pausiert") : hardBlocked ? L("im Limit") : AgentHealth.unavailable(wanted) ? L("nicht angemeldet") : (!OpenModels.available(wanted) || broken) ? L("nicht verfügbar") : String(format: L("fast am Limit (%d %%)"), Int(Usage.shared.cachedPressure(wanted) * 100))
             p.messages.append(StewardMessage(role: "status", text: "⇄ " + String(format: L("%@ ist %@ – diese Aufgabe übernimmt %@: %@"), wanted.title, why, k.title, t.title)))
         }
         let commands = p.setup.map { s in ["test", "typecheck", "lint", "build"].compactMap { c in s.commands[c].map { "\(c): \($0)" } }.joined(separator: " · ") } ?? ""
@@ -779,8 +1080,9 @@ final class Steward: ObservableObject {
         ---
         \(L("Du arbeitest als Helfer des Projekt-Betreuers von")) \(p.name). \(L("Ziel des Projekts")): \(p.goal.isEmpty ? "–" : p.goal)
         \(L("Erledige genau diese Aufgabe, vollständig und ohne Rückfragen; triff sinnvolle Annahmen."))
-        \(commands.isEmpty ? "" : L("Prüfe am Ende mit") + " " + commands + ".")
+        \(commands.isEmpty ? "" : L("Prüfe am Ende mit") + " " + commands + " – " + L("aber nur die von deiner Änderung betroffenen Testdateien (z. B. `npx vitest run <datei>`), nie die komplette Test-Suite und keine Prüfungen parallel: die volle Prüfkette läuft danach automatisch in der CI. Das gilt auch, wenn Projektregeln eine volle Prüfkette verlangen.") + ".")
         \(L("Nichts deployen, nichts veröffentlichen, keine Nachrichten an Kunden. Was offen bleibt, schreib am Ende unter „Offen:“."))
+        \(L("Du arbeitest unbeaufsichtigt: Nutze nur Werkzeuge, die die Aufgabe wirklich braucht. Wird eine Freigabe nicht erteilt, arbeite ohne diesen Schritt weiter und nenne ihn unter „Offen:“. Seiten werden nach deinem Lauf automatisch in Desktop- und Handybreite aufgenommen und geprüft – dafür brauchst du keinen Browser zu steuern."))
         """
         if let b = t.prBranch {
             // Die Arbeitskopie steht schon auf dem PR-Branch (Salenta Code holt ihn vorher) – Agents in einer Sandbox
@@ -790,11 +1092,15 @@ final class Steward: ObservableObject {
         // Ausgewählte Erweiterungen: Plugins und Skills kennt nur Claude Code, MCP-Server und CLIs alle Agents
         let picked = (t.exts ?? []).compactMap { ExtensionCatalog.find($0) }
         let ext = (p.chosenExtensions + picked.filter { e in !p.chosenExtensions.contains(e) })
-            .filter { !$0.usage.isEmpty && ExtensionStore.shared.isInstalled($0) && (k == .claude || [.mcp, .cli, .tool].contains($0.kind)) }
-        if let sk = t.skills, !sk.isEmpty { prompt += "\n\n" + L("Nutze diese Skills:") + " " + sk.map { "/" + $0 }.joined(separator: " ") }
-        if !ext.isEmpty { prompt += "\n\n" + L("Nutze dafür:") + "\n" + ext.map { "- " + $0.usage }.joined(separator: "\n") }
+            .filter { e in !e.howTo.isEmpty && ExtensionStore.shared.isInstalled(e)
+                && e.usable(claudeBased: k.harness == .claude) && (k == .claude || !["junie", "claude", "security"].contains(where: { e.id.contains($0) })) }
+        if let sk = t.skills, !sk.isEmpty {
+            prompt += "\n\n" + L("Nutze diese Skills:") + " " + sk.map { "/" + $0 }.joined(separator: " ")
+            if sk.count > 1 { prompt += "\n" + L("Kombiniere sie: Wende jeden in dem Teil der Arbeit an, zu dem er passt.") }
+        }
+        if !ext.isEmpty { prompt += "\n\n" + L("Nutze dafür:") + "\n" + ext.map { "- " + $0.howTo }.joined(separator: "\n") }
         var model = t.model.isEmpty ? nil : t.model
-        if let m = model, !ModelCatalog.fits(m, k) { model = nil }   // nach einem Agent-Wechsel: dessen eigenes Standardmodell
+        if let m = model, !ModelCatalog.fits(m, k) || !ModelCatalog.listed(m, k) { model = nil }   // nach einem Agent-Wechsel: dessen eigenes Standardmodell
         // kleine Aufgaben lokal (spart Kosten) – wenn ein lokales Modell da ist
         if LocalFirst.shared.forSmall, LocalFirst.shared.ready, ext.isEmpty, !Energy.saving, let m = LocalFirst.shared.model,
            LocalFirst.shared.localMisfit(AIRouteDecision(target: .claude, model: nil, effort: nil, directory: p.id, skills: [], reason: ""),
@@ -806,11 +1112,14 @@ final class Steward: ObservableObject {
         let effort: String? = (k == .codex || k == .claude) ? (t.effort ?? "medium") : nil
         // Mit GitHub: frisch vom Ziel-Branch auf GitHub aufsetzen (Korrekturen: vom PR-Branch) – nie lokale, nicht hochgeladene Commits mitnehmen
         let baseRef: String? = t.prBranch ?? (p.viaPR ? (p.prBase ?? p.setup?.defaultBranch) : nil)
-        let s = agents.start(k, in: p.id, prompt: prompt, mode: .autonom, label: "🧭 " + t.title, model: model, effort: effort, baseRef: baseRef)
+        // PR-Korrektur: Ziel-Branch vorher einmischen, damit Konflikte wirklich gelöst werden (der Helfer kann ihn ohne Netz nicht holen)
+        let mergeIn: String? = t.prBranch != nil ? (p.prBase ?? p.setup?.defaultBranch ?? "main") : nil
+        let s = agents.start(k, in: p.id, prompt: prompt, mode: .autonom, label: "🧭 " + t.title, model: model, effort: effort, baseRef: baseRef, mergeIn: mergeIn)
         t.state = .running
         t.started = Date()
         t.missionID = s.id.uuidString
         t.agent = k.rawValue
+        t.model = model ?? ""          // was wirklich läuft – nicht das ursprünglich geplante Modell eines anderen Agents
         p.tasks[i] = t
         p.messages.append(StewardMessage(role: "status", text: "▶︎ " + String(format: L("Gestartet: %@ · %@"), t.title, k.title + (model.map { " " + $0 } ?? ""))))
         p.runs[p.today, default: 0] += 1
@@ -837,22 +1146,70 @@ final class Steward: ObservableObject {
         if !unchecked.isEmpty {
             update(id) { q in for i in q.tasks.indices where unchecked.contains(q.tasks[i].id) { q.tasks[i].state = .running } }
         }
+        // Geprüft und grün, aber noch nicht übernommen (z. B. Konflikt beim ersten Versuch): Bei „Grünes selbst übernehmen“
+        // bleibt das nicht liegen – einmal je App-Start wird es noch einmal versucht (inkl. Zusammenführen durch den Helfer).
+        let unmerged = p.tasks.filter { t in
+            guard p.trust >= 2, !p.viaPR, t.state == .review, t.pr == nil, (t.prRetry ?? 0) < 2, !mergeRetried.contains(t.id),
+                  let mid = t.missionID, let rec = MissionStore.shared.mission(mid) else { return false }
+            return rec.worktree != nil && rec.verify?.passed == true
+        }.map(\.id)
+        if !unmerged.isEmpty {
+            mergeRetried.formUnion(unmerged)
+            update(id) { q in for i in q.tasks.indices where unmerged.contains(q.tasks[i].id) { q.tasks[i].state = .running } }
+        }
         for t in (project(id)?.tasks ?? []) where t.state == .running {
             guard let r = Self.outcome(t, agents: agents) else { continue }
             var merged = false
-            if r.state == .review, p.viaPR, let mid = r.missionID, let rec = MissionStore.shared.mission(mid), let wt = rec.worktree,
+            // Schon als PR geliefert (keine Korrektur)? Nie ein zweites Mal liefern oder lokal übernehmen – der PR ist das Ergebnis.
+            let delivered = t.pr != nil && t.prBranch == nil
+            if r.state == .review, !delivered, p.viaPR, let mid = r.missionID, let rec = MissionStore.shared.mission(mid), let wt = rec.worktree,
                rec.verify?.passed == true, p.trust >= 2 || t.prBranch != nil {
-                // GitHub: grünes Ergebnis als Pull Request (oder Korrektur auf den bestehenden PR-Branch) – gemergt wird nach grüner CI
+                // GitHub: grünes Ergebnis als Pull Request (oder Korrektur auf den bestehenden PR-Branch) – gemergt wird nach grüner CI.
+                // Anmeldung von gh noch nicht geprüft? Dann warten – nie am PR-Weg vorbei lokal übernehmen.
+                if GH.state == .unknown { continue }
                 deliverPR(id, task: t, mid: mid, wt: wt)
                 continue
             }
-            if r.state == .review, p.trust >= 2, let mid = r.missionID, let rec = MissionStore.shared.mission(mid), let wt = rec.worktree,
+            if r.state == .review, p.hasGitHub, (p.github ?? true), GH.state == .no, p.trust >= 2 {
+                // GitHub-Projekt, aber gh ist nicht angemeldet: Ergebnis bleibt zur Ansicht liegen statt still lokal gemergt zu werden
+                update(id) { q in
+                    if let i = q.tasks.firstIndex(where: { $0.id == t.id }), q.tasks[i].note?.hasPrefix("⚠️") != true {
+                        q.tasks[i].note = "⚠️ " + L("GitHub CLI nicht angemeldet (gh auth login) – Ergebnis wartet, statt am Pull Request vorbei übernommen zu werden")
+                    }
+                }
+                continue
+            }
+            if r.state == .review, !delivered, p.trust >= 2, let mid = r.missionID, let rec = MissionStore.shared.mission(mid), let wt = rec.worktree,
                rec.verify?.passed == true {
                 let (ok, msg) = Worktrees.merge(wt, message: t.title)
                 if ok {
                     merged = true
                     finishMission(mid, outcome: "merged")
                     say(id, "system", "✓ " + L("Übernommen (grün): ") + t.title)
+                } else if msg == Worktrees.conflictMessage, (t.prRetry ?? 0) < 2, let agents = self.agents, let hub = self.hub {
+                    // Inzwischen wurde anderes übernommen (z. B. ein parallel laufender Helfer hat dieselbe Datei geändert).
+                    // Statt auf dich zu warten: den neuen Stand in die Arbeitskopie einmischen und den Helfer zusammenführen lassen –
+                    // danach läuft die Prüfung neu und es wird übernommen.
+                    let dir = Worktrees.top(wt)
+                    let clean = Git.run(Git.identity(dir) + ["merge", "--no-edit", wt.baseBranch], in: dir, timeout: 60).code == 0
+                    let fix = clean
+                        ? L("Inzwischen wurden andere Änderungen in den Haupt-Branch übernommen. Der neue Stand ist schon in deine Arbeitskopie eingemischt (ohne Konflikte). Prüfe, dass alles zusammen funktioniert: Lass die Tests laufen und behebe nur, was durch das Zusammenführen kaputtging.")
+                        : L("Inzwischen wurden andere Änderungen in den Haupt-Branch übernommen, die mit deinen kollidieren. Der neue Stand ist in deine Arbeitskopie eingemischt, die Konfliktstellen sind markiert (<<<<<<<, =======, >>>>>>>). Löse jeden Konflikt so, dass beide Änderungen erhalten bleiben, entferne die Markierungen und lass die Tests laufen. Ändere sonst nichts.")
+                    update(id) { p in
+                        if let i = p.tasks.firstIndex(where: { $0.id == t.id }) {
+                            p.tasks[i].prRetry = (p.tasks[i].prRetry ?? 0) + 1
+                            p.tasks[i].note = "🔀 " + L("Arbeitet den neuen Stand ein – andere Änderungen wurden inzwischen übernommen")
+                        }
+                    }
+                    Handoff.continueMission(rec, message: fix, target: rec.agent, agents: agents, hub: hub, note: L("Neuen Stand einarbeiten")) { s in
+                        self.update(id) { p in
+                            if let i = p.tasks.firstIndex(where: { $0.id == t.id }) {
+                                p.tasks[i].state = .running; p.tasks[i].missionID = s.id.uuidString; p.tasks[i].started = Date()
+                            }
+                        }
+                    }
+                    say(id, "status", "🔀 " + L("Konflikt mit neueren Änderungen – der Helfer arbeitet den neuen Stand ein: ") + t.title)
+                    continue
                 } else {
                     say(id, "system", L("Konnte nicht selbst übernehmen: ") + msg)
                 }
@@ -871,11 +1228,17 @@ final class Steward: ObservableObject {
                     : "✓ " + L("Erledigt: ") + t.title
                 say(id, "status", line)
             }
-            if r.state == .red, let st = t.started, Date().timeIntervalSince(st) < 120, let k = AgentKind(rawValue: t.agent) {
+            // Der Agent, der wirklich lief (nach Limit-/Verfügbarkeits-Wechsel kann das ein anderer sein als geplant)
+            let ran = r.missionID.flatMap { MissionStore.shared.mission($0) }.flatMap { AgentKind(rawValue: $0.agent) } ?? AgentKind(rawValue: t.agent)
+            if r.state != .red, let k = ran { Self.clearBroken(k) }
+            if r.state == .red, let st = t.started, Date().timeIntervalSince(st) < 120, let k = ran, k != .claude {
                 Self.markBroken(k)
                 say(id, "status", "⚠︎ " + String(format: L("%@ ist sofort gescheitert – wird 6 Stunden nicht eingeplant."), k.title))
             }
-            if r.state == .red {
+            if r.state == .red, t.prBranch != nil {
+                // Rote PR-Korrektur: der GitHub-Wächter versucht es noch einmal (höchstens 2 Runden) – der Planer darf das nicht einreihen
+                update(id) { $0.lastPRScan = nil }
+            } else if r.state == .red {
                 // Rot nach Korrekturrunde: der Betreuer plant neu (kein Endlos-Loop: nur einmal pro Aufgabe)
                 think(id, trigger: L("Aufgabe ist rot geblieben: ") + t.title + " — " + (r.note ?? ""))
             }
@@ -904,7 +1267,15 @@ final class Steward: ObservableObject {
         var n = 0
         while n < 10, let next = MissionStore.shared.missions.last(where: { $0.parent == cur && $0.delegated != true }) { cur = next.id; n += 1 }
         guard let rec = MissionStore.shared.mission(cur) else { return nil }
+        // Von dir gestoppt: verworfen – nie prüfen, übernehmen oder hochladen
+        if rec.outcome == "stopped" { return (.dropped, L("von dir gestoppt"), cur) }
         if agents?.sessions.contains(where: { $0.id.uuidString == cur && $0.running }) == true { return nil }
+        // Die Arbeitskopie gibt es nicht mehr (aufgeräumt, weil das Ergebnis längst als Pull Request vorliegt)? Dann ist nichts mehr
+        // zu prüfen oder zu liefern – sonst hinge die Aufgabe stundenlang als „läuft“ fest und belegte einen Platz.
+        if let wt = rec.worktree, !FileManager.default.fileExists(atPath: Worktrees.top(wt)) {
+            if let n = t.pr, t.prBranch == nil { return (.review, String(format: L("PR #%d offen – wird nach grüner CI und Review gemergt"), n), cur) }
+            return (.red, L("Arbeitskopie fehlt – bitte neu starten"), cur)
+        }
         guard let ended = rec.ended else {
             // Sitzung weg, aber nie beendet (App-Neustart): nach 3 h als rot werten
             return Date().timeIntervalSince(rec.started) > 3 * 3600 ? (.red, L("abgebrochen"), cur) : nil
@@ -914,7 +1285,9 @@ final class Steward: ObservableObject {
             // Prüfung nie gelaufen (z. B. Salenta Code wurde während des Laufs neu gestartet) → jetzt nachholen statt ungeprüft liegen zu lassen
             if rec.verify == nil, rec.ok != false { DispatchQueue.main.async { Verifier.run(cur) }; return nil }
             if let v = rec.verify, v.finished == nil { return nil }
-            if rec.verify?.passed == false && (rec.fixRound ?? 0) < 1 && Date().timeIntervalSince(ended) < 150 { return nil }
+            // Rot nach der Prüfung: Die Autokorrektur kommt gleich – bis zu zwei Runden (die zweite macht ein anderer Agent).
+            // Vorher nicht als rot werten, sonst plant der Betreuer neu, während die zweite Runde noch läuft.
+            if rec.verify?.passed == false && Verifier.autoFix && (rec.fixRound ?? 0) < 2 && Date().timeIntervalSince(ended) < 240 { return nil }
         }
         if rec.ok == false { return (.red, rec.digest?.summary ?? L("abgebrochen"), cur) }
         if rec.verify?.passed == false { return (.red, rec.verify?.diagnosis?.why ?? L("Prüfung rot"), cur) }
@@ -952,14 +1325,26 @@ final class Steward: ObservableObject {
                     if latest[w] == nil { latest[w] = run }
                 }
                 let failed = latest.values.filter { ($0["conclusion"] as? String) == "failure" && $0["url"] is String }
-                guard !failed.isEmpty else { return }
+                // Haupt-Branch rot oder wieder grün? (nur fertige Läufe zählen, Veröffentlichungen nicht)
+                let mainRuns = latest.values.filter { ($0["headBranch"] as? String) == branch && ($0["event"] as? String) != "release" && ($0["status"] as? String) == "completed" }
+                let mainRedNow: Bool? = mainRuns.isEmpty ? nil : mainRuns.contains { ($0["conclusion"] as? String) == "failure" }
                 DispatchQueue.main.async {
+                    if let now = mainRedNow { self.setMainRed(id, now) }
                     for run in failed {
                         let url = run["url"] as! String
                         let hb = run["headBranch"] as? String ?? branch
                         let release = hb != branch || (run["event"] as? String) == "release"
                         let title = "\(run["workflowName"] as? String ?? "CI"): \(run["displayTitle"] as? String ?? "")"
-                        guard let q = self.project(id), !q.tasks.contains(where: { $0.ref == url }) else { continue }
+                        // Eine Reparatur je roten Lauf – endet sie ohne Erfolg (keine Änderung, rot, verworfen), wird nach 30 Minuten
+                        // neu eingereiht, höchstens dreimal. Sonst bliebe der Haupt-Branch rot und alle PRs blieben liegen.
+                        guard let q = self.project(id), Self.mainFixDue(q.tasks, ref: url) else { continue }
+                        if Self.mainFixAttempts(q.tasks, ref: url) >= 3 {
+                            if Self.mainFixNoted[url] == nil {
+                                Self.mainFixNoted[url] = "1"
+                                self.say(id, "system", "✋ " + L("Der Haupt-Branch ist nach 3 Reparaturversuchen noch rot – bitte selbst ansehen:") + " " + url)
+                            }
+                            continue
+                        }
                         self.update(id) { p in
                             p.tasks.append(StewardTask(title: (release ? L("Veröffentlichung ist rot – reparieren: ") : L("CI ist rot – reparieren: ")) + title,
                                                        detail: (release ? L("Der Release-Lauf für") + " \(hb) " : L("Der letzte CI-Lauf auf") + " \(branch) ") + L("ist fehlgeschlagen") + " (\(url)). "
@@ -972,6 +1357,48 @@ final class Steward: ObservableObject {
                         NotifyCenter.shared.post(.ciRed, title: "🔴 " + (self.project(id)?.name ?? "") + ": " + title, body: L("Der GitHub-Wächter hat eine Korrektur eingereiht."), route: .page("steward:" + id))
                     }
                     self.dispatch(id)
+                }
+            }
+        }
+    }
+
+    static var mainFixNoted: [String: String] = [:]
+
+    /// Reparaturen für diesen roten Lauf auf dem Haupt-Branch (von dir gestoppte zählen nicht).
+    static func mainFixAttempts(_ tasks: [StewardTask], ref: String) -> Int {
+        tasks.filter { $0.ref == ref && $0.note != L("von dir gestoppt") }.count
+    }
+
+    /// Darf für diesen roten Lauf (wieder) eine Reparatur eingereiht werden? Ja, wenn noch keine da ist – oder wenn alle bisherigen
+    /// ohne Erfolg geendet haben (keine Änderung, rot, verworfen) und die letzte mindestens 30 Minuten her ist.
+    static func mainFixDue(_ tasks: [StewardTask], ref: String, now: Date = Date()) -> Bool {
+        let mine = tasks.filter { $0.ref == ref }
+        guard let last = mine.max(by: { ($0.finished ?? $0.created) < ($1.finished ?? $1.created) }) else { return true }
+        if mine.contains(where: { [.idea, .queued, .running].contains($0.state) }) { return false }
+        if mine.contains(where: { $0.note == L("von dir gestoppt") }) { return false }
+        // Mit PR in Prüfung oder fertig → die Reparatur ist unterwegs; erst wenn der Lauf danach noch rot ist, kommt ein neuer Lauf (neue URL)
+        if mine.contains(where: { ($0.state == .review || $0.state == .done) && $0.pr != nil }) { return false }
+        return now.timeIntervalSince(last.finished ?? last.created) >= 1800
+    }
+
+    /// Haupt-Branch rot/grün merken. Wird er wieder grün, bekommen eigene PRs mit roter CI den neuen Stand (GitHub „Update branch“),
+    /// damit ihre CI neu läuft – ihr Rot kam meist nur vom Haupt-Branch.
+    func setMainRed(_ id: String, _ red: Bool) {
+        guard let p = project(id), p.mainRed != red else { return }
+        update(id) { $0.mainRed = red }
+        if red {
+            say(id, "system", "🔴 " + L("Der Haupt-Branch ist rot – PRs mit roter CI warten jetzt, statt einzeln nachgebessert zu werden. Zuerst wird der Haupt-Branch repariert."))
+            return
+        }
+        guard p.mainRed == true else { return }   // erster Blick (vorher unbekannt): nichts nachholen
+        let stale = (p.prs ?? []).filter { $0.ours && $0.ci == "red" && $0.mergeable != "CONFLICTING" }.map(\.number)
+        say(id, "system", "🟢 " + L("Der Haupt-Branch ist wieder grün.") + (stale.isEmpty ? "" : " " + String(format: L("%d PRs bekommen den neuen Stand und werden neu geprüft."), stale.count)))
+        guard !stale.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async {
+            for n in stale { _ = Proc.zsh("gh pr update-branch \(n)", in: id, timeout: 60) }
+            DispatchQueue.main.async {
+                self.update(id) { q in
+                    for i in (q.prs ?? []).indices where stale.contains(q.prs![i].number) { q.prs![i].ci = "pending"; q.prs![i].fixCount = 0 }
                 }
             }
         }
@@ -1008,6 +1435,17 @@ final class Steward: ObservableObject {
 
     /// Fertig geprüfte Aufgabe übernehmen oder verwerfen.
     func resolve(_ id: String, task: String, accept: Bool, completion: @escaping (String) -> Void) {
+        // Das Ergebnis liegt schon als offener Pull Request vor: „Übernehmen“ heißt dann, genau diesen PR zu mergen –
+        // nicht die (längst aufgeräumte) Arbeitskopie noch einmal hochzuladen oder die Aufgabe bloß abzuhaken.
+        if accept, let p = project(id), let t = p.tasks.first(where: { $0.id == task }), let n = t.pr,
+           p.prs?.contains(where: { $0.number == n }) == true {
+            completion(String(format: L("Pull Request #%d wird gemergt …"), n))
+            mergeNow(id, n) { msg in
+                self.say(id, "system", msg)
+                completion(msg)
+            }
+            return
+        }
         guard let t = project(id)?.tasks.first(where: { $0.id == task }), let mid = t.missionID,
               let rec = MissionStore.shared.mission(mid), let wt = rec.worktree else {
             update(id) { p in if let i = p.tasks.firstIndex(where: { $0.id == task }) { p.tasks[i].state = accept ? .done : .dropped } }
@@ -1033,7 +1471,7 @@ final class Steward: ObservableObject {
               let rec = MissionStore.shared.mission(mid) else { start(id, task: task); return }
         Verifier.fix(rec, agents: agents, hub: hub, agent: rec.verify?.diagnosis?.agent, model: rec.verify?.diagnosis?.model) { s in
             self.update(id) { p in
-                if let i = p.tasks.firstIndex(where: { $0.id == task }) { p.tasks[i].state = .running; p.tasks[i].missionID = s.id.uuidString }
+                if let i = p.tasks.firstIndex(where: { $0.id == task }) { p.tasks[i].state = .running; p.tasks[i].missionID = s.id.uuidString; p.tasks[i].started = Date() }
             }
         }
     }
