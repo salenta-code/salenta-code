@@ -203,11 +203,13 @@ struct ModelAccessSettings: View {
                 HStack {
                     SecureField(hasAN ? L("Schlüssel gespeichert") : "sk-ant-…", text: $anthropic)
                     Button("Speichern") { Secrets.set("anthropic", anthropic); anthropic = ""; hasAN = true }.disabled(anthropic.isEmpty)
+                    if hasAN { Button("Entfernen", role: .destructive) { Secrets.set("anthropic", ""); hasAN = false; claudeAPI = false } }
                 }
                 Toggle("Codex mit OpenAI-API-Schlüssel", isOn: $codexAPI)
                 HStack {
                     SecureField(hasOA ? L("Schlüssel gespeichert") : "sk-…", text: $openai)
                     Button("Speichern") { Secrets.set("openai", openai); openai = ""; hasOA = true }.disabled(openai.isEmpty)
+                    if hasOA { Button("Entfernen", role: .destructive) { Secrets.set("openai", ""); hasOA = false; codexAPI = false } }
                 }
                 Text("Ohne Schlüssel nutzen die Agents deinen eigenen Login in der jeweiligen CLI. Mit Schlüssel rechnet der Anbieter direkt mit dir ab. Schlüssel liegen nur im macOS-Schlüsselbund.")
                     .font(.caption).foregroundStyle(.secondary)

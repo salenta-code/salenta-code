@@ -72,6 +72,7 @@ struct StewardOrder: Codable, Identifiable, Hashable {
     var summary: String? = nil
     var rounds: Int? = nil                // Fortsetzungsrunden: nach jeder Runde prüft der Betreuer, was noch fehlt
     var waveSig: String? = nil            // Teilaufgaben, nach denen zuletzt weitergeplant wurde (keine Doppel-Runde)
+    var confirm: Bool? = nil              // erst den Plan zeigen – Start erst auf deinen Klick („Plan starten“)
 }
 
 struct StewardProject: Codable, Identifiable, Hashable {
@@ -300,16 +301,18 @@ final class Steward: ObservableObject {
 
     /// Übernimmt deinen Auftrag für dieses Projekt: plant ihn als Team, setzt ihn um, prüft, liefert (PR/Merge) und meldet sich am Ende.
     @discardableResult
-    func takeOrder(_ path: String, text: String, lead: AgentKind?, teamSize: Int) -> String {
+    func takeOrder(_ path: String, text: String, lead: AgentKind?, teamSize: Int, confirm: Bool = false) -> String {
         let id = adopt(path)
-        let order = StewardOrder(text: text, lead: lead?.rawValue, teamSize: max(1, min(teamSize, 4)))
+        let order = StewardOrder(text: text, lead: lead?.rawValue, teamSize: max(1, min(teamSize, 4)), confirm: confirm ? true : nil)
         update(id) { p in
             p.orders = (p.orders ?? []) + [order]
             if p.goal.isEmpty { p.goal = String(text.prefix(300)) }
             if p.paused { p.paused = false }
             p.messages.append(StewardMessage(role: "du", text: text))
         }
-        say(id, "status", "🧭 " + (order.teamSize > 1
+        say(id, "status", "🧭 " + (confirm
+            ? L("Übernommen – ich plane den Auftrag und zeige dir den Plan: welche Teilaufgaben, welcher Agent mit welchem Modell und welche Skills. Du startest ihn mit „Plan starten“.")
+            : order.teamSize > 1
             ? String(format: L("Übernommen – ich plane ein Team aus bis zu %d Agents und betreue den Auftrag bis zum fertigen Ergebnis."), order.teamSize)
             : L("Übernommen – ich plane den Auftrag, setze ihn um und betreue ihn bis zum fertigen Ergebnis.")))
         planOrder(id, order.id)
@@ -369,6 +372,39 @@ final class Steward: ObservableObject {
             }
             finishOrder(id, o)
         }
+    }
+
+    private func orderIDOf(_ trigger: String) -> String? {
+        trigger.range(of: #"\[\[order:([A-Za-z0-9-]+)\]\]"#, options: .regularExpression).map { String(trigger[$0].dropFirst(8).dropLast(2)) }
+    }
+
+    /// Der Plan zum Lesen: Teilaufgaben mit Agent, Modell, Denktiefe, Skills und Erweiterungen.
+    static func planText(_ tasks: [StewardTask]) -> String {
+        var lines = [L("Mein Plan für deinen Auftrag – noch nicht gestartet:")]
+        for (n, t) in tasks.enumerated() {
+            var who = AgentKind(rawValue: t.agent)?.title ?? L("Automatisch (beim Start gewählt)")
+            if !t.model.isEmpty { who += " · " + t.model }
+            if let e = t.effort { who += " · " + L("Denktiefe") + " " + e }
+            var line = "\(n + 1). \(t.title) – \(who)"
+            if let sk = t.skills, !sk.isEmpty { line += " · " + L("Skills") + ": " + sk.joined(separator: ", ") }
+            let ex = (t.exts ?? []).compactMap { ExtensionCatalog.find($0)?.name }
+            if !ex.isEmpty { line += " · " + L("Erweiterungen") + ": " + ex.joined(separator: ", ") }
+            lines.append(line)
+        }
+        lines.append(L("Starte ihn mit „Plan starten“ – oder schreib mir, was ich ändern soll."))
+        return lines.joined(separator: "\n")
+    }
+
+    /// Du hast den Plan freigegeben: alle vorgeschlagenen Teilaufgaben dieses Auftrags starten; weitere Runden laufen ohne Rückfrage.
+    func startOrder(_ id: String, _ orderID: String) {
+        var n = 0
+        update(id) { p in
+            if let i = p.orders?.firstIndex(where: { $0.id == orderID }) { p.orders?[i].confirm = nil }
+            for i in p.tasks.indices where p.tasks[i].order == orderID && p.tasks[i].state == .idea { p.tasks[i].state = .queued; n += 1 }
+            if p.paused { p.paused = false }
+        }
+        say(id, "status", "▶︎ " + String(format: L("Plan gestartet – %d Teilaufgaben laufen an."), n))
+        dispatch(id)
     }
 
     private func finishOrder(_ id: String, _ o: StewardOrder) {
@@ -476,13 +512,31 @@ final class Steward: ObservableObject {
         guard !t.isEmpty else { return }
         say(id, "du", t)
         update(id) { p in p.blocked = nil; p.idleThinks = 0; if p.goalReached != nil, p.continuous, t.count > 12 { p.goalReached = nil } }
+        // Hängt das Nachdenken (länger als 16 Minuten)? Dann freigeben – sonst bliebe jede weitere Nachricht unbeantwortet.
+        if project(id)?.thinking == true, let since = thinkingSince[id], Date().timeIntervalSince(since) > 16 * 60 {
+            update(id) { $0.thinking = nil }
+            thinkingSince[id] = nil
+        }
         // Denkt der Betreuer gerade? Dann geht deine Nachricht nicht verloren – er antwortet direkt danach darauf.
-        if project(id)?.thinking == true { waitingAsk[id] = t; return }
+        // Mehrere Nachrichten in der Zeit werden gesammelt, keine überschreibt die andere.
+        if project(id)?.thinking == true {
+            waitingAsk[id] = (waitingAsk[id].map { $0 + "\n\n" } ?? "") + t
+            say(id, "status", "✉︎ " + L("Angekommen – ich denke gerade noch über das Vorherige nach und antworte gleich danach darauf."))
+            return
+        }
         ownerAsk.insert(id)
+        // Wartet ein Plan auf deine Freigabe? Dann ist die Nachricht ein Änderungswunsch an genau diesen Plan –
+        // neue Teilaufgaben gehören zum Auftrag und bleiben Vorschlag, bis du ihn startest.
+        if let o = project(id)?.orders?.last(where: { $0.confirm == true && $0.planned && $0.finished == nil }) {
+            think(id, trigger: "[[order:\(o.id)]] " + L("Änderungswunsch zum noch nicht gestarteten Plan. Passe den Plan an (nicht mehr passende Teilaufgaben unter „drop“, neue als Aufgaben) und antworte kurz:") + "\n" + t)
+            return
+        }
         think(id, trigger: t)
     }
     /// Nachrichten von dir, die während des Nachdenkens ankamen (Antwort folgt gleich danach).
     private var waitingAsk: [String: String] = [:]
+    /// Seit wann der Betreuer nachdenkt (gegen hängende Planungen).
+    private var thinkingSince: [String: Date] = [:]
     /// Diese Planung wurde durch eine Nachricht von dir ausgelöst: Was er dir zusagt, wird auch eingereiht.
     private var ownerAsk = Set<String>()
 
@@ -490,6 +544,7 @@ final class Steward: ObservableObject {
     func think(_ id: String, trigger: String) {
         guard let p = project(id), p.thinking != true else { return }
         update(id) { $0.thinking = true }
+        thinkingSince[id] = Date()
         // Lokale Modelle nur, wenn du „lokal“ eingeschaltet hast – sonst bremsen sie den Mac und schaffen Coding-Aufgaben selten
         // Agents mit Kosten pro Nutzung plant er nicht von sich aus ein – nennst du einen in deiner Nachricht ausdrücklich, gilt das als dein Ja.
         let usable = AgentKind.coders.filter { OpenModels.available($0) && !AgentHealth.unavailable($0) && !Self.isBroken($0)
@@ -638,7 +693,9 @@ final class Steward: ObservableObject {
         Never tell a helper to open or drive a browser to check its page, and never promise that in "reply": helpers run unattended, \
         and browser tools wait for an approval nobody answers.
         - Do NOT plan fixes for open pull requests or red CI: the GitHub watcher does that on its own.
-        - Pick the best agent per task from the list and a fitting model (cheap/fast for small fixes, strong for hard work).
+        - Pick the best agent per task from the list by its strengths, and a fitting model of THAT agent (cheap/fast for small fixes, strong for hard work). \
+        Decide per task, not by habit: when another agent fits the task as well or better, use it, and spread independent tasks over \
+        different agents so they run side by side. Give a task to claude only when it is the best fit or needs Claude plugins or skills.
         - Never plan work on the tool that runs you ("Salenta Code"); only on this project.
         - Never plan deploys to production, publishing, deleting data or sending messages to customers – propose those to the owner in "reply".
         - If the goal is unclear, ask ONE question in "reply" and return no tasks.
@@ -660,12 +717,13 @@ final class Steward: ObservableObject {
         \(metered.isEmpty ? "" : "Installed but paid per use – you may NOT plan these on your own: " + metered.map { "\($0.rawValue) (\($0.title))" }.joined(separator: ", ")
             + ". If the owner asks for one of them, say it costs per use and that he can allow it by naming that agent for the task in his message (or in the settings under costs); never guess another reason.")
 
-        Model choice: use the strongest model (e.g. opus) for architecture, tricky bugs, security and large refactors;
-        a mid model (sonnet) for normal features; small/fast models only for trivial edits, renames, copy changes and lint fixes.
+        Model choice (always a model listed for the chosen agent, or "" for its default): the strongest one for architecture, \
+        tricky bugs, security and large refactors; a mid one for normal features; small/fast ones only for trivial edits, renames, \
+        copy changes and lint fixes.
         Thinking effort per task ("effort"): "low" for trivial/mechanical work, "medium" for almost everything (default – strong
         models like Opus need no more), "high" ONLY for genuinely hard debugging, security or architecture. Never use max/xhigh.
 
-        \(know.experience.isEmpty ? "" : know.experience + "\nPrefer the agent that historically succeeds for this kind of task here.")
+        \(know.experience.isEmpty ? "" : know.experience + "\nUse this history to avoid agents that keep failing a kind of task – not as a reason to give everything to one agent.")
 
         Skills and extensions are part of the plan: for every task go through both lists and give the helper everything that
         clearly helps – several together when they cover different needs (for example a token saver + a design skill + a test
@@ -693,7 +751,8 @@ final class Steward: ObservableObject {
         var j: [String: Any]?
         var why = ""
         for model in (first == "opus" ? ["opus", "sonnet"] : ["sonnet"]) {
-            let r = Proc.zsh(HelperLLM.command(model: model, maxTurns: 3, file: file.path),
+            // Entscheidungskette: ist Claude im Limit oder nicht erreichbar, denkt Codex (sonst der Harness) – der Betreuer bleibt ansprechbar
+            let r = Proc.zsh(HelperLLM.command(model: model, maxTurns: 3, file: file.path, decision: true),
                              in: NSTemporaryDirectory(), timeout: 420)
             if let res = Verifier.claudeResult(r.out), let a = res.firstIndex(of: "{"), let b = res.lastIndex(of: "}"), a < b,
                let parsed = try? JSONSerialization.jsonObject(with: Data(res[a...b].utf8)) as? [String: Any] {
@@ -735,6 +794,7 @@ final class Steward: ObservableObject {
 
     private func apply(_ id: String, _ plan: Plan?, trigger: String = "") {
         update(id) { $0.thinking = nil }
+        thinkingSince[id] = nil
         guard let plan else {
             if let t = waitingAsk.removeValue(forKey: id) { ownerAsk.insert(id); think(id, trigger: t); return }
             let why = Self.lastFailure.isEmpty ? L("unbekannter Grund") : Self.lastFailure
@@ -793,7 +853,7 @@ final class Steward: ObservableObject {
                 if let order {
                     t.order = order.id
                     t.source = "du"
-                    t.state = .queued        // dein Auftrag: sofort umsetzen, nicht nur vorschlagen
+                    t.state = order.confirm == true ? .idea : .queued   // dein Auftrag: sofort umsetzen – oder erst den Plan zeigen
                     if n == 0, let lead = order.lead { t.agent = lead; if !ModelCatalog.fits(t.model, AgentKind(rawValue: lead) ?? .claude) { t.model = "" } }
                     if t.agent != "auto" {
                         if !teamAgents.contains(t.agent) {
@@ -818,6 +878,10 @@ final class Steward: ObservableObject {
             finishMission(mid, outcome: "dropped")
         }
         if !plan.reply.isEmpty { say(id, "betreuer", plan.reply) }
+        if let oid = orderIDOf(trigger), let q = project(id), let o = q.orders?.first(where: { $0.id == oid }), o.confirm == true {
+            let mine = q.tasks.filter { $0.order == oid && $0.state == .idea }
+            if !mine.isEmpty { say(id, "betreuer", Self.planText(mine)) }
+        }
         if let o = finishedOrder { finishOrder(id, o) }   // nichts mehr zu tun → Ergebnis melden
         afterPlan(id, plan)
         if !plan.learnings.isEmpty { ProjectMemory.add(id, plan.learnings, source: L("Projekt-Betreuer")) }

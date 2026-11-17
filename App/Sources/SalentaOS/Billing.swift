@@ -138,6 +138,28 @@ enum AgentOff {
     }
 }
 
+/// Anmelden/Abmelden der Agent-CLIs (nur Befehle, die die jeweilige CLI wirklich kennt).
+enum AgentLogin {
+    static func logout(_ a: AgentKind) -> String? {
+        switch a {
+        case .claude: "claude auth logout"
+        case .codex: "codex logout"
+        case .cursor: "cursor-agent logout"
+        case .opencode: "opencode auth logout"
+        default: nil
+        }
+    }
+    static func login(_ a: AgentKind) -> String? {
+        switch a {
+        case .claude: "claude auth login"
+        case .codex: "codex login"
+        case .cursor: "cursor-agent login"
+        case .opencode: "opencode auth login"
+        default: nil
+        }
+    }
+}
+
 /// Einstellungen: welche Agents Salenta Code nutzen darf.
 struct AgentConnections: View {
     @State private var tick = 0
@@ -153,6 +175,18 @@ struct AgentConnections: View {
                         Text(a.title)
                         if Billing.isMetered(a) { Text(L("kostet pro Nutzung")).font(.caption2).foregroundStyle(.orange) }
                         if AgentHealth.needsLogin(a) { Text(L("nicht angemeldet")).font(.caption2).foregroundStyle(.secondary) }
+                        Spacer()
+                        // Konto wechseln: abmelden und neu anmelden – im Terminal, damit du siehst, was passiert
+                        if let out = AgentLogin.logout(a) {
+                            Button(L("Abmelden")) { Detection.runInTerminal(out); Steward.clearBroken(a) }
+                                .buttonStyle(.link).font(.caption)
+                                .help(L("Vom Konto dieses Agents abmelden – danach kannst du dich mit einem anderen Konto anmelden"))
+                        }
+                        if let inn = AgentLogin.login(a) {
+                            Button(L("Anmelden")) { Detection.runInTerminal(inn); AgentHealth.clear(a); Steward.clearBroken(a) }
+                                .buttonStyle(.link).font(.caption)
+                                .help(L("Mit einem (anderen) Konto anmelden"))
+                        }
                     }
                 }
             }

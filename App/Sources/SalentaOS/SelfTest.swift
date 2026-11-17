@@ -855,6 +855,28 @@ extension SelfTest {
                   && Worktrees.addSpec.contains(":(exclude,glob).serena/**"))
         }
         do {
+            let out = """
+            github.com
+              ✓ Logged in to github.com account privat-user (keyring)
+              - Active account: true
+              - Git operations protocol: https
+
+              ✓ Logged in to github.com account firma-user (keyring)
+              - Active account: false
+            """
+            let a = GitHubAccounts.parse(out)
+            check("GitHub: mehrere Konten erkannt, aktives markiert, nur sichere Namen",
+                  a.count == 2 && a[0].user == "privat-user" && a[0].active && a[1].user == "firma-user" && !a[1].active
+                  && GitHubAccounts.safe("firma-user") && !GitHubAccounts.safe("x; rm -rf ~") && GitHubAccounts.logoutCommand(a[1]) == "gh auth logout -h github.com -u firma-user"
+                  && AgentLogin.logout(.codex) == "codex logout" && AgentLogin.logout(.gemini) == nil)
+            var t1 = StewardTask(title: "API bauen"); t1.agent = "codex"; t1.model = "gpt-6"; t1.skills = ["tdd"]; t1.effort = "high"
+            var t2 = StewardTask(title: "Oberfläche"); t2.agent = "auto"
+            let plan = Steward.planText([t1, t2])
+            check("Betreuer-Plan zeigt je Teilaufgabe Agent, Modell, Denktiefe und Skills",
+                  plan.contains("1. API bauen") && plan.contains("Codex · gpt-6") && plan.contains("tdd") && plan.contains("2. Oberfläche")
+                  && plan.contains(L("Plan starten")))
+        }
+        do {
             let plug = ExtensionCatalog.find("playwright").flatMap(ExtensionStore.uninstallCommand) ?? ""
             let mcp = Extension(id: "custom:o/r", name: "R", kind: .mcp, category: .essentials, repo: "", stars: "", purpose: "", when: [],
                                 install: "claude mcp add --scope user srv -- npx -y srv", usage: "")

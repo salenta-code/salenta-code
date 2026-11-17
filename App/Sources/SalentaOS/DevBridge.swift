@@ -7,6 +7,7 @@ import Foundation
 //
 //   steward-watch <Projektname>            Stand dieses Projekts ausführlich mitschreiben
 //   steward-send <Projektname> :: <Text>   Nachricht an den Betreuer (wie im Gespräch getippt)
+//   steward-order <Projektname> :: <Text>  neuer Auftrag mit Plan-Freigabe · steward-start <Projektname> startet den wartenden Plan
 //   steward-pause <Projektname> :: on|off  Betreuer anhalten oder weiterlaufen lassen
 //   success                                Erfolgsquote neu auswerten (logs/success.txt)
 //   design-probe                           Sichtprüfung testen: echte Handy-Breite, gemessener Überlauf, Review (logs/design-check.txt)
@@ -147,8 +148,9 @@ enum DevBridge {
 
     /// „steward-send shop :: Text“ → („steward-send“, „shop“, „Text“)
     static func parse(_ line: String) -> (verb: String, target: String, body: String)? {
-        let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        var t = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, !t.hasPrefix("#") else { return nil }
+        if t.hasSuffix(" ::") { t = String(t.dropLast(3)) }   // „steward-start shop ::“ ohne Text
         let head: String, body: String
         if let r = t.range(of: " :: ") { head = String(t[..<r.lowerBound]); body = String(t[r.upperBound...]) } else { head = t; body = "" }
         let parts = head.split(separator: " ", maxSplits: 1).map(String.init)
@@ -165,7 +167,7 @@ enum DevBridge {
         // Mehrzeilige Nachrichten: Folgezeilen ohne Befehlswort gehören zum Text davor
         var blocks: [String] = []
         for line in text.components(separatedBy: "\n") {
-            let isCommand = ["steward-watch", "steward-send", "steward-pause", "success", "rebuild", "design-probe", "heat", "pr-review", "bench-setup", "bench-collide", "bench-budget", "stress", "sleep-test", "decide", "route", "#"].contains { line.lowercased().hasPrefix($0) }
+            let isCommand = ["steward-watch", "steward-send", "steward-order", "steward-start", "steward-pause", "success", "rebuild", "design-probe", "heat", "pr-review", "bench-setup", "bench-collide", "bench-budget", "stress", "sleep-test", "decide", "route", "#"].contains { line.lowercased().hasPrefix($0) }
             if isCommand || blocks.isEmpty { blocks.append(line) } else { blocks[blocks.count - 1] += "\n" + line }
         }
         for block in blocks {
@@ -275,6 +277,16 @@ enum DevBridge {
                 watched.insert(p.id)
                 s.send(p.id, c.body)
                 out.append("steward-send → \(p.name) (\(c.body.count) Zeichen)")
+            case "steward-order":
+                // wie ein neuer Auftrag aus dem Eingabefeld: Betreuer plant, zeigt den Plan, startet erst auf „Plan starten“
+                guard let p = find(c.target, in: s.projects), !c.body.isEmpty else { out.append("steward-order: Projekt oder Text fehlt („\(c.target)“)"); continue }
+                watched.insert(p.id)
+                s.takeOrder(p.id, text: c.body, lead: nil, teamSize: 3, confirm: true)
+                out.append("steward-order → \(p.name) (\(c.body.count) Zeichen, Plan mit Freigabe)")
+            case "steward-start":
+                guard let p = find(c.target, in: s.projects), let o = p.orders?.last(where: { $0.confirm == true }) else { out.append("steward-start: kein wartender Plan"); continue }
+                s.startOrder(p.id, o.id)
+                out.append("steward-start → \(p.name) (\(o.id))")
             case "steward-pause":
                 guard let p = find(c.target, in: s.projects), ["on", "off"].contains(c.body.lowercased()) else { out.append("steward-pause: Projekt oder on/off fehlt"); continue }
                 s.update(p.id) { $0.paused = c.body.lowercased() == "on" }

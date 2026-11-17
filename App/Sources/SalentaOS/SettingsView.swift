@@ -125,6 +125,7 @@ struct GeneralSettings: View {
                 Text("Bei „Automatisch“ schaut das Entscheidungsmodell auf den Auftrag und vergleicht alle installierten Agents mit ihren Modellen – ohne festen Favoriten. Es wählt Agent, Modell, Denktiefe und Projekt und dazu aus allen installierten Skills und Erweiterungen (auch den Repos, die du selbst hinzugefügt hast) die, die zum Auftrag passen – mehrere zusammen, wenn sie sich ergänzen. Agents mit Kosten pro Nutzung nimmt es nur, wenn du das unter Kosten erlaubst. Ausgeschaltet entscheiden feste Stichwort-Regeln – sofort, aber ungenauer.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            GitHubAccountsSection()
             Section("Coding") {
                 Toggle("Projekte automatisch aktuell halten (neue Commits von GitHub holen)", isOn: Binding(
                     get: { GitSync.autoPull },

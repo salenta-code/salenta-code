@@ -895,6 +895,7 @@ struct StewardLivePanel: View {
 /// Deine Aufträge oben im Betreuer: was du wolltest, wer daran arbeitet, wie weit es ist – und das Ergebnis.
 struct StewardOrdersCard: View {
     let p: StewardProject
+    @ObservedObject private var steward = Steward.shared
 
     var body: some View {
         let recent = (p.orders ?? []).filter { $0.finished == nil || $0.finished! > Date().addingTimeInterval(-86400) }.suffix(3)
@@ -910,8 +911,9 @@ struct StewardOrdersCard: View {
                                 .foregroundStyle(o.finished != nil ? Color.green : Color.accentColor)
                             Text(o.text.components(separatedBy: .newlines).first ?? o.text).lineLimit(1).font(.callout.weight(.semibold))
                             Spacer()
-                            Text(o.finished != nil ? L("fertig") : (o.planned ? "\(done)/\(max(total, 1))" : L("plant …")))
-                                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                            let waiting = o.confirm == true && o.planned && o.finished == nil
+                            Text(o.finished != nil ? L("fertig") : waiting ? L("Plan wartet auf dich") : (o.planned ? "\(done)/\(max(total, 1))" : L("plant …")))
+                                .font(.caption).foregroundStyle(waiting ? Color.orange : Color.secondary).monospacedDigit()
                         }
                         if o.planned, o.finished == nil {
                             ProgressView(value: Double(done), total: Double(max(total, 1))).controlSize(.small)
@@ -921,7 +923,22 @@ struct StewardOrdersCard: View {
                                         .foregroundStyle(t.state == .done ? Color.green : t.state == .red ? Color.orange : Color.secondary)
                                     Text(t.title).lineLimit(1).font(.caption)
                                     Spacer()
-                                    Text(AgentKind(rawValue: t.agent)?.title ?? L("Automatisch")).font(.caption2).foregroundStyle(.secondary)
+                                    Text((AgentKind(rawValue: t.agent)?.title ?? L("Automatisch")) + (t.model.isEmpty ? "" : " · " + t.model))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                // Im Plan sichtbar, was jede Teilaufgabe mitbekommt
+                                if o.confirm == true, !(t.skills ?? []).isEmpty || !(t.exts ?? []).isEmpty {
+                                    ToolChips(skills: t.skills ?? [], exts: (t.exts ?? []).compactMap { ExtensionCatalog.find($0)?.name }, compact: true)
+                                        .padding(.leading, 20)
+                                }
+                            }
+                            if o.confirm == true {
+                                HStack {
+                                    Text(L("Ändern? Schreib dem Betreuer einfach, was anders sein soll.")).font(.caption).foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button(L("Plan starten")) { steward.startOrder(p.id, o.id) }
+                                        .buttonStyle(.borderedProminent).controlSize(.small)
+                                        .disabled(!mine.contains { $0.state == .idea })
                                 }
                             }
                         }

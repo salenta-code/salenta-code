@@ -64,6 +64,8 @@ enum GH {
     }
     /// Beim Start einmal prüfen, damit das erste grüne Ergebnis nicht an GitHub vorbei übernommen wird.
     static func prime() { _ = state }
+    /// Nach An-/Abmelden oder Kontowechsel neu prüfen.
+    static func invalidate() { lock.lock(); authCache = nil; lock.unlock(); prime() }
 }
 
 extension StewardProject {

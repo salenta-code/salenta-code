@@ -736,7 +736,8 @@ struct MissionComposer: View {
         if !asking, stewardPick != "auto", stewardPick != "none", Steward.shared.project(stewardPick) != nil {
             let full = body + Attachments.promptBlock(attachments)
             attachments = []
-            let sid = Steward.shared.takeOrder(stewardPick, text: full, lead: target.agent, teamSize: parallel)
+            let sid = Steward.shared.takeOrder(stewardPick, text: full, lead: target.agent, teamSize: target == .auto ? max(parallel, 3) : parallel,
+                                               confirm: UserDefaults.standard.object(forKey: "router.confirm") as? Bool ?? true)
             text = ""
             stewardPick = "auto"
             app.page = .steward(sid)
@@ -770,6 +771,15 @@ struct MissionComposer: View {
 
     /// Vorschlag zeigen (Agent, Modell, Skills, Erweiterungen) – oder direkt starten, wenn ausgeschaltet.
     private func propose(_ body: String, _ d: AIRouteDecision) {
+        // Coding-Auftrag für ein Git-Projekt: Der Projekt-Betreuer zeigt ohnehin seinen Plan (Teilaufgaben mit Agent, Modell,
+        // Skills) und startet erst auf deinen Klick – hier also keine zweite Vorschlagskarte davor.
+        let dirFor = d.directory?.isEmpty == false ? d.directory! : self.dir
+        let toSteward = UserDefaults.standard.object(forKey: "mission.toSteward") as? Bool ?? true
+        if confirmFirst, toSteward, !asking, access != "read", !planFirst, stewardPick != "none", !dirFor.isEmpty, Git.root(of: dirFor) != nil,
+           let a = d.target.agent, AgentKind.coders.contains(a) {
+            dispatch(body, d)
+            return
+        }
         if confirmFirst {
             proposalBody = body
             withAnimation(.snappy) { proposal = d }
@@ -854,8 +864,13 @@ struct MissionComposer: View {
             let root = Git.root(of: dir) ?? dir
             let hasSteward = Steward.shared.project(root) != nil
             let toSteward = UserDefaults.standard.object(forKey: "mission.toSteward") as? Bool ?? true
-            if stewardPick != "none", coding, !question, access != "read", !(planFirst && coding), !dir.isEmpty, toSteward, Git.root(of: dir) != nil, hasSteward || parallel > 1 {
-                let sid = Steward.shared.takeOrder(dir, text: body, lead: auto ? nil : primary, teamSize: parallel)
+            // Jeder Coding-Auftrag für ein Git-Projekt geht an den Betreuer: Er zerlegt ihn, wählt je Teilaufgabe den besten Agent
+            // mit Modell, Skills und Erweiterungen (bei „Automatisch“ bis zu drei verschiedene), zeigt dir den Plan und setzt ihn
+            // nach deinem Start bis zum Ende um.
+            if stewardPick != "none", coding, !question, access != "read", !(planFirst && coding), !dir.isEmpty, toSteward, Git.root(of: dir) != nil {
+                _ = hasSteward
+                let sid = Steward.shared.takeOrder(dir, text: body, lead: auto ? nil : primary, teamSize: auto ? max(parallel, 3) : parallel,
+                                                   confirm: UserDefaults.standard.object(forKey: "router.confirm") as? Bool ?? true)
                 app.page = .steward(sid)
                 return
             }
